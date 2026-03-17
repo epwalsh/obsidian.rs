@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 gray_matter = "0.3.2"
+regex = "1"
 
 [dev-dependencies]
 tempfile = "3"

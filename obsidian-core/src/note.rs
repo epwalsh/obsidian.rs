@@ -74,6 +74,10 @@ impl Note {
         }
     }
 
+    pub fn links(&self) -> Vec<crate::Link> {
+        crate::link::parse_links(&self.content)
+    }
+
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, std::io::Error> {
         let content = std::fs::read_to_string(&path)?;
         Ok(Self::parse(path, &content))
