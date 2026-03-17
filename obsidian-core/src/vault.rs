@@ -24,6 +24,11 @@ impl Vault {
     pub fn notes(&self) -> Vec<Result<Note, std::io::Error>> {
         search::find_notes(&self.path)
     }
+
+    /// Returns a [`SearchQuery`](search::SearchQuery) rooted at this vault's path.
+    pub fn search(&self) -> search::SearchQuery {
+        search::SearchQuery::new(&self.path)
+    }
 }
 
 #[cfg(test)]
