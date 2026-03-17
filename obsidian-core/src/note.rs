@@ -11,6 +11,9 @@ pub struct Note {
     pub tags: Vec<String>,
     pub content: String,
     pub frontmatter: Option<HashMap<String, Pod>>,
+    /// Number of lines occupied by the frontmatter block (including delimiters).
+    /// Used to offset link locations so they reflect positions in the original file.
+    pub frontmatter_line_count: usize,
 }
 
 impl Note {
@@ -24,6 +27,7 @@ impl Note {
             }
             Err(_) => (content.to_string(), None),
         };
+        let frontmatter_line_count = content.lines().count().saturating_sub(body.lines().count());
         let id = frontmatter
             .as_ref()
             .and_then(|fm| fm.get("id"))
@@ -71,11 +75,19 @@ impl Note {
             tags,
             content: body,
             frontmatter,
+            frontmatter_line_count,
         }
     }
 
-    pub fn links(&self) -> Vec<crate::Link> {
+    pub fn links(&self) -> Vec<crate::LocatedLink> {
+        let offset = self.frontmatter_line_count;
         crate::link::parse_links(&self.content)
+            .into_iter()
+            .map(|mut ll| {
+                ll.location.line += offset;
+                ll
+            })
+            .collect()
     }
 
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, std::io::Error> {
@@ -216,5 +228,20 @@ mod tests {
     fn tags_empty_when_absent() {
         let note = Note::parse("/vault/note.md", "No frontmatter here.");
         assert!(note.tags.is_empty());
+    }
+
+    #[test]
+    fn links_location_offset_by_frontmatter() {
+        // Frontmatter is lines 1-3; "[[target]]" is on line 4 and "[text](url)" on line 5.
+        let content = "---\ntitle: T\n---\n[[target]]\n[text](url)";
+        let note = Note::parse("/vault/note.md", content);
+        let links = note.links();
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0].location.line, 4);
+        assert_eq!(links[0].location.col_start, 0);
+        assert_eq!(links[0].location.col_end, 10);
+        assert_eq!(links[1].location.line, 5);
+        assert_eq!(links[1].location.col_start, 0);
+        assert_eq!(links[1].location.col_end, 11);
     }
 }
