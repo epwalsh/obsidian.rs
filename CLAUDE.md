@@ -13,10 +13,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `obsidian-core/` — the core library crate
   - `src/lib.rs` — library entry point
   - `src/note.rs` — defines the `Note` struct
+  - `src/link.rs` — parsing markdown/wiki/embedded links
+  - `src/search.rs` — `find_note_paths()` for recursively finding `.md` files (public)
+  - `src/vault.rs` — defines the `Vault` struct
 
 ## Development
 
 - Always run `cargo fmt` after making changes to ensure consistent code formatting.
+- Always update this file when new modules, crates, or features are added to the project.
 
 ## Common Commands
 
