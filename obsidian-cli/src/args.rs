@@ -33,7 +33,7 @@ pub struct SearchArgs {
     pub tag: Vec<String>,
     /// Filter by title substring (case-insensitive)
     #[arg(long)]
-    pub title: Option<String>,
+    pub title_contains: Option<String>,
     /// Filter by exact alias, case-insensitive (OR semantics, repeatable)
     #[arg(long, short = 'a')]
     pub alias: Vec<String>,
