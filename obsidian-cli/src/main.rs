@@ -20,13 +20,13 @@ fn cmd_search(vault: Vault, args: SearchArgs) -> eyre::Result<()> {
     for s in &args.content {
         query = query.content_contains(s);
     }
-    if let Some(t) = &args.title_contains {
+    for t in &args.title_contains {
         query = query.title_contains(t);
     }
     for alias in &args.alias {
         query = query.has_alias(alias);
     }
-    if let Some(s) = &args.alias_contains {
+    for s in &args.alias_contains {
         query = query.alias_contains(s);
     }
     if let Some(r) = &args.regex {

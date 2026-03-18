@@ -1,5 +1,8 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
+
+use regex::Regex;
 
 use crate::NoteError;
 
@@ -62,10 +65,11 @@ impl Note {
                 .into_iter()
                 .filter_map(|p| p.as_string().ok())
                 .collect();
-            if let Some(ref t) = title
-                && !v.contains(t)
-            {
-                v.push(t.clone());
+            if let Some(ref t) = title {
+                let clean = strip_title_md(t);
+                if !v.contains(&clean) {
+                    v.push(clean);
+                }
             }
             v
         };
@@ -157,6 +161,28 @@ fn find_h1(content: &str) -> Option<String> {
     content
         .lines()
         .find_map(|line| line.strip_prefix("# ").map(|t| t.trim_end().to_string()))
+}
+
+fn strip_title_md(s: &str) -> String {
+    // [[target|alias]] → alias, [[target]] or [[target#heading]] → target
+    static WIKI_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"!?\[\[([^\]#|]*?)(?:#[^\]|]*?)?(?:\|([^\]]*?))?\]\]").unwrap()
+    });
+    // [text](url) → text
+    static MD_LINK_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\[([^\]]+?)\]\([^)]*?\)").unwrap());
+    // `code` → code
+    static INLINE_CODE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"`([^`\n]+)`").unwrap());
+
+    let s = WIKI_RE.replace_all(s, |caps: &regex::Captures| {
+        caps.get(2)
+            .or_else(|| caps.get(1))
+            .map_or("", |m| m.as_str())
+            .to_string()
+    });
+    let s = MD_LINK_RE.replace_all(&s, "$1");
+    let s = INLINE_CODE_RE.replace_all(&s, "$1");
+    s.into_owned()
 }
 
 #[cfg(test)]
@@ -329,6 +355,98 @@ mod tests {
 
         let reparsed = Note::from_path(tmp.path()).unwrap();
         assert_eq!(reparsed.title.as_deref(), Some("New Title"));
+    }
+
+    // strip_title_md unit tests
+
+    #[test]
+    fn strip_title_md_plain_is_unchanged() {
+        assert_eq!(strip_title_md("My Note"), "My Note");
+    }
+
+    #[test]
+    fn strip_title_md_wiki_link_no_alias() {
+        assert_eq!(strip_title_md("[[linked note]]"), "linked note");
+    }
+
+    #[test]
+    fn strip_title_md_wiki_link_with_alias() {
+        assert_eq!(strip_title_md("[[note|display text]]"), "display text");
+    }
+
+    #[test]
+    fn strip_title_md_wiki_link_with_heading() {
+        assert_eq!(strip_title_md("[[note#heading]]"), "note");
+    }
+
+    #[test]
+    fn strip_title_md_markdown_link() {
+        assert_eq!(strip_title_md("[text](https://example.com)"), "text");
+    }
+
+    #[test]
+    fn strip_title_md_inline_code() {
+        assert_eq!(strip_title_md("`code` stuff"), "code stuff");
+    }
+
+    #[test]
+    fn strip_title_md_mixed() {
+        assert_eq!(
+            strip_title_md("My [[note|ref]] and `stuff`"),
+            "My ref and stuff"
+        );
+    }
+
+    // Integration tests: aliases use cleaned title
+
+    #[test]
+    fn alias_from_h1_with_wiki_link_no_alias() {
+        let input = "# [[linked note]]\n\nContent.";
+        let note = Note::parse("/vault/note.md", input);
+        assert_eq!(note.title.as_deref(), Some("[[linked note]]"));
+        assert!(note.aliases.contains(&"linked note".to_string()));
+    }
+
+    #[test]
+    fn alias_from_h1_with_wiki_link_with_alias() {
+        let input = "# [[note|display text]]\n\nContent.";
+        let note = Note::parse("/vault/note.md", input);
+        assert!(note.aliases.contains(&"display text".to_string()));
+    }
+
+    #[test]
+    fn alias_from_h1_with_markdown_link() {
+        let input = "# [text](https://example.com)\n\nContent.";
+        let note = Note::parse("/vault/note.md", input);
+        assert!(note.aliases.contains(&"text".to_string()));
+    }
+
+    #[test]
+    fn alias_from_h1_with_inline_code() {
+        let input = "# `code` stuff\n\nContent.";
+        let note = Note::parse("/vault/note.md", input);
+        assert!(note.aliases.contains(&"code stuff".to_string()));
+    }
+
+    #[test]
+    fn alias_from_h1_mixed_markdown() {
+        let input = "# My [[note|ref]] and `stuff`\n\nContent.";
+        let note = Note::parse("/vault/note.md", input);
+        assert!(note.aliases.contains(&"My ref and stuff".to_string()));
+    }
+
+    #[test]
+    fn alias_from_frontmatter_title_with_wiki_link() {
+        let input = "---\ntitle: \"[[note|display]]\"\n---\n\nContent.";
+        let note = Note::parse("/vault/note.md", input);
+        assert!(note.aliases.contains(&"display".to_string()));
+    }
+
+    #[test]
+    fn alias_plain_title_unchanged() {
+        let input = "# My Note\n\nContent.";
+        let note = Note::parse("/vault/note.md", input);
+        assert!(note.aliases.contains(&"My Note".to_string()));
     }
 
     #[test]
