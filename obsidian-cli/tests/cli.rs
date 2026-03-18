@@ -476,6 +476,152 @@ fn rename_target_already_exists_exits_with_error() {
         .stderr(predicate::str::contains("already exists"));
 }
 
+// --- dry-run tests ---
+
+#[test]
+fn rename_dry_run_does_not_rename_file() {
+    let vault = make_vault();
+    write_note(vault.path(), "old.md", "Content.");
+    let note_path = vault.path().join("old.md");
+    let new_path = vault.path().join("new.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "rename",
+            "--dry-run",
+            note_path.to_str().unwrap(),
+            new_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    assert!(vault.path().join("old.md").exists());
+    assert!(!vault.path().join("new.md").exists());
+}
+
+#[test]
+fn rename_dry_run_does_not_modify_backlinks() {
+    let vault = make_vault();
+    write_note(vault.path(), "target.md", "Target.");
+    write_note(vault.path(), "source.md", "See [[target]].");
+    let note_path = vault.path().join("target.md");
+    let new_path = vault.path().join("renamed.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "rename",
+            "--dry-run",
+            note_path.to_str().unwrap(),
+            new_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let source = fs::read_to_string(vault.path().join("source.md")).unwrap();
+    assert_eq!(source, "See [[target]].");
+}
+
+#[test]
+fn rename_dry_run_outputs_new_path() {
+    let vault = make_vault();
+    write_note(vault.path(), "old.md", "Content.");
+    let note_path = vault.path().join("old.md");
+    let new_path = vault.path().join("new.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "rename",
+            "--dry-run",
+            note_path.to_str().unwrap(),
+            new_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("new.md"));
+}
+
+#[test]
+fn rename_dry_run_outputs_updated_notes() {
+    let vault = make_vault();
+    write_note(vault.path(), "target.md", "Target.");
+    write_note(vault.path(), "source.md", "See [[target]].");
+    let note_path = vault.path().join("target.md");
+    let new_path = vault.path().join("renamed.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "rename",
+            "--dry-run",
+            note_path.to_str().unwrap(),
+            new_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("source.md"));
+}
+
+#[test]
+fn rename_dry_run_json_format() {
+    let vault = make_vault();
+    write_note(vault.path(), "target.md", "Target.");
+    write_note(vault.path(), "source.md", "See [[target]].");
+    let note_path = vault.path().join("target.md");
+    let new_path = vault.path().join("renamed.md");
+    let output = obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "rename",
+            "--dry-run",
+            "--format",
+            "json",
+            note_path.to_str().unwrap(),
+            new_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let s = String::from_utf8(output).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+    assert!(v["new_path"].as_str().unwrap().contains("renamed.md"));
+    assert!(v["updated_notes"].is_array());
+    let notes = v["updated_notes"].as_array().unwrap();
+    assert_eq!(notes.len(), 1);
+    assert!(notes[0]["path"].as_str().unwrap().contains("source.md"));
+    assert_eq!(notes[0]["link_count"].as_u64().unwrap(), 1);
+}
+
+#[test]
+fn rename_dry_run_no_backlinks() {
+    let vault = make_vault();
+    write_note(vault.path(), "standalone.md", "No links to me.");
+    let note_path = vault.path().join("standalone.md");
+    let new_path = vault.path().join("new-name.md");
+    let output = obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "rename",
+            "--dry-run",
+            "--format",
+            "json",
+            note_path.to_str().unwrap(),
+            new_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let s = String::from_utf8(output).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+    assert!(v["updated_notes"].as_array().unwrap().is_empty());
+}
+
 #[test]
 fn backlinks_nonexistent_note_exits_with_error() {
     let vault = make_vault();

@@ -89,6 +89,21 @@ fn rewrite_links(raw_content: &str, replacements: Vec<(LocatedLink, String)>) ->
     result
 }
 
+struct RenameOp {
+    new_stem: String,
+    frontmatter_id_will_update: bool,
+    /// Only notes with ≥1 replacement included.
+    per_note_replacements: Vec<(Note, Vec<(LocatedLink, String)>)>,
+}
+
+/// Public summary of what a rename would change, without touching the filesystem.
+pub struct RenamePreview {
+    pub new_path: PathBuf,
+    pub id_will_update: bool,
+    /// Notes with backlinks that would be rewritten, sorted by path. Each entry is (path, link_count).
+    pub updated_notes: Vec<(PathBuf, usize)>,
+}
+
 impl Vault {
     /// Opens a vault at the given path, returning an error if the path does not exist or is not a
     /// directory.
@@ -164,15 +179,8 @@ impl Vault {
             .collect()
     }
 
-    /// Renames `note` to `new_path` (full destination path), updating all backlinks.
-    ///
-    /// Wiki links targeting the old ID are rewritten to the new stem. Markdown links pointing
-    /// to the old path are rewritten to the new path. Wiki links targeting an alias are left
-    /// unchanged. Returns the reloaded [`Note`] at the new path.
-    ///
-    /// Returns [`VaultError::DirectoryNotFound`] if the parent directory of `new_path` does not
-    /// exist, and [`VaultError::NoteAlreadyExists`] if `new_path` is already occupied.
-    pub fn rename(&self, note: &Note, new_path: &Path) -> Result<Note, VaultError> {
+    /// Computes all replacement pairs for a rename without performing any I/O.
+    fn compute_rename_op(&self, note: &Note, new_path: &Path) -> Result<RenameOp, VaultError> {
         let new_dir = new_path.parent().unwrap_or_else(|| Path::new("."));
         if !new_dir.is_dir() {
             return Err(VaultError::DirectoryNotFound(new_dir.to_path_buf()));
@@ -196,27 +204,13 @@ impl Vault {
             .to_string();
 
         let id_needs_update = note.id == old_stem;
+        let frontmatter_id_will_update =
+            id_needs_update && note.frontmatter.as_ref().is_some_and(|fm| fm.contains_key("id"));
 
-        // Collect backlinks before the file move so paths are still resolvable.
         let backlinks = self.backlinks(note);
-
-        std::fs::rename(&note.path, new_path)?;
-
-        let mut renamed = Note::from_path(new_path)?;
-
-        // Update explicit frontmatter `id` when it matched the old stem.
-        if id_needs_update && renamed.frontmatter.as_ref().is_some_and(|fm| fm.contains_key("id")) {
-            renamed
-                .frontmatter
-                .as_mut()
-                .unwrap()
-                .insert("id".to_string(), Pod::String(new_stem.to_string()));
-            renamed.write()?;
-            renamed = Note::from_path(new_path)?;
-        }
+        let mut per_note_replacements: Vec<(Note, Vec<(LocatedLink, String)>)> = Vec::new();
 
         for (source_note, links) in backlinks {
-            let raw_content = std::fs::read_to_string(&source_note.path)?;
             let mut replacements: Vec<(LocatedLink, String)> = Vec::new();
 
             for ll in links {
@@ -253,12 +247,70 @@ impl Vault {
             }
 
             if !replacements.is_empty() {
-                let new_content = rewrite_links(&raw_content, replacements);
-                std::fs::write(&source_note.path, new_content)?;
+                per_note_replacements.push((source_note, replacements));
             }
         }
 
+        Ok(RenameOp {
+            new_stem,
+            frontmatter_id_will_update,
+            per_note_replacements,
+        })
+    }
+
+    /// Renames `note` to `new_path` (full destination path), updating all backlinks.
+    ///
+    /// Wiki links targeting the old ID are rewritten to the new stem. Markdown links pointing
+    /// to the old path are rewritten to the new path. Wiki links targeting an alias are left
+    /// unchanged. Returns the reloaded [`Note`] at the new path.
+    ///
+    /// Returns [`VaultError::DirectoryNotFound`] if the parent directory of `new_path` does not
+    /// exist, and [`VaultError::NoteAlreadyExists`] if `new_path` is already occupied.
+    pub fn rename(&self, note: &Note, new_path: &Path) -> Result<Note, VaultError> {
+        let op = self.compute_rename_op(note, new_path)?;
+
+        std::fs::rename(&note.path, new_path)?;
+
+        let mut renamed = Note::from_path(new_path)?;
+
+        // Update explicit frontmatter `id` when it matched the old stem.
+        if op.frontmatter_id_will_update {
+            renamed
+                .frontmatter
+                .as_mut()
+                .unwrap()
+                .insert("id".to_string(), Pod::String(op.new_stem.clone()));
+            renamed.write()?;
+            renamed = Note::from_path(new_path)?;
+        }
+
+        for (source_note, replacements) in op.per_note_replacements {
+            let raw_content = std::fs::read_to_string(&source_note.path)?;
+            let new_content = rewrite_links(&raw_content, replacements);
+            std::fs::write(&source_note.path, new_content)?;
+        }
+
         Ok(renamed)
+    }
+
+    /// Returns a preview of what [`rename`](Self::rename) would change without touching the filesystem.
+    ///
+    /// Same validation and error variants as `rename`.
+    pub fn rename_preview(&self, note: &Note, new_path: &Path) -> Result<RenamePreview, VaultError> {
+        let op = self.compute_rename_op(note, new_path)?;
+
+        let mut updated_notes: Vec<(PathBuf, usize)> = op
+            .per_note_replacements
+            .iter()
+            .map(|(source_note, replacements)| (source_note.path.clone(), replacements.len()))
+            .collect();
+        updated_notes.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+        Ok(RenamePreview {
+            new_path: new_path.to_path_buf(),
+            id_will_update: op.frontmatter_id_will_update,
+            updated_notes,
+        })
     }
 }
 
@@ -669,6 +721,149 @@ mod tests {
         let result = vault.rename(&note, &dir.path().join("new.md"));
 
         assert!(matches!(result, Err(VaultError::NoteAlreadyExists(_))));
+    }
+
+    // --- rename_preview tests ---
+
+    #[test]
+    fn rename_preview_basic() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("old.md"), "Content.").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("old.md")).unwrap();
+        let preview = vault.rename_preview(&note, &dir.path().join("new.md")).unwrap();
+
+        assert_eq!(preview.new_path, dir.path().join("new.md"));
+        assert!(preview.updated_notes.is_empty());
+        assert!(!preview.id_will_update);
+    }
+
+    #[test]
+    fn rename_preview_with_wiki_backlink() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("target.md"), "Target.").unwrap();
+        fs::write(dir.path().join("source.md"), "See [[target]].").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("target.md")).unwrap();
+        let preview = vault.rename_preview(&note, &dir.path().join("renamed.md")).unwrap();
+
+        assert_eq!(preview.updated_notes.len(), 1);
+        assert!(preview.updated_notes[0].0.ends_with("source.md"));
+        assert_eq!(preview.updated_notes[0].1, 1);
+    }
+
+    #[test]
+    fn rename_preview_with_markdown_backlink() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("target.md"), "Target.").unwrap();
+        fs::write(dir.path().join("source.md"), "[link](target.md)").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("target.md")).unwrap();
+        let preview = vault.rename_preview(&note, &dir.path().join("renamed.md")).unwrap();
+
+        assert_eq!(preview.updated_notes.len(), 1);
+        assert!(preview.updated_notes[0].0.ends_with("source.md"));
+        assert_eq!(preview.updated_notes[0].1, 1);
+    }
+
+    #[test]
+    fn rename_preview_id_will_update() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("old-note.md"), "---\nid: old-note\n---\nContent.").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("old-note.md")).unwrap();
+        let preview = vault.rename_preview(&note, &dir.path().join("new-note.md")).unwrap();
+
+        assert!(preview.id_will_update);
+    }
+
+    #[test]
+    fn rename_preview_id_will_not_update() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("my-note.md"), "---\nid: custom-id\n---\nContent.").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("my-note.md")).unwrap();
+        let preview = vault
+            .rename_preview(&note, &dir.path().join("renamed-note.md"))
+            .unwrap();
+
+        assert!(!preview.id_will_update);
+    }
+
+    #[test]
+    fn rename_preview_excludes_alias_only_links() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("target.md"), "---\naliases: [my-alias]\n---\nContent.").unwrap();
+        fs::write(dir.path().join("source.md"), "See [[my-alias]].").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("target.md")).unwrap();
+        let preview = vault.rename_preview(&note, &dir.path().join("renamed.md")).unwrap();
+
+        // The alias link is a backlink but won't be rewritten, so updated_notes is empty
+        assert!(preview.updated_notes.is_empty());
+    }
+
+    #[test]
+    fn rename_preview_does_not_modify_filesystem() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("old.md"), "Content.").unwrap();
+        fs::write(dir.path().join("source.md"), "See [[old]].").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("old.md")).unwrap();
+        vault.rename_preview(&note, &dir.path().join("new.md")).unwrap();
+
+        assert!(dir.path().join("old.md").exists());
+        assert!(!dir.path().join("new.md").exists());
+
+        let source_content = fs::read_to_string(dir.path().join("source.md")).unwrap();
+        assert_eq!(source_content, "See [[old]].");
+    }
+
+    #[test]
+    fn rename_preview_directory_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("old.md"), "Content.").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("old.md")).unwrap();
+        let result = vault.rename_preview(&note, &dir.path().join("nonexistent/new.md"));
+
+        assert!(matches!(result, Err(VaultError::DirectoryNotFound(_))));
+    }
+
+    #[test]
+    fn rename_preview_target_already_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("old.md"), "Old.").unwrap();
+        fs::write(dir.path().join("new.md"), "Already exists.").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("old.md")).unwrap();
+        let result = vault.rename_preview(&note, &dir.path().join("new.md"));
+
+        assert!(matches!(result, Err(VaultError::NoteAlreadyExists(_))));
+    }
+
+    #[test]
+    fn rename_preview_updated_notes_sorted_by_path() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("target.md"), "Target.").unwrap();
+        fs::write(dir.path().join("z-source.md"), "See [[target]].").unwrap();
+        fs::write(dir.path().join("a-source.md"), "See [[target]].").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("target.md")).unwrap();
+        let preview = vault.rename_preview(&note, &dir.path().join("renamed.md")).unwrap();
+
+        assert_eq!(preview.updated_notes.len(), 2);
+        assert!(preview.updated_notes[0].0 < preview.updated_notes[1].0);
     }
 
     #[test]

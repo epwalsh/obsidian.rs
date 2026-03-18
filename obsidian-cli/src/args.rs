@@ -65,6 +65,12 @@ pub struct RenameArgs {
     pub note: PathBuf,
     /// New path for the note (resolved relative to current directory, .md added if omitted)
     pub new_path: PathBuf,
+    /// Preview what would change without modifying any files
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Output format
+    #[arg(long, short = 'f', default_value = "plain")]
+    pub format: OutputFormat,
 }
 
 #[derive(Clone, ValueEnum)]

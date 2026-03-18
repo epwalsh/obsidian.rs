@@ -85,9 +85,18 @@ fn cmd_rename(vault: Vault, args: RenameArgs) -> eyre::Result<()> {
     }
 
     let note = Note::from_path(&note_path)?;
-    let renamed = vault.rename(&note, &new_path)?;
-    let rel = renamed.path.strip_prefix(&vault.path).unwrap_or(&renamed.path);
-    println!("{}", rel.display());
+
+    if args.dry_run {
+        let preview = vault.rename_preview(&note, &new_path)?;
+        match args.format {
+            OutputFormat::Plain => output::print_rename_preview_plain(&preview, &vault.path),
+            OutputFormat::Json => output::print_rename_preview_json(&preview, &vault.path),
+        }
+    } else {
+        let renamed = vault.rename(&note, &new_path)?;
+        let rel = renamed.path.strip_prefix(&vault.path).unwrap_or(&renamed.path);
+        println!("{}", rel.display());
+    }
     Ok(())
 }
 

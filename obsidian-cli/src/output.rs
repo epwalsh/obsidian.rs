@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use obsidian_core::{Link, LocatedLink, Note};
+use obsidian_core::{Link, LocatedLink, Note, RenamePreview};
 use serde::Serialize;
 
 pub fn print_search_plain(notes: &[Note], vault_path: &Path) {
@@ -55,6 +55,54 @@ struct BacklinkJson<'a> {
     source_path: String,
     source_id: &'a str,
     links: Vec<LinkJson>,
+}
+
+pub fn print_rename_preview_plain(preview: &RenamePreview, vault_path: &Path) {
+    let rel_new = preview.new_path.strip_prefix(vault_path).unwrap_or(&preview.new_path);
+    println!("{}", rel_new.display());
+    for (path, count) in &preview.updated_notes {
+        let rel = path.strip_prefix(vault_path).unwrap_or(path);
+        println!(
+            " ➡️ update: {} ({} link{})",
+            rel.display(),
+            count,
+            if *count == 1 { "" } else { "s" }
+        );
+    }
+}
+
+#[derive(Serialize)]
+struct RenamePreviewNoteJson {
+    path: String,
+    link_count: usize,
+}
+
+#[derive(Serialize)]
+struct RenamePreviewJson {
+    new_path: String,
+    id_will_update: bool,
+    updated_notes: Vec<RenamePreviewNoteJson>,
+}
+
+pub fn print_rename_preview_json(preview: &RenamePreview, vault_path: &Path) {
+    let rel_new = preview.new_path.strip_prefix(vault_path).unwrap_or(&preview.new_path);
+    let updated_notes = preview
+        .updated_notes
+        .iter()
+        .map(|(path, count)| {
+            let rel = path.strip_prefix(vault_path).unwrap_or(path);
+            RenamePreviewNoteJson {
+                path: rel.display().to_string(),
+                link_count: *count,
+            }
+        })
+        .collect();
+    let out = RenamePreviewJson {
+        new_path: rel_new.display().to_string(),
+        id_will_update: preview.id_will_update,
+        updated_notes,
+    };
+    println!("{}", serde_json::to_string(&out).unwrap());
 }
 
 pub fn print_backlinks_json(results: &[(Note, Vec<LocatedLink>)], vault_path: &Path) {

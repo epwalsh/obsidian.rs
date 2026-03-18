@@ -7,4 +7,4 @@ pub use error::{NoteError, SearchError, VaultError};
 pub use link::{Link, LocatedLink, Location};
 pub use note::Note;
 pub use search::SearchQuery;
-pub use vault::Vault;
+pub use vault::{RenamePreview, Vault};
