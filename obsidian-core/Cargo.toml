@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 globset = "0.4"
+thiserror = "1"
 gray_matter = "0.3.2"
 indexmap = "2"
 rayon = "1"

@@ -5,25 +5,7 @@ use rayon::prelude::*;
 use regex::Regex;
 use walkdir::WalkDir;
 
-use crate::Note;
-
-/// Error returned by [`SearchQuery::execute`].
-#[derive(Debug)]
-pub enum SearchError {
-    InvalidGlob(globset::Error),
-    InvalidRegex(regex::Error),
-}
-
-impl std::fmt::Display for SearchError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SearchError::InvalidGlob(e) => write!(f, "invalid glob pattern: {e}"),
-            SearchError::InvalidRegex(e) => write!(f, "invalid regex pattern: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for SearchError {}
+use crate::{Note, NoteError, SearchError};
 
 /// A composable query for filtering notes in a vault.
 ///
@@ -106,7 +88,7 @@ impl SearchQuery {
     ///
     /// Returns `Err` if any glob or regex pattern is invalid.
     /// Each inner `Err` represents an I/O failure loading a specific note.
-    pub fn execute(self) -> Result<Vec<Result<Note, std::io::Error>>, SearchError> {
+    pub fn execute(self) -> Result<Vec<Result<Note, NoteError>>, SearchError> {
         let SearchQuery {
             root,
             globs,
@@ -119,11 +101,7 @@ impl SearchQuery {
         } = self;
 
         let glob_set = build_glob_set(&globs)?;
-        let regex = content_regex
-            .as_deref()
-            .map(Regex::new)
-            .transpose()
-            .map_err(SearchError::InvalidRegex)?;
+        let regex = content_regex.as_deref().map(Regex::new).transpose()?;
 
         let has_globs = !globs.is_empty();
         let paths: Vec<PathBuf> = find_note_paths(&root)
@@ -138,7 +116,7 @@ impl SearchQuery {
 
         let results = paths
             .into_par_iter()
-            .filter_map(|path| -> Option<Result<Note, std::io::Error>> {
+            .filter_map(|path| -> Option<Result<Note, NoteError>> {
                 let note = match Note::from_path(&path) {
                     Ok(n) => n,
                     Err(e) => return Some(Err(e)),
@@ -189,13 +167,10 @@ impl SearchQuery {
 fn build_glob_set(patterns: &[String]) -> Result<GlobSet, SearchError> {
     let mut builder = GlobSetBuilder::new();
     for pattern in patterns {
-        let glob = GlobBuilder::new(pattern)
-            .literal_separator(true)
-            .build()
-            .map_err(SearchError::InvalidGlob)?;
+        let glob = GlobBuilder::new(pattern).literal_separator(true).build()?;
         builder.add(glob);
     }
-    builder.build().map_err(SearchError::InvalidGlob)
+    Ok(builder.build()?)
 }
 
 /// Returns an iterator over all `.md` file paths found recursively under `root`.
@@ -211,7 +186,7 @@ pub fn find_note_paths(root: impl AsRef<Path>) -> impl Iterator<Item = PathBuf> 
 }
 
 /// Loads all notes found recursively under `root` in parallel.
-pub fn find_notes(root: impl AsRef<Path>) -> Vec<Result<Note, std::io::Error>> {
+pub fn find_notes(root: impl AsRef<Path>) -> Vec<Result<Note, NoteError>> {
     find_note_paths(root)
         .collect::<Vec<_>>()
         .into_par_iter()
@@ -231,7 +206,7 @@ mod tests {
         fs::write(path, content).unwrap();
     }
 
-    fn unwrap_notes(results: Vec<Result<Note, std::io::Error>>) -> Vec<Note> {
+    fn unwrap_notes(results: Vec<Result<Note, crate::NoteError>>) -> Vec<Note> {
         results.into_iter().map(|r| r.unwrap()).collect()
     }
 

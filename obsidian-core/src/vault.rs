@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::{Link, LocatedLink, Note, search};
+use crate::{Link, LocatedLink, Note, NoteError, VaultError, search};
 use rayon::prelude::*;
 
 pub struct Vault {
@@ -27,19 +27,16 @@ fn normalize_path(path: &std::path::Path) -> PathBuf {
 impl Vault {
     /// Opens a vault at the given path, returning an error if the path does not exist or is not a
     /// directory.
-    pub fn open(path: impl AsRef<Path>) -> Result<Self, std::io::Error> {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, VaultError> {
         let path = path.as_ref().to_path_buf();
         if !path.is_dir() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("{} is not a directory", path.display()),
-            ));
+            return Err(VaultError::NotADirectory(path));
         }
         Ok(Vault { path })
     }
 
     /// Loads all notes in the vault in parallel.
-    pub fn notes(&self) -> Vec<Result<Note, std::io::Error>> {
+    pub fn notes(&self) -> Vec<Result<Note, NoteError>> {
         search::find_notes(&self.path)
     }
 

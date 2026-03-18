@@ -1,17 +1,15 @@
 mod args;
-mod error;
 mod output;
 
 use std::env::current_dir;
-use std::process;
 
 use clap::Parser;
+use color_eyre::eyre;
 use obsidian_core::{Note, Vault};
 
 use args::{BacklinksArgs, Cli, Command, OutputFormat, SearchArgs};
-use error::CliError;
 
-fn cmd_search(vault: Vault, args: SearchArgs) -> Result<(), CliError> {
+fn cmd_search(vault: Vault, args: SearchArgs) -> eyre::Result<()> {
     let mut query = vault.search();
     for tag in &args.tag {
         query = query.has_tag(tag);
@@ -40,14 +38,14 @@ fn cmd_search(vault: Vault, args: SearchArgs) -> Result<(), CliError> {
     Ok(())
 }
 
-fn cmd_backlinks(vault: Vault, args: BacklinksArgs) -> Result<(), CliError> {
+fn cmd_backlinks(vault: Vault, args: BacklinksArgs) -> eyre::Result<()> {
     let note_path = if args.note.is_absolute() {
         args.note.clone()
     } else {
         current_dir()?.join(&args.note)
     };
     if !note_path.exists() {
-        return Err(CliError::NoteNotFound(note_path));
+        return Err(eyre::eyre!("note not found: {}", note_path.display()));
     }
 
     let note = Note::from_path(&note_path)?;
@@ -61,21 +59,12 @@ fn cmd_backlinks(vault: Vault, args: BacklinksArgs) -> Result<(), CliError> {
     Ok(())
 }
 
-fn main() {
+fn main() -> eyre::Result<()> {
+    color_eyre::install()?;
     let cli = Cli::parse();
-    let vault = match Vault::open(&cli.vault) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("error: {e}");
-            process::exit(1);
-        }
-    };
-    let result = match cli.command {
+    let vault = Vault::open(&cli.vault)?;
+    match cli.command {
         Command::Search(args) => cmd_search(vault, args),
         Command::Backlinks(args) => cmd_backlinks(vault, args),
-    };
-    if let Err(e) = result {
-        eprintln!("error: {e}");
-        process::exit(1);
     }
 }
