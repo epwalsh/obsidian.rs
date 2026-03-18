@@ -6,6 +6,23 @@ pub struct Vault {
     pub path: PathBuf,
 }
 
+/// Normalizes a path by resolving `.` and `..` components without touching the filesystem.
+fn normalize_path(path: &std::path::Path) -> PathBuf {
+    let mut components: Vec<std::path::Component> = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if matches!(components.last(), Some(std::path::Component::Normal(_))) {
+                    components.pop();
+                }
+            }
+            c => components.push(c),
+        }
+    }
+    components.iter().collect()
+}
+
 impl Vault {
     /// Opens a vault at the given path, returning an error if the path does not exist or is not a
     /// directory.
@@ -79,5 +96,38 @@ mod tests {
         let vault = Vault::open(dir.path()).unwrap();
         let notes: Vec<Note> = vault.notes().into_iter().map(|r| r.unwrap()).collect();
         assert_eq!(notes.len(), 2);
+    }
+
+    #[test]
+    fn normalize_path_removes_dot() {
+        assert_eq!(
+            normalize_path(&PathBuf::from("/a/./b")),
+            PathBuf::from("/a/b")
+        );
+    }
+
+    #[test]
+    fn normalize_path_resolves_double_dot() {
+        assert_eq!(
+            normalize_path(&PathBuf::from("/a/b/../c")),
+            PathBuf::from("/a/c")
+        );
+    }
+
+    #[test]
+    fn normalize_path_deep_traversal() {
+        assert_eq!(
+            normalize_path(&PathBuf::from("/a/b/c/../../d")),
+            PathBuf::from("/a/d")
+        );
+    }
+
+    #[test]
+    fn normalize_path_traversal_beyond_root_stops_at_root() {
+        // /a/../../b: after processing, ends up as /b (the extra .. can't go above /)
+        assert_eq!(
+            normalize_path(&PathBuf::from("/a/../../b")),
+            PathBuf::from("/b")
+        );
     }
 }
