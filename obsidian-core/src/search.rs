@@ -5,7 +5,7 @@ use rayon::prelude::*;
 use regex::Regex;
 use walkdir::WalkDir;
 
-use crate::{NoteError, Note, SearchError};
+use crate::{Note, NoteError, SearchError};
 
 /// A composable query for filtering notes in a vault.
 ///
@@ -101,10 +101,7 @@ impl SearchQuery {
         } = self;
 
         let glob_set = build_glob_set(&globs)?;
-        let regex = content_regex
-            .as_deref()
-            .map(Regex::new)
-            .transpose()?;
+        let regex = content_regex.as_deref().map(Regex::new).transpose()?;
 
         let has_globs = !globs.is_empty();
         let paths: Vec<PathBuf> = find_note_paths(&root)
@@ -170,9 +167,7 @@ impl SearchQuery {
 fn build_glob_set(patterns: &[String]) -> Result<GlobSet, SearchError> {
     let mut builder = GlobSetBuilder::new();
     for pattern in patterns {
-        let glob = GlobBuilder::new(pattern)
-            .literal_separator(true)
-            .build()?;
+        let glob = GlobBuilder::new(pattern).literal_separator(true).build()?;
         builder.add(glob);
     }
     Ok(builder.build()?)

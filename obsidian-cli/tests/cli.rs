@@ -184,7 +184,7 @@ fn search_nonexistent_vault_exits_with_error() {
         .args(["--vault", "/nonexistent/vault/path", "search"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("error"));
+        .stderr(predicate::str::contains("is not a directory"));
 }
 
 #[test]
@@ -306,5 +306,5 @@ fn backlinks_nonexistent_note_exits_with_error() {
         ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("error"));
+        .stderr(predicate::str::contains("note not found"));
 }
