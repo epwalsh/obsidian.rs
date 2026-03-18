@@ -1,7 +1,8 @@
-use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use gray_matter::{Matter, Pod, engine::YAML};
+use indexmap::IndexMap;
 
 pub struct Note {
     pub path: PathBuf,
@@ -10,7 +11,7 @@ pub struct Note {
     pub aliases: Vec<String>,
     pub tags: Vec<String>,
     pub content: String,
-    pub frontmatter: Option<HashMap<String, Pod>>,
+    pub frontmatter: Option<IndexMap<String, Pod>>,
     /// Number of lines occupied by the frontmatter block (including delimiters).
     /// Used to offset link locations so they reflect positions in the original file.
     pub frontmatter_line_count: usize,
@@ -22,7 +23,14 @@ impl Note {
         let matter = Matter::<YAML>::new();
         let (body, frontmatter) = match matter.parse(content) {
             Ok(parsed) => {
-                let fm = parsed.data.and_then(|pod: Pod| pod.as_hashmap().ok());
+                let fm = parsed
+                    .data
+                    .and_then(|pod: Pod| pod.as_hashmap().ok())
+                    .map(|hm| {
+                        let mut entries: Vec<_> = hm.into_iter().collect();
+                        entries.sort_by(|a, b| a.0.cmp(&b.0));
+                        entries.into_iter().collect::<IndexMap<_, _>>()
+                    });
                 (parsed.content, fm)
             }
             Err(_) => (content.to_string(), None),
@@ -93,6 +101,56 @@ impl Note {
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, std::io::Error> {
         let content = std::fs::read_to_string(&path)?;
         Ok(Self::parse(path, &content))
+    }
+
+    /// Atomically write the note to `self.path`, including serialized frontmatter.
+    ///
+    /// Frontmatter keys are serialized in alphabetical order. Because the underlying
+    /// YAML parser does not preserve insertion order, keys parsed from disk are sorted
+    /// on load, so round-trips produce deterministic output.
+    pub fn write(&self) -> Result<(), std::io::Error> {
+        let file_content = self
+            .to_file_content()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+        let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
+        let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+        tmp.write_all(file_content.as_bytes())?;
+        tmp.persist(&self.path).map_err(|e| e.error)?;
+        Ok(())
+    }
+
+    fn to_file_content(&self) -> Result<String, serde_yaml::Error> {
+        match &self.frontmatter {
+            None => Ok(self.content.clone()),
+            Some(fm) => {
+                let mapping: serde_yaml::Mapping = fm
+                    .iter()
+                    .map(|(k, v)| (serde_yaml::Value::String(k.clone()), pod_to_yaml_value(v)))
+                    .collect();
+                let yaml = serde_yaml::to_string(&mapping)?;
+                // serde_yaml may or may not emit a leading "---\n"; strip it so we
+                // control the delimiters ourselves.
+                let yaml = yaml.strip_prefix("---\n").unwrap_or(&yaml);
+                Ok(format!("---\n{}---\n{}", yaml, self.content))
+            }
+        }
+    }
+}
+
+fn pod_to_yaml_value(pod: &Pod) -> serde_yaml::Value {
+    match pod {
+        Pod::Null => serde_yaml::Value::Null,
+        Pod::String(s) => serde_yaml::Value::String(s.clone()),
+        Pod::Integer(i) => serde_yaml::Value::Number((*i).into()),
+        Pod::Float(f) => serde_yaml::Value::Number(serde_yaml::Number::from(*f)),
+        Pod::Boolean(b) => serde_yaml::Value::Bool(*b),
+        Pod::Array(arr) => serde_yaml::Value::Sequence(arr.iter().map(pod_to_yaml_value).collect()),
+        Pod::Hash(map) => serde_yaml::Value::Mapping(
+            map.iter()
+                .map(|(k, v)| (serde_yaml::Value::String(k.clone()), pod_to_yaml_value(v)))
+                .collect(),
+        ),
     }
 }
 
@@ -228,6 +286,50 @@ mod tests {
     fn tags_empty_when_absent() {
         let note = Note::parse("/vault/note.md", "No frontmatter here.");
         assert!(note.tags.is_empty());
+    }
+
+    #[test]
+    fn write_round_trips_note_without_frontmatter() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let original = "Just some plain content.";
+        std::fs::write(tmp.path(), original).unwrap();
+
+        let note = Note::from_path(tmp.path()).unwrap();
+        note.write().unwrap();
+
+        let on_disk = std::fs::read_to_string(tmp.path()).unwrap();
+        assert_eq!(on_disk, original);
+    }
+
+    #[test]
+    fn write_round_trips_note_with_frontmatter() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let original = "---\ntitle: My Note\n---\n\nBody text.";
+        std::fs::write(tmp.path(), original).unwrap();
+
+        let note = Note::from_path(tmp.path()).unwrap();
+        note.write().unwrap();
+
+        // Re-parse to verify the on-disk content is valid and retains key fields.
+        let reparsed = Note::from_path(tmp.path()).unwrap();
+        assert_eq!(reparsed.title.as_deref(), Some("My Note"));
+        assert_eq!(reparsed.content.trim(), "Body text.");
+    }
+
+    #[test]
+    fn write_reflects_frontmatter_mutation() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), "---\ntitle: Old Title\n---\n\nContent.").unwrap();
+
+        let mut note = Note::from_path(tmp.path()).unwrap();
+        note.frontmatter
+            .as_mut()
+            .unwrap()
+            .insert("title".to_string(), Pod::String("New Title".to_string()));
+        note.write().unwrap();
+
+        let reparsed = Note::from_path(tmp.path()).unwrap();
+        assert_eq!(reparsed.title.as_deref(), Some("New Title"));
     }
 
     #[test]
