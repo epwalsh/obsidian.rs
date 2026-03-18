@@ -15,7 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - `src/note.rs` — defines the `Note` struct
   - `src/link.rs` — parsing markdown/wiki/embedded links
   - `src/search.rs` — `find_note_paths()` for recursively finding `.md` files (public)
-  - `src/vault.rs` — defines the `Vault` struct
+  - `src/vault.rs` — defines the `Vault` struct; `notes()` loads all notes, `search()` returns a query builder, `backlinks(&Note)` returns notes linking to a given note
 
 ## Development
 
