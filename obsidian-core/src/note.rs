@@ -1,6 +1,8 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::NoteError;
+
 use gray_matter::{Matter, Pod, engine::YAML};
 use indexmap::IndexMap;
 
@@ -98,7 +100,7 @@ impl Note {
             .collect()
     }
 
-    pub fn from_path(path: impl AsRef<Path>) -> Result<Self, std::io::Error> {
+    pub fn from_path(path: impl AsRef<Path>) -> Result<Self, NoteError> {
         let content = std::fs::read_to_string(&path)?;
         Ok(Self::parse(path, &content))
     }
@@ -108,11 +110,8 @@ impl Note {
     /// Frontmatter keys are serialized in alphabetical order. Because the underlying
     /// YAML parser does not preserve insertion order, keys parsed from disk are sorted
     /// on load, so round-trips produce deterministic output.
-    pub fn write(&self) -> Result<(), std::io::Error> {
-        let file_content = self
-            .to_file_content()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-
+    pub fn write(&self) -> Result<(), NoteError> {
+        let file_content = self.to_file_content()?;
         let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
         let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
         tmp.write_all(file_content.as_bytes())?;
