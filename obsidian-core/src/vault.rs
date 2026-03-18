@@ -80,6 +80,20 @@ impl Vault {
                                 || target_stem.as_deref().is_some_and(|s| wiki_target == s)
                                 || target.aliases.iter().any(|a| wiki_target == a)
                         }
+                        Link::Markdown { url, .. } => {
+                            if url.contains("://") || url.starts_with('/') {
+                                return false;
+                            }
+                            let url_path = match url.find('#') {
+                                Some(i) => &url[..i],
+                                None => url.as_str(),
+                            };
+                            if !url_path.ends_with(".md") {
+                                return false;
+                            }
+                            let source_dir = source.path.parent().unwrap_or(&source.path);
+                            normalize_path(&source_dir.join(url_path)) == target.path
+                        }
                         _ => false,
                     })
                     .collect();
@@ -300,6 +314,91 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("target.md"), "Target.").unwrap();
         fs::write(dir.path().join("source.md"), "See [[other-note]].").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let target = Note::from_path(dir.path().join("target.md")).unwrap();
+        let backlinks = vault.backlinks(&target);
+
+        assert!(backlinks.is_empty());
+    }
+
+    #[test]
+    fn backlinks_markdown_relative_path() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("target.md"), "Target.").unwrap();
+        fs::write(dir.path().join("source.md"), "[link](target.md)").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let target = Note::from_path(dir.path().join("target.md")).unwrap();
+        let backlinks = vault.backlinks(&target);
+
+        assert_eq!(backlinks.len(), 1);
+        assert!(backlinks[0].0.path.ends_with("source.md"));
+    }
+
+    #[test]
+    fn backlinks_markdown_fragment_stripped() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("target.md"), "Target.").unwrap();
+        fs::write(dir.path().join("source.md"), "[link](target.md#section)").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let target = Note::from_path(dir.path().join("target.md")).unwrap();
+        let backlinks = vault.backlinks(&target);
+
+        assert_eq!(backlinks.len(), 1);
+    }
+
+    #[test]
+    fn backlinks_markdown_parent_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let subdir = dir.path().join("sub");
+        fs::create_dir(&subdir).unwrap();
+        fs::write(dir.path().join("target.md"), "Target.").unwrap();
+        fs::write(subdir.join("source.md"), "[link](../target.md)").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let target = Note::from_path(dir.path().join("target.md")).unwrap();
+        let backlinks = vault.backlinks(&target);
+
+        assert_eq!(backlinks.len(), 1);
+    }
+
+    #[test]
+    fn backlinks_markdown_external_url_excluded() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("target.md"), "Target.").unwrap();
+        fs::write(
+            dir.path().join("source.md"),
+            "[link](https://example.com/target.md)",
+        )
+        .unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let target = Note::from_path(dir.path().join("target.md")).unwrap();
+        let backlinks = vault.backlinks(&target);
+
+        assert!(backlinks.is_empty());
+    }
+
+    #[test]
+    fn backlinks_markdown_absolute_path_excluded() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("target.md"), "Target.").unwrap();
+        fs::write(dir.path().join("source.md"), "[link](/absolute/target.md)").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let target = Note::from_path(dir.path().join("target.md")).unwrap();
+        let backlinks = vault.backlinks(&target);
+
+        assert!(backlinks.is_empty());
+    }
+
+    #[test]
+    fn backlinks_markdown_extension_less_excluded() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("target.md"), "Target.").unwrap();
+        fs::write(dir.path().join("source.md"), "[link](target)").unwrap();
 
         let vault = Vault::open(dir.path()).unwrap();
         let target = Note::from_path(dir.path().join("target.md")).unwrap();
