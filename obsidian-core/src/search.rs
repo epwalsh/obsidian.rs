@@ -14,17 +14,17 @@ use crate::{Note, NoteError, SearchError};
 /// - [`has_tag`](SearchQuery::has_tag): AND — note must have all specified tags
 /// - [`has_alias`](SearchQuery::has_alias): OR — note must have at least one specified alias
 /// - [`content_contains`](SearchQuery::content_contains): AND — body must contain all strings
-/// - [`title_contains`](SearchQuery::title_contains) / [`id`](SearchQuery::id) /
-///   [`alias_contains`](SearchQuery::alias_contains) /
-///   [`content_matches`](SearchQuery::content_matches): last call wins
+/// - [`title_contains`](SearchQuery::title_contains): OR — title must contain at least one substring
+/// - [`alias_contains`](SearchQuery::alias_contains): OR — at least one substring must match some alias
+/// - [`id`](SearchQuery::id) / [`content_matches`](SearchQuery::content_matches): last call wins
 pub struct SearchQuery {
     root: PathBuf,
     globs: Vec<String>,
     id: Option<String>,
     tags: Vec<String>,
-    title_contains: Option<String>,
+    title_contains: Vec<String>,
     aliases: Vec<String>,
-    alias_contains: Option<String>,
+    alias_contains: Vec<String>,
     content_strings: Vec<String>,
     content_regex: Option<String>,
 }
@@ -36,9 +36,9 @@ impl SearchQuery {
             globs: Vec::new(),
             id: None,
             tags: Vec::new(),
-            title_contains: None,
+            title_contains: Vec::new(),
             aliases: Vec::new(),
-            alias_contains: None,
+            alias_contains: Vec::new(),
             content_strings: Vec::new(),
             content_regex: None,
         }
@@ -63,9 +63,9 @@ impl SearchQuery {
         self
     }
 
-    /// Case-insensitive substring match on note title. Last call wins.
+    /// Case-insensitive substring match on note title. Multiple calls use OR semantics.
     pub fn title_contains(mut self, s: impl Into<String>) -> Self {
-        self.title_contains = Some(s.into());
+        self.title_contains.push(s.into());
         self
     }
 
@@ -75,9 +75,9 @@ impl SearchQuery {
         self
     }
 
-    /// Case-insensitive substring match against any of the note's aliases. Last call wins.
+    /// Case-insensitive substring match against any of the note's aliases. Multiple calls use OR semantics.
     pub fn alias_contains(mut self, s: impl Into<String>) -> Self {
-        self.alias_contains = Some(s.into());
+        self.alias_contains.push(s.into());
         self
     }
 
@@ -142,11 +142,14 @@ impl SearchQuery {
                     return None;
                 }
 
-                if let Some(ref substr) = title_contains {
-                    match &note.title {
-                        Some(title) if title.to_lowercase().contains(&substr.to_lowercase()) => {}
-                        _ => return None,
-                    }
+                if !title_contains.is_empty()
+                    && !title_contains.iter().any(|substr| {
+                        note.title
+                            .as_deref()
+                            .is_some_and(|t| t.to_lowercase().contains(&substr.to_lowercase()))
+                    })
+                {
+                    return None;
                 }
 
                 if !aliases.is_empty()
@@ -159,11 +162,12 @@ impl SearchQuery {
                     return None;
                 }
 
-                if let Some(ref substr) = alias_contains
-                    && !note
-                        .aliases
-                        .iter()
-                        .any(|a| a.to_lowercase().contains(&substr.to_lowercase()))
+                if !alias_contains.is_empty()
+                    && !alias_contains.iter().any(|substr| {
+                        note.aliases
+                            .iter()
+                            .any(|a| a.to_lowercase().contains(&substr.to_lowercase()))
+                    })
                 {
                     return None;
                 }
@@ -437,6 +441,49 @@ mod tests {
                 .unwrap(),
         ));
         assert_eq!(ids, vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn title_contains_or_semantics() {
+        let dir = tempfile::tempdir().unwrap();
+        write_note(&dir.path().join("rust.md"), "# Rust Language\n\nContent.");
+        write_note(
+            &dir.path().join("notes.md"),
+            "# Programming Notes\n\nContent.",
+        );
+        write_note(&dir.path().join("other.md"), "# Something Else\n\nContent.");
+
+        let ids = sorted_ids(unwrap_notes(
+            SearchQuery::new(dir.path())
+                .title_contains("rust")
+                .title_contains("notes")
+                .execute()
+                .unwrap(),
+        ));
+        assert_eq!(ids, vec!["notes", "rust"]);
+    }
+
+    #[test]
+    fn alias_contains_or_semantics() {
+        let dir = tempfile::tempdir().unwrap();
+        write_note(
+            &dir.path().join("rust.md"),
+            "---\naliases: [Rust Language]\n---\nContent.",
+        );
+        write_note(
+            &dir.path().join("notes.md"),
+            "---\naliases: [Programming Notes]\n---\nContent.",
+        );
+        write_note(&dir.path().join("other.md"), "No aliases.");
+
+        let ids = sorted_ids(unwrap_notes(
+            SearchQuery::new(dir.path())
+                .alias_contains("rust")
+                .alias_contains("notes")
+                .execute()
+                .unwrap(),
+        ));
+        assert_eq!(ids, vec!["notes", "rust"]);
     }
 
     #[test]

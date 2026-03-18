@@ -31,15 +31,15 @@ pub struct SearchArgs {
     /// Filter by tag (AND semantics, repeatable)
     #[arg(long, short = 't')]
     pub tag: Vec<String>,
-    /// Filter by title substring (case-insensitive)
+    /// Filter by title substring, case-insensitive (OR semantics, repeatable)
     #[arg(long)]
-    pub title_contains: Option<String>,
+    pub title_contains: Vec<String>,
     /// Filter by exact alias, case-insensitive (OR semantics, repeatable)
     #[arg(long, short = 'a')]
     pub alias: Vec<String>,
-    /// Filter by alias substring (case-insensitive)
+    /// Filter by alias substring, case-insensitive (OR semantics, repeatable)
     #[arg(long)]
-    pub alias_contains: Option<String>,
+    pub alias_contains: Vec<String>,
     /// Filter by glob pattern (OR semantics, repeatable)
     #[arg(long, short = 'g')]
     pub glob: Vec<String>,
