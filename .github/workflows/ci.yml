@@ -12,7 +12,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        check: [fmt, clippy, test]
+        include:
+          - check: fmt
+            command: cargo fmt --check
+          - check: clippy
+            command: cargo clippy -- -D warnings
+          - check: test
+            command: cargo test
     steps:
       - uses: actions/checkout@v4
 
@@ -22,11 +28,4 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - if: matrix.check == 'fmt'
-        run: cargo fmt --check
-
-      - if: matrix.check == 'clippy'
-        run: cargo clippy -- -D warnings
-
-      - if: matrix.check == 'test'
-        run: cargo test
+      - run: ${{ matrix.command }}
