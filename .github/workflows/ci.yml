@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    name: ${{ matrix.check }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [fmt, clippy, test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - if: matrix.check == 'fmt'
+        run: cargo fmt --check
+
+      - if: matrix.check == 'clippy'
+        run: cargo clippy -- -D warnings
+
+      - if: matrix.check == 'test'
+        run: cargo test
