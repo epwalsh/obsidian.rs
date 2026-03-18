@@ -4,8 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-`obsidian.rs` is a Rust library for working with Obsidian vaults. It is structured as a Cargo workspace with sub-crates for various features:
+`obsidian.rs` is a Rust library and CLI for working with Obsidian vaults. It is structured as a Cargo workspace with sub-crates for various features:
 - `obsidian-core` (crate name: `obsidian_core`): core API used by the other sub-crates.
+- `obsidian-cli` (binary name: `obsidian`): command-line interface exposing `search` and `backlinks` subcommands.
 
 ## Workspace Structure
 
@@ -16,6 +17,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - `src/link.rs` — parsing markdown/wiki/embedded links
   - `src/search.rs` — `find_note_paths()` for recursively finding `.md` files (public)
   - `src/vault.rs` — defines the `Vault` struct; `notes()` loads all notes, `search()` returns a query builder, `backlinks(&Note)` returns notes linking to a given note
+- `obsidian-cli/` — the CLI binary crate
+  - `src/main.rs` — entry point, subcommand dispatch
+  - `src/args.rs` — clap argument structs and enums
+  - `src/output.rs` — plain and JSON rendering
+  - `src/error.rs` — `CliError` type
+  - `tests/cli.rs` — integration tests via `assert_cmd`
 
 ## Development
 
