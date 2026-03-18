@@ -7,7 +7,7 @@ use clap::Parser;
 use color_eyre::eyre;
 use obsidian_core::{Note, Vault};
 
-use args::{BacklinksArgs, Cli, Command, OutputFormat, SearchArgs};
+use args::{BacklinksArgs, Cli, Command, OutputFormat, RenameArgs, SearchArgs};
 
 fn cmd_search(vault: Vault, args: SearchArgs) -> eyre::Result<()> {
     let mut query = vault.search();
@@ -65,6 +65,26 @@ fn cmd_backlinks(vault: Vault, args: BacklinksArgs) -> eyre::Result<()> {
     Ok(())
 }
 
+fn cmd_rename(vault: Vault, args: RenameArgs) -> eyre::Result<()> {
+    let note_path = if args.note.is_absolute() {
+        args.note.clone()
+    } else {
+        current_dir()?.join(&args.note)
+    };
+    if !note_path.exists() {
+        return Err(eyre::eyre!("note not found: {}", note_path.display()));
+    }
+
+    let note = Note::from_path(&note_path)?;
+    let renamed = vault.rename(&note, &args.new_stem)?;
+    let rel = renamed
+        .path
+        .strip_prefix(&vault.path)
+        .unwrap_or(&renamed.path);
+    println!("{}", rel.display());
+    Ok(())
+}
+
 fn main() -> eyre::Result<()> {
     color_eyre::install()?;
     let cli = Cli::parse();
@@ -72,5 +92,6 @@ fn main() -> eyre::Result<()> {
     match cli.command {
         Command::Search(args) => cmd_search(vault, args),
         Command::Backlinks(args) => cmd_backlinks(vault, args),
+        Command::Rename(args) => cmd_rename(vault, args),
     }
 }

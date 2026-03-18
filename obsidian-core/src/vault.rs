@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use gray_matter::Pod;
+
 use crate::{Link, LocatedLink, Note, NoteError, VaultError, search};
 use rayon::prelude::*;
 
@@ -22,6 +24,73 @@ fn normalize_path(path: &std::path::Path) -> PathBuf {
         }
     }
     components.iter().collect()
+}
+
+/// Computes a relative path from `from_dir` to `to_file`.
+/// Both arguments must be absolute paths.
+fn relative_path(from_dir: &Path, to_file: &Path) -> PathBuf {
+    let from: Vec<_> = from_dir.components().collect();
+    let to: Vec<_> = to_file.components().collect();
+    let common = from
+        .iter()
+        .zip(to.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let mut result = PathBuf::new();
+    for _ in 0..(from.len() - common) {
+        result.push("..");
+    }
+    for c in &to[common..] {
+        result.push(c);
+    }
+    result
+}
+
+/// Rewrites link spans in `raw_content` according to `replacements`.
+/// Each entry is a `(LocatedLink, new_text)` pair; `new_text` replaces the original span.
+/// Multiple replacements on the same line are applied right-to-left to preserve offsets.
+fn rewrite_links(raw_content: &str, replacements: Vec<(LocatedLink, String)>) -> String {
+    use std::collections::HashMap;
+
+    // Map line number (1-indexed) → indices into `replacements`
+    let mut by_line: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (i, (ll, _)) in replacements.iter().enumerate() {
+        by_line.entry(ll.location.line).or_default().push(i);
+    }
+
+    let trailing_newline = raw_content.ends_with('\n');
+    let mut result_lines: Vec<String> = Vec::new();
+
+    for (line_idx, line) in raw_content.lines().enumerate() {
+        let line_num = line_idx + 1;
+        if let Some(indices) = by_line.get(&line_num) {
+            // Sort right-to-left so each splice doesn't shift earlier column offsets
+            let mut sorted = indices.clone();
+            sorted.sort_by(|&a, &b| {
+                replacements[b]
+                    .0
+                    .location
+                    .col_start
+                    .cmp(&replacements[a].0.location.col_start)
+            });
+
+            let mut chars: Vec<char> = line.chars().collect();
+            for idx in sorted {
+                let (ll, new_text) = &replacements[idx];
+                let new_chars: Vec<char> = new_text.chars().collect();
+                chars.splice(ll.location.col_start..ll.location.col_end, new_chars);
+            }
+            result_lines.push(chars.into_iter().collect());
+        } else {
+            result_lines.push(line.to_string());
+        }
+    }
+
+    let mut result = result_lines.join("\n");
+    if trailing_newline {
+        result.push('\n');
+    }
+    result
 }
 
 impl Vault {
@@ -101,6 +170,111 @@ impl Vault {
                 }
             })
             .collect()
+    }
+
+    /// Renames `note` to `new_stem` (filename without extension), updating all backlinks.
+    ///
+    /// Wiki links targeting the old ID are rewritten to the new stem. Markdown links pointing
+    /// to the old path are rewritten to the new path. Wiki links targeting an alias are left
+    /// unchanged. Returns the reloaded [`Note`] at the new path.
+    pub fn rename(&self, note: &Note, new_stem: &str) -> Result<Note, VaultError> {
+        let new_stem = new_stem.strip_suffix(".md").unwrap_or(new_stem);
+        let new_path = note
+            .path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(format!("{}.md", new_stem));
+
+        if new_path.exists() {
+            return Err(VaultError::NoteAlreadyExists(new_path));
+        }
+
+        let old_stem = note
+            .path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_string();
+
+        let id_needs_update = note.id == old_stem;
+
+        // Collect backlinks before the file move so paths are still resolvable.
+        let backlinks = self.backlinks(note);
+
+        std::fs::rename(&note.path, &new_path)?;
+
+        let mut renamed = Note::from_path(&new_path)?;
+
+        // Update explicit frontmatter `id` when it matched the old stem.
+        if id_needs_update
+            && renamed
+                .frontmatter
+                .as_ref()
+                .is_some_and(|fm| fm.contains_key("id"))
+        {
+            renamed
+                .frontmatter
+                .as_mut()
+                .unwrap()
+                .insert("id".to_string(), Pod::String(new_stem.to_string()));
+            renamed.write()?;
+            renamed = Note::from_path(&new_path)?;
+        }
+
+        for (source_note, links) in backlinks {
+            let raw_content = std::fs::read_to_string(&source_note.path)?;
+            let source_dir = source_note
+                .path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| PathBuf::from("."));
+
+            let mut replacements: Vec<(LocatedLink, String)> = Vec::new();
+
+            for ll in links {
+                let new_text = match &ll.link {
+                    Link::Wiki {
+                        target,
+                        heading,
+                        alias,
+                    } if id_needs_update && target == &old_stem => {
+                        let mut wiki = format!("[[{}", new_stem);
+                        if let Some(h) = heading {
+                            wiki.push('#');
+                            wiki.push_str(h);
+                        }
+                        if let Some(a) = alias {
+                            wiki.push('|');
+                            wiki.push_str(a);
+                        }
+                        wiki.push_str("]]");
+                        Some(wiki)
+                    }
+                    Link::Wiki { .. } => None,
+                    Link::Markdown { text, url } => {
+                        let fragment = url.find('#').map(|i| url[i..].to_string());
+                        let new_url = relative_path(&source_dir, &new_path);
+                        let new_url_str = new_url.to_string_lossy().replace('\\', "/");
+                        let full_url = match fragment {
+                            Some(f) => format!("{}{}", new_url_str, f),
+                            None => new_url_str,
+                        };
+                        Some(format!("[{}]({})", text, full_url))
+                    }
+                    _ => None,
+                };
+                if let Some(text) = new_text {
+                    replacements.push((ll, text));
+                }
+            }
+
+            if !replacements.is_empty() {
+                let new_content = rewrite_links(&raw_content, replacements);
+                std::fs::write(&source_note.path, new_content)?;
+            }
+        }
+
+        Ok(renamed)
     }
 }
 
@@ -402,5 +576,199 @@ mod tests {
         let backlinks = vault.backlinks(&target);
 
         assert!(backlinks.is_empty());
+    }
+
+    // --- rename tests ---
+
+    #[test]
+    fn rename_strips_md_extension_from_stem() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("old.md"), "Content.").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("old.md")).unwrap();
+        let renamed = vault.rename(&note, "new.md").unwrap();
+
+        assert!(!dir.path().join("old.md").exists());
+        assert!(dir.path().join("new.md").exists());
+        assert_eq!(renamed.id, "new");
+    }
+
+    #[test]
+    fn rename_basic() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("old.md"), "Content.").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("old.md")).unwrap();
+        let renamed = vault.rename(&note, "new").unwrap();
+
+        assert!(!dir.path().join("old.md").exists());
+        assert!(dir.path().join("new.md").exists());
+        assert_eq!(renamed.id, "new");
+    }
+
+    #[test]
+    fn rename_explicit_id_equals_stem_updated() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("old-note.md"),
+            "---\nid: old-note\n---\nContent.",
+        )
+        .unwrap();
+        fs::write(dir.path().join("source.md"), "See [[old-note]].").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("old-note.md")).unwrap();
+        let renamed = vault.rename(&note, "new-note").unwrap();
+
+        assert!(!dir.path().join("old-note.md").exists());
+        assert!(dir.path().join("new-note.md").exists());
+        assert_eq!(renamed.id, "new-note");
+
+        let source_content = fs::read_to_string(dir.path().join("source.md")).unwrap();
+        assert_eq!(source_content, "See [[new-note]].");
+    }
+
+    #[test]
+    fn rename_explicit_id_differs_from_stem_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("my-note.md"),
+            "---\nid: custom-id\n---\nContent.",
+        )
+        .unwrap();
+        fs::write(dir.path().join("source.md"), "See [[my-note]].").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("my-note.md")).unwrap();
+        let renamed = vault.rename(&note, "renamed-note").unwrap();
+
+        assert_eq!(renamed.id, "custom-id");
+
+        // Wiki link targeting the old stem should be unchanged
+        let source_content = fs::read_to_string(dir.path().join("source.md")).unwrap();
+        assert_eq!(source_content, "See [[my-note]].");
+    }
+
+    #[test]
+    fn rename_updates_markdown_backlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("old.md"), "Target.").unwrap();
+        fs::write(dir.path().join("source.md"), "[link](old.md)").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("old.md")).unwrap();
+        vault.rename(&note, "new").unwrap();
+
+        let source_content = fs::read_to_string(dir.path().join("source.md")).unwrap();
+        assert_eq!(source_content, "[link](new.md)");
+    }
+
+    #[test]
+    fn rename_updates_wiki_backlinks_by_stem() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("old-stem.md"), "Content.").unwrap();
+        fs::write(dir.path().join("source.md"), "See [[old-stem]].").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("old-stem.md")).unwrap();
+        vault.rename(&note, "new-stem").unwrap();
+
+        let source_content = fs::read_to_string(dir.path().join("source.md")).unwrap();
+        assert_eq!(source_content, "See [[new-stem]].");
+    }
+
+    #[test]
+    fn rename_leaves_wiki_alias_links_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("target.md"),
+            "---\naliases: [my-alias]\n---\nContent.",
+        )
+        .unwrap();
+        fs::write(dir.path().join("source.md"), "See [[my-alias]].").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("target.md")).unwrap();
+        vault.rename(&note, "renamed-target").unwrap();
+
+        let source_content = fs::read_to_string(dir.path().join("source.md")).unwrap();
+        assert_eq!(source_content, "See [[my-alias]].");
+    }
+
+    #[test]
+    fn rename_target_already_exists_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("old.md"), "Old.").unwrap();
+        fs::write(dir.path().join("new.md"), "Already exists.").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("old.md")).unwrap();
+        let result = vault.rename(&note, "new");
+
+        assert!(matches!(result, Err(VaultError::NoteAlreadyExists(_))));
+    }
+
+    #[test]
+    fn rename_markdown_link_with_subdir() {
+        let dir = tempfile::tempdir().unwrap();
+        let subdir = dir.path().join("sub");
+        fs::create_dir(&subdir).unwrap();
+        fs::write(dir.path().join("root.md"), "Root.").unwrap();
+        fs::write(subdir.join("source.md"), "[link](../root.md)").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("root.md")).unwrap();
+        vault.rename(&note, "new-root").unwrap();
+
+        let source_content = fs::read_to_string(subdir.join("source.md")).unwrap();
+        assert_eq!(source_content, "[link](../new-root.md)");
+    }
+
+    #[test]
+    fn rename_multiple_links_same_source() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("target.md"), "Target.").unwrap();
+        fs::write(
+            dir.path().join("source.md"),
+            "[first](target.md)\n[second](target.md)",
+        )
+        .unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("target.md")).unwrap();
+        vault.rename(&note, "renamed").unwrap();
+
+        let source_content = fs::read_to_string(dir.path().join("source.md")).unwrap();
+        assert_eq!(source_content, "[first](renamed.md)\n[second](renamed.md)");
+    }
+
+    #[test]
+    fn rename_preserves_fragment() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("old.md"), "Old.").unwrap();
+        fs::write(dir.path().join("source.md"), "[link](old.md#section)").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("old.md")).unwrap();
+        vault.rename(&note, "new").unwrap();
+
+        let source_content = fs::read_to_string(dir.path().join("source.md")).unwrap();
+        assert_eq!(source_content, "[link](new.md#section)");
+    }
+
+    #[test]
+    fn rename_wiki_preserves_heading_and_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("old-stem.md"), "Content.").unwrap();
+        fs::write(dir.path().join("source.md"), "See [[old-stem#h1|display]].").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("old-stem.md")).unwrap();
+        vault.rename(&note, "new-stem").unwrap();
+
+        let source_content = fs::read_to_string(dir.path().join("source.md")).unwrap();
+        assert_eq!(source_content, "See [[new-stem#h1|display]].");
     }
 }

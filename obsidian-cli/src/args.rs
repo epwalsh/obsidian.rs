@@ -24,6 +24,8 @@ pub enum Command {
     Search(SearchArgs),
     /// Find notes that link to a given note
     Backlinks(BacklinksArgs),
+    /// Rename a note and update all backlinks
+    Rename(RenameArgs),
 }
 
 #[derive(clap::Args)]
@@ -61,6 +63,14 @@ pub struct BacklinksArgs {
     /// Output format
     #[arg(long, short = 'f', default_value = "plain")]
     pub format: OutputFormat,
+}
+
+#[derive(clap::Args)]
+pub struct RenameArgs {
+    /// Path to the note to rename (resolved relative to current directory)
+    pub note: PathBuf,
+    /// New filename stem (with or without .md extension)
+    pub new_stem: String,
 }
 
 #[derive(Clone, ValueEnum)]

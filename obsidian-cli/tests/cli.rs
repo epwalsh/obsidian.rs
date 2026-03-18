@@ -372,6 +372,100 @@ fn backlinks_json_format() {
 }
 
 #[test]
+fn rename_renames_note() {
+    let vault = make_vault();
+    write_note(vault.path(), "old.md", "Content.");
+    let note_path = vault.path().join("old.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "rename",
+            note_path.to_str().unwrap(),
+            "new",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("new.md"));
+    assert!(!vault.path().join("old.md").exists());
+    assert!(vault.path().join("new.md").exists());
+}
+
+#[test]
+fn rename_updates_backlinks() {
+    let vault = make_vault();
+    write_note(vault.path(), "target.md", "Target.");
+    write_note(vault.path(), "source.md", "See [[target]].");
+    let note_path = vault.path().join("target.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "rename",
+            note_path.to_str().unwrap(),
+            "renamed",
+        ])
+        .assert()
+        .success();
+    let source = fs::read_to_string(vault.path().join("source.md")).unwrap();
+    assert_eq!(source, "See [[renamed]].");
+}
+
+#[test]
+fn rename_accepts_md_extension_in_new_stem() {
+    let vault = make_vault();
+    write_note(vault.path(), "old.md", "Content.");
+    let note_path = vault.path().join("old.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "rename",
+            note_path.to_str().unwrap(),
+            "new.md",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("new.md"));
+    assert!(vault.path().join("new.md").exists());
+}
+
+#[test]
+fn rename_nonexistent_note_exits_with_error() {
+    let vault = make_vault();
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "rename",
+            "/nonexistent/note.md",
+            "new",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("note not found"));
+}
+
+#[test]
+fn rename_target_already_exists_exits_with_error() {
+    let vault = make_vault();
+    write_note(vault.path(), "old.md", "Old.");
+    write_note(vault.path(), "new.md", "Already exists.");
+    let note_path = vault.path().join("old.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "rename",
+            note_path.to_str().unwrap(),
+            "new",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already exists"));
+}
+
+#[test]
 fn backlinks_nonexistent_note_exits_with_error() {
     let vault = make_vault();
     obsidian()

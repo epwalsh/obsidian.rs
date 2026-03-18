@@ -4,6 +4,12 @@ use std::path::PathBuf;
 pub enum VaultError {
     #[error("{0} is not a directory")]
     NotADirectory(PathBuf),
+    #[error("note already exists at {0}")]
+    NoteAlreadyExists(PathBuf),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Note(#[from] NoteError),
 }
 
 #[derive(Debug, thiserror::Error)]
