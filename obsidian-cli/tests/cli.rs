@@ -140,6 +140,83 @@ fn search_regex_filter() {
 }
 
 #[test]
+fn search_alias_exact_filter() {
+    let vault = make_vault();
+    write_note(
+        vault.path(),
+        "match.md",
+        "---\naliases: [My Alias]\n---\nContent.",
+    );
+    write_note(vault.path(), "no-match.md", "No aliases.");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "search",
+            "--alias",
+            "my alias",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("match.md"))
+        .stdout(predicate::str::contains("no-match.md").not());
+}
+
+#[test]
+fn search_alias_or_semantics() {
+    let vault = make_vault();
+    write_note(
+        vault.path(),
+        "alpha.md",
+        "---\naliases: [alias-alpha]\n---\nContent.",
+    );
+    write_note(
+        vault.path(),
+        "beta.md",
+        "---\naliases: [alias-beta]\n---\nContent.",
+    );
+    write_note(vault.path(), "gamma.md", "No aliases.");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "search",
+            "--alias",
+            "alias-alpha",
+            "--alias",
+            "alias-beta",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("alpha.md"))
+        .stdout(predicate::str::contains("beta.md"))
+        .stdout(predicate::str::contains("gamma.md").not());
+}
+
+#[test]
+fn search_alias_contains_filter() {
+    let vault = make_vault();
+    write_note(
+        vault.path(),
+        "match.md",
+        "---\naliases: [Rust Programming]\n---\nContent.",
+    );
+    write_note(vault.path(), "no-match.md", "No aliases.");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "search",
+            "--alias-contains",
+            "rust",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("match.md"))
+        .stdout(predicate::str::contains("no-match.md").not());
+}
+
+#[test]
 fn search_invalid_regex_exits_with_error() {
     let vault = make_vault();
     obsidian()

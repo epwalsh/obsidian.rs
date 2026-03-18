@@ -34,6 +34,12 @@ pub struct SearchArgs {
     /// Filter by title substring (case-insensitive)
     #[arg(long)]
     pub title: Option<String>,
+    /// Filter by exact alias, case-insensitive (OR semantics, repeatable)
+    #[arg(long, short = 'a')]
+    pub alias: Vec<String>,
+    /// Filter by alias substring (case-insensitive)
+    #[arg(long)]
+    pub alias_contains: Option<String>,
     /// Filter by glob pattern (OR semantics, repeatable)
     #[arg(long, short = 'g')]
     pub glob: Vec<String>,

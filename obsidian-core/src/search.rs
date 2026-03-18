@@ -15,6 +15,7 @@ use crate::{Note, NoteError, SearchError};
 /// - [`has_alias`](SearchQuery::has_alias): OR — note must have at least one specified alias
 /// - [`content_contains`](SearchQuery::content_contains): AND — body must contain all strings
 /// - [`title_contains`](SearchQuery::title_contains) / [`id`](SearchQuery::id) /
+///   [`alias_contains`](SearchQuery::alias_contains) /
 ///   [`content_matches`](SearchQuery::content_matches): last call wins
 pub struct SearchQuery {
     root: PathBuf,
@@ -23,6 +24,7 @@ pub struct SearchQuery {
     tags: Vec<String>,
     title_contains: Option<String>,
     aliases: Vec<String>,
+    alias_contains: Option<String>,
     content_strings: Vec<String>,
     content_regex: Option<String>,
 }
@@ -36,6 +38,7 @@ impl SearchQuery {
             tags: Vec::new(),
             title_contains: None,
             aliases: Vec::new(),
+            alias_contains: None,
             content_strings: Vec::new(),
             content_regex: None,
         }
@@ -66,9 +69,15 @@ impl SearchQuery {
         self
     }
 
-    /// Note must have at least one of the specified aliases. Multiple calls use OR semantics.
+    /// Case-insensitive exact match against any of the note's aliases. Multiple calls use OR semantics.
     pub fn has_alias(mut self, alias: impl Into<String>) -> Self {
         self.aliases.push(alias.into());
+        self
+    }
+
+    /// Case-insensitive substring match against any of the note's aliases. Last call wins.
+    pub fn alias_contains(mut self, s: impl Into<String>) -> Self {
+        self.alias_contains = Some(s.into());
         self
     }
 
@@ -96,6 +105,7 @@ impl SearchQuery {
             tags,
             title_contains,
             aliases,
+            alias_contains,
             content_strings,
             content_regex,
         } = self;
@@ -139,7 +149,22 @@ impl SearchQuery {
                     }
                 }
 
-                if !aliases.is_empty() && !aliases.iter().any(|a| note.aliases.contains(a)) {
+                if !aliases.is_empty()
+                    && !aliases.iter().any(|a| {
+                        note.aliases
+                            .iter()
+                            .any(|na| na.to_lowercase() == a.to_lowercase())
+                    })
+                {
+                    return None;
+                }
+
+                if let Some(ref substr) = alias_contains
+                    && !note
+                        .aliases
+                        .iter()
+                        .any(|a| a.to_lowercase().contains(&substr.to_lowercase()))
+                {
                     return None;
                 }
 
@@ -412,6 +437,92 @@ mod tests {
                 .unwrap(),
         ));
         assert_eq!(ids, vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn has_alias_case_insensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        write_note(
+            &dir.path().join("note.md"),
+            "---\naliases: [Rust Programming]\n---\nContent.",
+        );
+
+        let ids = sorted_ids(unwrap_notes(
+            SearchQuery::new(dir.path())
+                .has_alias("rust programming")
+                .execute()
+                .unwrap(),
+        ));
+        assert_eq!(ids, vec!["note"]);
+    }
+
+    #[test]
+    fn alias_contains_case_insensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        write_note(
+            &dir.path().join("match.md"),
+            "---\naliases: [Rust Programming]\n---\nContent.",
+        );
+        write_note(
+            &dir.path().join("no-match.md"),
+            "---\naliases: [Python Notes]\n---\nContent.",
+        );
+
+        let ids = sorted_ids(unwrap_notes(
+            SearchQuery::new(dir.path())
+                .alias_contains("rust")
+                .execute()
+                .unwrap(),
+        ));
+        assert_eq!(ids, vec!["match"]);
+    }
+
+    #[test]
+    fn alias_contains_matches_any_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        write_note(
+            &dir.path().join("note.md"),
+            "---\naliases: [alpha, beta-suffix]\n---\nContent.",
+        );
+
+        let ids = sorted_ids(unwrap_notes(
+            SearchQuery::new(dir.path())
+                .alias_contains("suffix")
+                .execute()
+                .unwrap(),
+        ));
+        assert_eq!(ids, vec!["note"]);
+    }
+
+    #[test]
+    fn alias_contains_no_match_excluded() {
+        let dir = tempfile::tempdir().unwrap();
+        write_note(
+            &dir.path().join("note.md"),
+            "---\naliases: [alpha]\n---\nContent.",
+        );
+
+        let notes = unwrap_notes(
+            SearchQuery::new(dir.path())
+                .alias_contains("beta")
+                .execute()
+                .unwrap(),
+        );
+        assert!(notes.is_empty());
+    }
+
+    #[test]
+    fn alias_contains_no_aliases_excluded() {
+        let dir = tempfile::tempdir().unwrap();
+        write_note(&dir.path().join("note.md"), "No aliases here.");
+
+        let notes = unwrap_notes(
+            SearchQuery::new(dir.path())
+                .alias_contains("anything")
+                .execute()
+                .unwrap(),
+        );
+        assert!(notes.is_empty());
     }
 
     #[test]
