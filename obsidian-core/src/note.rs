@@ -28,14 +28,11 @@ impl Note {
         let matter = Matter::<YAML>::new();
         let (body, frontmatter) = match matter.parse(content) {
             Ok(parsed) => {
-                let fm = parsed
-                    .data
-                    .and_then(|pod: Pod| pod.as_hashmap().ok())
-                    .map(|hm| {
-                        let mut entries: Vec<_> = hm.into_iter().collect();
-                        entries.sort_by(|a, b| a.0.cmp(&b.0));
-                        entries.into_iter().collect::<IndexMap<_, _>>()
-                    });
+                let fm = parsed.data.and_then(|pod: Pod| pod.as_hashmap().ok()).map(|hm| {
+                    let mut entries: Vec<_> = hm.into_iter().collect();
+                    entries.sort_by(|a, b| a.0.cmp(&b.0));
+                    entries.into_iter().collect::<IndexMap<_, _>>()
+                });
                 (parsed.content, fm)
             }
             Err(_) => (content.to_string(), None),
@@ -45,11 +42,7 @@ impl Note {
             .as_ref()
             .and_then(|fm| fm.get("id"))
             .and_then(|p| p.as_string().ok())
-            .or_else(|| {
-                path.file_stem()
-                    .and_then(|s| s.to_str())
-                    .map(|s| s.to_string())
-            })
+            .or_else(|| path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string()))
             .unwrap_or_default();
         let title = frontmatter
             .as_ref()
@@ -165,12 +158,10 @@ fn find_h1(content: &str) -> Option<String> {
 
 fn strip_title_md(s: &str) -> String {
     // [[target|alias]] → alias, [[target]] or [[target#heading]] → target
-    static WIKI_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"!?\[\[([^\]#|]*?)(?:#[^\]|]*?)?(?:\|([^\]]*?))?\]\]").unwrap()
-    });
+    static WIKI_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"!?\[\[([^\]#|]*?)(?:#[^\]|]*?)?(?:\|([^\]]*?))?\]\]").unwrap());
     // [text](url) → text
-    static MD_LINK_RE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"\[([^\]]+?)\]\([^)]*?\)").unwrap());
+    static MD_LINK_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[([^\]]+?)\]\([^)]*?\)").unwrap());
     // `code` → code
     static INLINE_CODE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"`([^`\n]+)`").unwrap());
 
@@ -391,10 +382,7 @@ mod tests {
 
     #[test]
     fn strip_title_md_mixed() {
-        assert_eq!(
-            strip_title_md("My [[note|ref]] and `stuff`"),
-            "My ref and stuff"
-        );
+        assert_eq!(strip_title_md("My [[note|ref]] and `stuff`"), "My ref and stuff");
     }
 
     // Integration tests: aliases use cleaned title

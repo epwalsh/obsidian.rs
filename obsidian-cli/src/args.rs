@@ -6,13 +6,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 #[command(name = "obsidian", about = "Query and navigate Obsidian vaults")]
 pub struct Cli {
     /// Path to the vault directory. Defaults to current directory.
-    #[arg(
-        long,
-        short = 'v',
-        global = true,
-        env = "OBSIDIAN_VAULT",
-        default_value = "."
-    )]
+    #[arg(long, short = 'v', global = true, env = "OBSIDIAN_VAULT", default_value = ".")]
     pub vault: PathBuf,
     #[command(subcommand)]
     pub command: Command,
@@ -69,8 +63,8 @@ pub struct BacklinksArgs {
 pub struct RenameArgs {
     /// Path to the note to rename (resolved relative to current directory)
     pub note: PathBuf,
-    /// New filename stem (with or without .md extension)
-    pub new_stem: String,
+    /// New path for the note (resolved relative to current directory, .md added if omitted)
+    pub new_path: PathBuf,
 }
 
 #[derive(Clone, ValueEnum)]

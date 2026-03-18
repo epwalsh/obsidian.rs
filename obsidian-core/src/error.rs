@@ -6,6 +6,8 @@ pub enum VaultError {
     NotADirectory(PathBuf),
     #[error("note already exists at {0}")]
     NoteAlreadyExists(PathBuf),
+    #[error("directory not found: {0}")]
+    DirectoryNotFound(PathBuf),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]

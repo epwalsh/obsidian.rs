@@ -34,8 +34,7 @@ pub struct LocatedLink {
     pub location: Location,
 }
 
-static FENCED_CODE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?s)```[^\n]*\n.*?```").unwrap());
+static FENCED_CODE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)```[^\n]*\n.*?```").unwrap());
 
 static INLINE_CODE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"`[^`\n]+`").unwrap());
 
@@ -90,11 +89,7 @@ pub(crate) fn parse_links(content: &str) -> Vec<LocatedLink> {
             let heading = caps.get(3).map(|m| m.as_str().to_string());
             let alias = caps.get(4).map(|m| m.as_str().to_string());
             links.push(LocatedLink {
-                link: Link::Embed {
-                    target,
-                    heading,
-                    alias,
-                },
+                link: Link::Embed { target, heading, alias },
                 location,
             });
         } else if caps.get(5).is_some() {
@@ -103,11 +98,7 @@ pub(crate) fn parse_links(content: &str) -> Vec<LocatedLink> {
             let heading = caps.get(7).map(|m| m.as_str().to_string());
             let alias = caps.get(8).map(|m| m.as_str().to_string());
             links.push(LocatedLink {
-                link: Link::Wiki {
-                    target,
-                    heading,
-                    alias,
-                },
+                link: Link::Wiki { target, heading, alias },
                 location,
             });
         } else if caps.get(9).is_some() {

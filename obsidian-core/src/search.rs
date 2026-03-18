@@ -153,11 +153,9 @@ impl SearchQuery {
                 }
 
                 if !aliases.is_empty()
-                    && !aliases.iter().any(|a| {
-                        note.aliases
-                            .iter()
-                            .any(|na| na.to_lowercase() == a.to_lowercase())
-                    })
+                    && !aliases
+                        .iter()
+                        .any(|a| note.aliases.iter().any(|na| na.to_lowercase() == a.to_lowercase()))
                 {
                     return None;
                 }
@@ -172,10 +170,7 @@ impl SearchQuery {
                     return None;
                 }
 
-                if !content_strings
-                    .iter()
-                    .all(|s| note.content.contains(s.as_str()))
-                {
+                if !content_strings.iter().all(|s| note.content.contains(s.as_str())) {
                     return None;
                 }
 
@@ -207,10 +202,7 @@ pub fn find_note_paths(root: impl AsRef<Path>) -> impl Iterator<Item = PathBuf> 
     WalkDir::new(root)
         .into_iter()
         .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            entry.file_type().is_file()
-                && entry.path().extension().and_then(|e| e.to_str()) == Some("md")
-        })
+        .filter(|entry| entry.file_type().is_file() && entry.path().extension().and_then(|e| e.to_str()) == Some("md"))
         .map(|entry| entry.into_path())
 }
 
@@ -252,10 +244,7 @@ mod tests {
         write_note(&dir.path().join("root.md"), "root note");
         write_note(&subdir.join("sub.md"), "sub note");
 
-        let results = SearchQuery::new(dir.path())
-            .glob("subdir/**")
-            .execute()
-            .unwrap();
+        let results = SearchQuery::new(dir.path()).glob("subdir/**").execute().unwrap();
         let notes = unwrap_notes(results);
         assert_eq!(notes.len(), 1);
         assert!(notes[0].path.ends_with("subdir/sub.md"));
@@ -296,29 +285,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_note(&dir.path().join("note.md"), "content");
 
-        let notes = unwrap_notes(
-            SearchQuery::new(dir.path())
-                .glob("nonexistent/**")
-                .execute()
-                .unwrap(),
-        );
+        let notes = unwrap_notes(SearchQuery::new(dir.path()).glob("nonexistent/**").execute().unwrap());
         assert!(notes.is_empty());
     }
 
     #[test]
     fn has_tag_single() {
         let dir = tempfile::tempdir().unwrap();
-        write_note(
-            &dir.path().join("tagged.md"),
-            "---\ntags: [rust]\n---\nContent.",
-        );
+        write_note(&dir.path().join("tagged.md"), "---\ntags: [rust]\n---\nContent.");
         write_note(&dir.path().join("untagged.md"), "No tags here.");
 
         let ids = sorted_ids(unwrap_notes(
-            SearchQuery::new(dir.path())
-                .has_tag("rust")
-                .execute()
-                .unwrap(),
+            SearchQuery::new(dir.path()).has_tag("rust").execute().unwrap(),
         ));
         assert_eq!(ids, vec!["tagged"]);
     }
@@ -330,10 +308,7 @@ mod tests {
             &dir.path().join("both.md"),
             "---\ntags: [rust, obsidian]\n---\nContent.",
         );
-        write_note(
-            &dir.path().join("one.md"),
-            "---\ntags: [rust]\n---\nContent.",
-        );
+        write_note(&dir.path().join("one.md"), "---\ntags: [rust]\n---\nContent.");
         write_note(&dir.path().join("none.md"), "No tags.");
 
         let ids = sorted_ids(unwrap_notes(
@@ -349,34 +324,20 @@ mod tests {
     #[test]
     fn has_tag_no_match() {
         let dir = tempfile::tempdir().unwrap();
-        write_note(
-            &dir.path().join("note.md"),
-            "---\ntags: [rust]\n---\nContent.",
-        );
+        write_note(&dir.path().join("note.md"), "---\ntags: [rust]\n---\nContent.");
 
-        let notes = unwrap_notes(
-            SearchQuery::new(dir.path())
-                .has_tag("python")
-                .execute()
-                .unwrap(),
-        );
+        let notes = unwrap_notes(SearchQuery::new(dir.path()).has_tag("python").execute().unwrap());
         assert!(notes.is_empty());
     }
 
     #[test]
     fn id_exact_match() {
         let dir = tempfile::tempdir().unwrap();
-        write_note(
-            &dir.path().join("note-a.md"),
-            "---\nid: my-special-id\n---\nContent.",
-        );
+        write_note(&dir.path().join("note-a.md"), "---\nid: my-special-id\n---\nContent.");
         write_note(&dir.path().join("note-b.md"), "Other note.");
 
         let ids = sorted_ids(unwrap_notes(
-            SearchQuery::new(dir.path())
-                .id("my-special-id")
-                .execute()
-                .unwrap(),
+            SearchQuery::new(dir.path()).id("my-special-id").execute().unwrap(),
         ));
         assert_eq!(ids, vec!["my-special-id"]);
     }
@@ -384,20 +345,11 @@ mod tests {
     #[test]
     fn title_contains_case_insensitive() {
         let dir = tempfile::tempdir().unwrap();
-        write_note(
-            &dir.path().join("match.md"),
-            "# Rust Programming\n\nContent.",
-        );
-        write_note(
-            &dir.path().join("no-match.md"),
-            "# Python Notes\n\nContent.",
-        );
+        write_note(&dir.path().join("match.md"), "# Rust Programming\n\nContent.");
+        write_note(&dir.path().join("no-match.md"), "# Python Notes\n\nContent.");
 
         let ids = sorted_ids(unwrap_notes(
-            SearchQuery::new(dir.path())
-                .title_contains("rust")
-                .execute()
-                .unwrap(),
+            SearchQuery::new(dir.path()).title_contains("rust").execute().unwrap(),
         ));
         assert_eq!(ids, vec!["match"]);
     }
@@ -405,17 +357,11 @@ mod tests {
     #[test]
     fn title_contains_no_title_excluded() {
         let dir = tempfile::tempdir().unwrap();
-        write_note(
-            &dir.path().join("no-title.md"),
-            "Just plain content, no heading.",
-        );
+        write_note(&dir.path().join("no-title.md"), "Just plain content, no heading.");
         write_note(&dir.path().join("has-title.md"), "# My Title\n\nContent.");
 
         let ids = sorted_ids(unwrap_notes(
-            SearchQuery::new(dir.path())
-                .title_contains("my")
-                .execute()
-                .unwrap(),
+            SearchQuery::new(dir.path()).title_contains("my").execute().unwrap(),
         ));
         assert_eq!(ids, vec!["has-title"]);
     }
@@ -447,10 +393,7 @@ mod tests {
     fn title_contains_or_semantics() {
         let dir = tempfile::tempdir().unwrap();
         write_note(&dir.path().join("rust.md"), "# Rust Language\n\nContent.");
-        write_note(
-            &dir.path().join("notes.md"),
-            "# Programming Notes\n\nContent.",
-        );
+        write_note(&dir.path().join("notes.md"), "# Programming Notes\n\nContent.");
         write_note(&dir.path().join("other.md"), "# Something Else\n\nContent.");
 
         let ids = sorted_ids(unwrap_notes(
@@ -516,10 +459,7 @@ mod tests {
         );
 
         let ids = sorted_ids(unwrap_notes(
-            SearchQuery::new(dir.path())
-                .alias_contains("rust")
-                .execute()
-                .unwrap(),
+            SearchQuery::new(dir.path()).alias_contains("rust").execute().unwrap(),
         ));
         assert_eq!(ids, vec!["match"]);
     }
@@ -533,10 +473,7 @@ mod tests {
         );
 
         let ids = sorted_ids(unwrap_notes(
-            SearchQuery::new(dir.path())
-                .alias_contains("suffix")
-                .execute()
-                .unwrap(),
+            SearchQuery::new(dir.path()).alias_contains("suffix").execute().unwrap(),
         ));
         assert_eq!(ids, vec!["note"]);
     }
@@ -544,17 +481,9 @@ mod tests {
     #[test]
     fn alias_contains_no_match_excluded() {
         let dir = tempfile::tempdir().unwrap();
-        write_note(
-            &dir.path().join("note.md"),
-            "---\naliases: [alpha]\n---\nContent.",
-        );
+        write_note(&dir.path().join("note.md"), "---\naliases: [alpha]\n---\nContent.");
 
-        let notes = unwrap_notes(
-            SearchQuery::new(dir.path())
-                .alias_contains("beta")
-                .execute()
-                .unwrap(),
-        );
+        let notes = unwrap_notes(SearchQuery::new(dir.path()).alias_contains("beta").execute().unwrap());
         assert!(notes.is_empty());
     }
 
@@ -576,10 +505,7 @@ mod tests {
     fn content_contains_single() {
         let dir = tempfile::tempdir().unwrap();
         write_note(&dir.path().join("match.md"), "This note mentions ferris.");
-        write_note(
-            &dir.path().join("no-match.md"),
-            "This note mentions nothing special.",
-        );
+        write_note(&dir.path().join("no-match.md"), "This note mentions nothing special.");
 
         let ids = sorted_ids(unwrap_notes(
             SearchQuery::new(dir.path())
@@ -614,10 +540,7 @@ mod tests {
         write_note(&dir.path().join("no-match.md"), "No numbers here.");
 
         let ids = sorted_ids(unwrap_notes(
-            SearchQuery::new(dir.path())
-                .content_matches(r"\d+")
-                .execute()
-                .unwrap(),
+            SearchQuery::new(dir.path()).content_matches(r"\d+").execute().unwrap(),
         ));
         assert_eq!(ids, vec!["match"]);
     }
@@ -625,9 +548,7 @@ mod tests {
     #[test]
     fn content_matches_invalid_regex_errors() {
         let dir = tempfile::tempdir().unwrap();
-        let result = SearchQuery::new(dir.path())
-            .content_matches(r"[invalid")
-            .execute();
+        let result = SearchQuery::new(dir.path()).content_matches(r"[invalid").execute();
         assert!(matches!(result, Err(SearchError::InvalidRegex(_))));
     }
 
@@ -687,16 +608,11 @@ mod tests {
     #[test]
     fn vault_search_convenience() {
         let dir = tempfile::tempdir().unwrap();
-        write_note(
-            &dir.path().join("tagged.md"),
-            "---\ntags: [my-tag]\n---\nContent.",
-        );
+        write_note(&dir.path().join("tagged.md"), "---\ntags: [my-tag]\n---\nContent.");
         write_note(&dir.path().join("untagged.md"), "No tags.");
 
         let vault = crate::Vault::open(dir.path()).unwrap();
-        let ids = sorted_ids(unwrap_notes(
-            vault.search().has_tag("my-tag").execute().unwrap(),
-        ));
+        let ids = sorted_ids(unwrap_notes(vault.search().has_tag("my-tag").execute().unwrap()));
         assert_eq!(ids, vec!["tagged"]);
     }
 }

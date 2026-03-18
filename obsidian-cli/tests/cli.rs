@@ -37,20 +37,10 @@ fn search_no_filters_returns_all_notes() {
 #[test]
 fn search_tag_filter() {
     let vault = make_vault();
-    write_note(
-        vault.path(),
-        "tagged.md",
-        "---\ntags: [rust]\n---\nContent.",
-    );
+    write_note(vault.path(), "tagged.md", "---\ntags: [rust]\n---\nContent.");
     write_note(vault.path(), "untagged.md", "No tags.");
     obsidian()
-        .args([
-            "--vault",
-            vault.path().to_str().unwrap(),
-            "search",
-            "--tag",
-            "rust",
-        ])
+        .args(["--vault", vault.path().to_str().unwrap(), "search", "--tag", "rust"])
         .assert()
         .success()
         .stdout(predicate::str::contains("tagged.md"))
@@ -60,11 +50,7 @@ fn search_tag_filter() {
 #[test]
 fn search_tag_and_semantics() {
     let vault = make_vault();
-    write_note(
-        vault.path(),
-        "both.md",
-        "---\ntags: [rust, obsidian]\n---\nContent.",
-    );
+    write_note(vault.path(), "both.md", "---\ntags: [rust, obsidian]\n---\nContent.");
     write_note(vault.path(), "one.md", "---\ntags: [rust]\n---\nContent.");
     obsidian()
         .args([
@@ -126,13 +112,7 @@ fn search_regex_filter() {
     write_note(vault.path(), "match.md", "Score: 42 points.");
     write_note(vault.path(), "no-match.md", "No numbers here.");
     obsidian()
-        .args([
-            "--vault",
-            vault.path().to_str().unwrap(),
-            "search",
-            "--regex",
-            r"\d+",
-        ])
+        .args(["--vault", vault.path().to_str().unwrap(), "search", "--regex", r"\d+"])
         .assert()
         .success()
         .stdout(predicate::str::contains("match.md"))
@@ -142,11 +122,7 @@ fn search_regex_filter() {
 #[test]
 fn search_alias_exact_filter() {
     let vault = make_vault();
-    write_note(
-        vault.path(),
-        "match.md",
-        "---\naliases: [My Alias]\n---\nContent.",
-    );
+    write_note(vault.path(), "match.md", "---\naliases: [My Alias]\n---\nContent.");
     write_note(vault.path(), "no-match.md", "No aliases.");
     obsidian()
         .args([
@@ -165,16 +141,8 @@ fn search_alias_exact_filter() {
 #[test]
 fn search_alias_or_semantics() {
     let vault = make_vault();
-    write_note(
-        vault.path(),
-        "alpha.md",
-        "---\naliases: [alias-alpha]\n---\nContent.",
-    );
-    write_note(
-        vault.path(),
-        "beta.md",
-        "---\naliases: [alias-beta]\n---\nContent.",
-    );
+    write_note(vault.path(), "alpha.md", "---\naliases: [alias-alpha]\n---\nContent.");
+    write_note(vault.path(), "beta.md", "---\naliases: [alias-beta]\n---\nContent.");
     write_note(vault.path(), "gamma.md", "No aliases.");
     obsidian()
         .args([
@@ -237,13 +205,7 @@ fn search_json_format() {
     let vault = make_vault();
     write_note(vault.path(), "note.md", "---\ntags: [rust]\n---\nContent.");
     let output = obsidian()
-        .args([
-            "--vault",
-            vault.path().to_str().unwrap(),
-            "search",
-            "--format",
-            "json",
-        ])
+        .args(["--vault", vault.path().to_str().unwrap(), "search", "--format", "json"])
         .assert()
         .success()
         .get_output()
@@ -376,13 +338,14 @@ fn rename_renames_note() {
     let vault = make_vault();
     write_note(vault.path(), "old.md", "Content.");
     let note_path = vault.path().join("old.md");
+    let new_path = vault.path().join("new.md");
     obsidian()
         .args([
             "--vault",
             vault.path().to_str().unwrap(),
             "rename",
             note_path.to_str().unwrap(),
-            "new",
+            new_path.to_str().unwrap(),
         ])
         .assert()
         .success()
@@ -397,13 +360,14 @@ fn rename_updates_backlinks() {
     write_note(vault.path(), "target.md", "Target.");
     write_note(vault.path(), "source.md", "See [[target]].");
     let note_path = vault.path().join("target.md");
+    let new_path = vault.path().join("renamed.md");
     obsidian()
         .args([
             "--vault",
             vault.path().to_str().unwrap(),
             "rename",
             note_path.to_str().unwrap(),
-            "renamed",
+            new_path.to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -412,17 +376,19 @@ fn rename_updates_backlinks() {
 }
 
 #[test]
-fn rename_accepts_md_extension_in_new_stem() {
+fn rename_adds_md_extension_if_missing() {
     let vault = make_vault();
     write_note(vault.path(), "old.md", "Content.");
     let note_path = vault.path().join("old.md");
+    // Pass path without .md extension — CLI should add it
+    let new_path = vault.path().join("new");
     obsidian()
         .args([
             "--vault",
             vault.path().to_str().unwrap(),
             "rename",
             note_path.to_str().unwrap(),
-            "new.md",
+            new_path.to_str().unwrap(),
         ])
         .assert()
         .success()
@@ -431,19 +397,63 @@ fn rename_accepts_md_extension_in_new_stem() {
 }
 
 #[test]
+fn rename_moves_to_subdirectory() {
+    let vault = make_vault();
+    write_note(vault.path(), "root.md", "Root.");
+    write_note(vault.path(), "source.md", "[link](root.md)");
+    fs::create_dir(vault.path().join("sub")).unwrap();
+    let note_path = vault.path().join("root.md");
+    let new_path = vault.path().join("sub/root.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "rename",
+            note_path.to_str().unwrap(),
+            new_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    assert!(!vault.path().join("root.md").exists());
+    assert!(vault.path().join("sub/root.md").exists());
+    let source = fs::read_to_string(vault.path().join("source.md")).unwrap();
+    assert_eq!(source, "[link](sub/root.md)");
+}
+
+#[test]
 fn rename_nonexistent_note_exits_with_error() {
     let vault = make_vault();
+    let new_path = vault.path().join("new.md");
     obsidian()
         .args([
             "--vault",
             vault.path().to_str().unwrap(),
             "rename",
             "/nonexistent/note.md",
-            "new",
+            new_path.to_str().unwrap(),
         ])
         .assert()
         .failure()
         .stderr(predicate::str::contains("note not found"));
+}
+
+#[test]
+fn rename_target_directory_not_found_exits_with_error() {
+    let vault = make_vault();
+    write_note(vault.path(), "old.md", "Old.");
+    let note_path = vault.path().join("old.md");
+    let new_path = vault.path().join("nonexistent/new.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "rename",
+            note_path.to_str().unwrap(),
+            new_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("directory not found"));
 }
 
 #[test]
@@ -452,13 +462,14 @@ fn rename_target_already_exists_exits_with_error() {
     write_note(vault.path(), "old.md", "Old.");
     write_note(vault.path(), "new.md", "Already exists.");
     let note_path = vault.path().join("old.md");
+    let new_path = vault.path().join("new.md");
     obsidian()
         .args([
             "--vault",
             vault.path().to_str().unwrap(),
             "rename",
             note_path.to_str().unwrap(),
-            "new",
+            new_path.to_str().unwrap(),
         ])
         .assert()
         .failure()

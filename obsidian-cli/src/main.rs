@@ -75,12 +75,18 @@ fn cmd_rename(vault: Vault, args: RenameArgs) -> eyre::Result<()> {
         return Err(eyre::eyre!("note not found: {}", note_path.display()));
     }
 
+    let mut new_path = if args.new_path.is_absolute() {
+        args.new_path.clone()
+    } else {
+        current_dir()?.join(&args.new_path)
+    };
+    if new_path.extension().and_then(|e| e.to_str()) != Some("md") {
+        new_path.set_extension("md");
+    }
+
     let note = Note::from_path(&note_path)?;
-    let renamed = vault.rename(&note, &args.new_stem)?;
-    let rel = renamed
-        .path
-        .strip_prefix(&vault.path)
-        .unwrap_or(&renamed.path);
+    let renamed = vault.rename(&note, &new_path)?;
+    let rel = renamed.path.strip_prefix(&vault.path).unwrap_or(&renamed.path);
     println!("{}", rel.display());
     Ok(())
 }
