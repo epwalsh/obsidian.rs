@@ -1009,6 +1009,137 @@ fn note_update_json_format() {
     assert!(tag_strs.contains(&"obsidian"));
 }
 
+// --- note update stdin tests ---
+
+#[test]
+fn note_update_stdin_adds_tag_to_multiple_notes() {
+    let vault = make_vault();
+    write_note(vault.path(), "a.md", "---\ntags: [rust]\n---\nContent.");
+    write_note(vault.path(), "b.md", "---\ntags: [python]\n---\nContent.");
+    let a_path = vault.path().join("a.md");
+    let b_path = vault.path().join("b.md");
+    let stdin_input = format!("{}\n{}\n", a_path.display(), b_path.display());
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "update",
+            "--tag",
+            "obsidian",
+        ])
+        .write_stdin(stdin_input)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("a.md"))
+        .stdout(predicate::str::contains("b.md"));
+    let a_content = fs::read_to_string(&a_path).unwrap();
+    let b_content = fs::read_to_string(&b_path).unwrap();
+    assert!(a_content.contains("obsidian"));
+    assert!(b_content.contains("obsidian"));
+}
+
+#[test]
+fn note_update_stdin_json_format_returns_array() {
+    let vault = make_vault();
+    write_note(vault.path(), "a.md", "---\ntags: [rust]\n---\nContent.");
+    write_note(vault.path(), "b.md", "---\ntags: [python]\n---\nContent.");
+    let a_path = vault.path().join("a.md");
+    let b_path = vault.path().join("b.md");
+    let stdin_input = format!("{}\n{}\n", a_path.display(), b_path.display());
+    let output = obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "update",
+            "--tag",
+            "obsidian",
+            "--format",
+            "json",
+        ])
+        .write_stdin(stdin_input)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let s = String::from_utf8(output).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+    assert!(v.is_array());
+    assert_eq!(v.as_array().unwrap().len(), 2);
+    let paths: Vec<&str> = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["path"].as_str().unwrap())
+        .collect();
+    assert!(paths.iter().any(|p| p.contains("a.md")));
+    assert!(paths.iter().any(|p| p.contains("b.md")));
+}
+
+#[test]
+fn note_update_stdin_skips_empty_lines() {
+    let vault = make_vault();
+    write_note(vault.path(), "a.md", "Plain content.");
+    let a_path = vault.path().join("a.md");
+    let stdin_input = format!("\n{}\n\n", a_path.display());
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "update",
+            "--tag",
+            "newtag",
+        ])
+        .write_stdin(stdin_input)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("a.md"));
+    let content = fs::read_to_string(&a_path).unwrap();
+    assert!(content.contains("newtag"));
+}
+
+#[test]
+fn note_update_stdin_empty_input_succeeds_with_no_output() {
+    let vault = make_vault();
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "update",
+            "--tag",
+            "newtag",
+        ])
+        .write_stdin("")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+#[test]
+fn note_update_stdin_fail_fast_on_bad_path() {
+    let vault = make_vault();
+    write_note(vault.path(), "good.md", "Content.");
+    let good_path = vault.path().join("good.md");
+    let stdin_input = format!("{}\n/nonexistent/bad.md\n", good_path.display());
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "update",
+            "--tag",
+            "newtag",
+        ])
+        .write_stdin(stdin_input)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("note not found"));
+}
+
 #[test]
 fn color_and_no_color_are_mutually_exclusive() {
     let vault = make_vault();

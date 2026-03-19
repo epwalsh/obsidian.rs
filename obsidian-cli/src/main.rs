@@ -2,6 +2,7 @@ mod args;
 mod output;
 
 use std::env::current_dir;
+use std::io::{BufRead, IsTerminal};
 
 use clap::Parser;
 use color_eyre::eyre;
@@ -182,11 +183,11 @@ fn cmd_tags_list(vault: Vault, args: TagsListArgs) -> eyre::Result<()> {
     Ok(())
 }
 
-fn cmd_note_update(vault: Vault, args: UpdateArgs) -> eyre::Result<()> {
-    let (note_path, _) = resolve_note_path(&vault, &args.note)?;
+fn update_single_note(vault: &Vault, note_arg: &std::path::Path, tags: &[String]) -> eyre::Result<Note> {
+    let (note_path, _) = resolve_note_path(vault, &note_arg.to_path_buf())?;
     let mut note = Note::from_path(&note_path)?;
 
-    let new_tags: Vec<String> = args.tag.into_iter().filter(|t| !note.tags.contains(t)).collect();
+    let new_tags: Vec<String> = tags.iter().filter(|t| !note.tags.contains(*t)).cloned().collect();
     if !new_tags.is_empty() {
         let fm = note.frontmatter.get_or_insert_with(indexmap::IndexMap::new);
         let tags_entry = fm
@@ -201,9 +202,42 @@ fn cmd_note_update(vault: Vault, args: UpdateArgs) -> eyre::Result<()> {
         note.write()?;
     }
 
+    Ok(note)
+}
+
+fn cmd_note_update(vault: Vault, args: UpdateArgs) -> eyre::Result<()> {
+    if let Some(note_path) = args.note {
+        let note = update_single_note(&vault, &note_path, &args.tag)?;
+        match args.format {
+            OutputFormat::Plain => output::print_note_update_plain(&note, &vault.path),
+            OutputFormat::Json => output::print_note_update_json(&note, &vault.path),
+        }
+        return Ok(());
+    }
+
+    if std::io::stdin().is_terminal() {
+        eyre::bail!("no note path provided and stdin is a TTY");
+    }
+
+    let stdin = std::io::stdin();
+    let mut notes = Vec::new();
+    for line in stdin.lock().lines() {
+        let line = line?;
+        let line = line.trim().to_string();
+        if line.is_empty() {
+            continue;
+        }
+        let note = update_single_note(&vault, std::path::Path::new(&line), &args.tag)?;
+        notes.push(note);
+    }
+
     match args.format {
-        OutputFormat::Plain => output::print_note_update_plain(&note, &vault.path),
-        OutputFormat::Json => output::print_note_update_json(&note, &vault.path),
+        OutputFormat::Plain => {
+            for note in &notes {
+                output::print_note_update_plain(note, &vault.path);
+            }
+        }
+        OutputFormat::Json => output::print_note_update_many_json(&notes, &vault.path),
     }
     Ok(())
 }

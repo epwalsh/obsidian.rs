@@ -103,8 +103,9 @@ pub enum NoteCommand {
 
 #[derive(clap::Args)]
 pub struct UpdateArgs {
-    /// Path to the note (resolved relative to current directory)
-    pub note: PathBuf,
+    /// Path to the note (resolved relative to current directory).
+    /// If omitted, note paths are read from stdin (one per line).
+    pub note: Option<PathBuf>,
     /// Add tag(s) to frontmatter (repeatable)
     #[arg(long, short = 't')]
     pub tag: Vec<String>,

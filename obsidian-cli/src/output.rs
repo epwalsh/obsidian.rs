@@ -191,6 +191,20 @@ pub fn print_note_update_json(note: &Note, vault_path: &Path) {
     println!("{}", serde_json::to_string(&out).unwrap());
 }
 
+pub fn print_note_update_many_json(notes: &[Note], vault_path: &Path) {
+    let items: Vec<NoteUpdateJson> = notes
+        .iter()
+        .map(|n| {
+            let rel = n.path.strip_prefix(vault_path).unwrap_or(&n.path);
+            NoteUpdateJson {
+                path: rel.display().to_string(),
+                tags: &n.tags,
+            }
+        })
+        .collect();
+    println!("{}", serde_json::to_string(&items).unwrap());
+}
+
 pub fn print_backlinks_json(results: &[(Note, Vec<LocatedLink>)], vault_path: &Path) {
     let items: Vec<BacklinkJson> = results
         .iter()
