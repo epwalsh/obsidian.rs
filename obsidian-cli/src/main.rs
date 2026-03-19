@@ -10,6 +10,32 @@ use obsidian_core::{LocatedTag, Note, Vault};
 
 use args::{BacklinksArgs, Cli, Command, OutputFormat, RenameArgs, SearchArgs, TagsListArgs, TagsSearchArgs};
 
+fn resolve_note_path(
+    vault: &Vault,
+    note_arg: &std::path::PathBuf,
+) -> eyre::Result<(std::path::PathBuf, std::path::PathBuf)> {
+    let (note_path, root) = if note_arg.is_absolute() {
+        (note_arg.clone(), vault.path.clone())
+    } else {
+        let cwd = current_dir()?;
+        let candidate1 = cwd.join(note_arg);
+        let candidate2 = vault.path.join(note_arg);
+        if candidate1.exists() {
+            (candidate1, cwd)
+        } else if candidate2.exists() {
+            (candidate2, vault.path.clone())
+        } else {
+            (note_arg.clone(), vault.path.clone())
+        }
+    };
+
+    if !note_path.exists() {
+        return Err(eyre::eyre!("note not found: {}", note_path.display()));
+    }
+
+    Ok((note_path, root))
+}
+
 fn cmd_search(vault: Vault, args: SearchArgs) -> eyre::Result<()> {
     let mut query = vault.search();
     for tag in &args.tag {
@@ -46,15 +72,7 @@ fn cmd_search(vault: Vault, args: SearchArgs) -> eyre::Result<()> {
 }
 
 fn cmd_backlinks(vault: Vault, args: BacklinksArgs) -> eyre::Result<()> {
-    let note_path = if args.note.is_absolute() {
-        args.note.clone()
-    } else {
-        current_dir()?.join(&args.note)
-    };
-    if !note_path.exists() {
-        return Err(eyre::eyre!("note not found: {}", note_path.display()));
-    }
-
+    let (note_path, _) = resolve_note_path(&vault, &args.note)?;
     let note = Note::from_path(&note_path)?;
     let mut results = vault.backlinks(&note);
     results.sort_by(|(a, _), (b, _)| a.path.cmp(&b.path));
@@ -67,25 +85,17 @@ fn cmd_backlinks(vault: Vault, args: BacklinksArgs) -> eyre::Result<()> {
 }
 
 fn cmd_rename(vault: Vault, args: RenameArgs) -> eyre::Result<()> {
-    let note_path = if args.note.is_absolute() {
-        args.note.clone()
-    } else {
-        current_dir()?.join(&args.note)
-    };
-    if !note_path.exists() {
-        return Err(eyre::eyre!("note not found: {}", note_path.display()));
-    }
+    let (note_path, root) = resolve_note_path(&vault, &args.note)?;
+    let note = Note::from_path(&note_path)?;
 
     let mut new_path = if args.new_path.is_absolute() {
         args.new_path.clone()
     } else {
-        current_dir()?.join(&args.new_path)
+        root.join(&args.new_path)
     };
     if new_path.extension().and_then(|e| e.to_str()) != Some("md") {
         new_path.set_extension("md");
     }
-
-    let note = Note::from_path(&note_path)?;
 
     if args.dry_run {
         let preview = vault.rename_preview(&note, &new_path)?;
