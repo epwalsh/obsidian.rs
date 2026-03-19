@@ -20,6 +20,8 @@ pub enum Command {
     Backlinks(BacklinksArgs),
     /// Rename a note and update all backlinks
     Rename(RenameArgs),
+    /// Work with tags across the vault
+    Tags(TagsArgs),
 }
 
 #[derive(clap::Args)]
@@ -77,4 +79,35 @@ pub struct RenameArgs {
 pub enum OutputFormat {
     Plain,
     Json,
+}
+
+#[derive(clap::Args)]
+pub struct TagsArgs {
+    #[command(subcommand)]
+    pub subcommand: TagsCommand,
+}
+
+#[derive(Subcommand)]
+pub enum TagsCommand {
+    /// Find all occurrences of the given tags across the vault
+    Search(TagsSearchArgs),
+    /// List all tags used across the vault
+    List(TagsListArgs),
+}
+
+#[derive(clap::Args)]
+pub struct TagsSearchArgs {
+    /// Tags to search for (OR semantics — occurrences of any given tag are shown)
+    #[arg(required = true)]
+    pub tags: Vec<String>,
+    /// Output format
+    #[arg(long, short = 'f', default_value = "plain")]
+    pub format: OutputFormat,
+}
+
+#[derive(clap::Args)]
+pub struct TagsListArgs {
+    /// Output format
+    #[arg(long, short = 'f', default_value = "plain")]
+    pub format: OutputFormat,
 }

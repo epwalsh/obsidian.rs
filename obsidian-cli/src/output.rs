@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use obsidian_core::{Link, LocatedLink, Note, RenamePreview};
+use obsidian_core::{Link, LocatedLink, LocatedTag, Note, RenamePreview};
 use serde::Serialize;
 
 pub fn print_search_plain(notes: &[Note], vault_path: &Path) {
@@ -63,7 +63,7 @@ pub fn print_rename_preview_plain(preview: &RenamePreview, vault_path: &Path) {
     for (path, count) in &preview.updated_notes {
         let rel = path.strip_prefix(vault_path).unwrap_or(path);
         println!(
-            " ➡️ update: {} ({} link{})",
+            " ➡️update: {} ({} link{})",
             rel.display(),
             count,
             if *count == 1 { "" } else { "s" }
@@ -103,6 +103,67 @@ pub fn print_rename_preview_json(preview: &RenamePreview, vault_path: &Path) {
         updated_notes,
     };
     println!("{}", serde_json::to_string(&out).unwrap());
+}
+
+pub fn print_tags_search_plain(results: &[(Note, Vec<String>, Vec<LocatedTag>)], vault_path: &Path) {
+    for (note, fm_tags, inline_tags) in results {
+        let rel = note.path.strip_prefix(vault_path).unwrap_or(&note.path);
+        println!("{}", rel.display());
+        if !fm_tags.is_empty() {
+            println!("  [frontmatter] {}", fm_tags.join(", "));
+        }
+        for lt in inline_tags {
+            println!("  [{}:{}] #{}", lt.location.line, lt.location.col_start, lt.tag);
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct InlineTagJson {
+    tag: String,
+    line: usize,
+    col_start: usize,
+    col_end: usize,
+}
+
+#[derive(Serialize)]
+struct TagsSearchResultJson {
+    path: String,
+    frontmatter_tags: Vec<String>,
+    inline_occurrences: Vec<InlineTagJson>,
+}
+
+pub fn print_tags_search_json(results: &[(Note, Vec<String>, Vec<LocatedTag>)], vault_path: &Path) {
+    let items: Vec<TagsSearchResultJson> = results
+        .iter()
+        .map(|(note, fm_tags, inline_tags)| {
+            let rel = note.path.strip_prefix(vault_path).unwrap_or(&note.path);
+            TagsSearchResultJson {
+                path: rel.display().to_string(),
+                frontmatter_tags: fm_tags.clone(),
+                inline_occurrences: inline_tags
+                    .iter()
+                    .map(|lt| InlineTagJson {
+                        tag: lt.tag.clone(),
+                        line: lt.location.line,
+                        col_start: lt.location.col_start,
+                        col_end: lt.location.col_end,
+                    })
+                    .collect(),
+            }
+        })
+        .collect();
+    println!("{}", serde_json::to_string(&items).unwrap());
+}
+
+pub fn print_tags_list_plain(tags: &[String]) {
+    for tag in tags {
+        println!("{}", tag);
+    }
+}
+
+pub fn print_tags_list_json(tags: &[String]) {
+    println!("{}", serde_json::to_string(tags).unwrap());
 }
 
 pub fn print_backlinks_json(results: &[(Note, Vec<LocatedLink>)], vault_path: &Path) {

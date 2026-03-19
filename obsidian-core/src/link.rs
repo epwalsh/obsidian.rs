@@ -34,9 +34,9 @@ pub struct LocatedLink {
     pub location: Location,
 }
 
-static FENCED_CODE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)```[^\n]*\n.*?```").unwrap());
+pub(crate) static FENCED_CODE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)```[^\n]*\n.*?```").unwrap());
 
-static INLINE_CODE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"`[^`\n]+`").unwrap());
+pub(crate) static INLINE_CODE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"`[^`\n]+`").unwrap());
 
 // Combined link regex. Embed alternative is listed first so ![[...]] is consumed
 // before the wiki alternative can match [[...]] within it.
@@ -51,7 +51,7 @@ static LINK_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// Returns the 1-indexed line number and 0-indexed character column for the given byte position.
-fn byte_to_line_col(text: &str, byte_pos: usize) -> (usize, usize) {
+pub(crate) fn byte_to_line_col(text: &str, byte_pos: usize) -> (usize, usize) {
     let before = &text[..byte_pos];
     let line = before.matches('\n').count() + 1;
     let col = match before.rfind('\n') {

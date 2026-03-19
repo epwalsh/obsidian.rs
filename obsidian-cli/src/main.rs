@@ -5,9 +5,9 @@ use std::env::current_dir;
 
 use clap::Parser;
 use color_eyre::eyre;
-use obsidian_core::{Note, Vault};
+use obsidian_core::{LocatedTag, Note, Vault};
 
-use args::{BacklinksArgs, Cli, Command, OutputFormat, RenameArgs, SearchArgs};
+use args::{BacklinksArgs, Cli, Command, OutputFormat, RenameArgs, SearchArgs, TagsListArgs, TagsSearchArgs};
 
 fn cmd_search(vault: Vault, args: SearchArgs) -> eyre::Result<()> {
     let mut query = vault.search();
@@ -100,6 +100,59 @@ fn cmd_rename(vault: Vault, args: RenameArgs) -> eyre::Result<()> {
     Ok(())
 }
 
+fn cmd_tags_search(vault: Vault, args: TagsSearchArgs) -> eyre::Result<()> {
+    let notes: Vec<Note> = vault.search().execute()?.into_iter().filter_map(|r| r.ok()).collect();
+
+    // A note tag matches a search term if it equals the term exactly or is a sub-tag of it
+    // (e.g. "workout/upper-body" matches search term "workout").
+    let tag_matches_search = |tag: &str| args.tags.iter().any(|s| tag == s || tag.starts_with(&format!("{s}/")));
+
+    let mut results: Vec<(Note, Vec<String>, Vec<LocatedTag>)> = notes
+        .into_iter()
+        .filter_map(|note| {
+            let fm_matches: Vec<String> = note.tags.iter().filter(|t| tag_matches_search(t)).cloned().collect();
+            let inline_matches: Vec<LocatedTag> = note
+                .inline_tags()
+                .into_iter()
+                .filter(|lt| tag_matches_search(&lt.tag))
+                .collect();
+            if fm_matches.is_empty() && inline_matches.is_empty() {
+                None
+            } else {
+                Some((note, fm_matches, inline_matches))
+            }
+        })
+        .collect();
+    results.sort_by(|(a, _, _), (b, _, _)| a.path.cmp(&b.path));
+
+    match args.format {
+        OutputFormat::Plain => output::print_tags_search_plain(&results, &vault.path),
+        OutputFormat::Json => output::print_tags_search_json(&results, &vault.path),
+    }
+    Ok(())
+}
+
+fn cmd_tags_list(vault: Vault, args: TagsListArgs) -> eyre::Result<()> {
+    let notes: Vec<Note> = vault.search().execute()?.into_iter().filter_map(|r| r.ok()).collect();
+
+    let mut all_tags: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for note in &notes {
+        for tag in &note.tags {
+            all_tags.insert(tag.clone());
+        }
+        for lt in note.inline_tags() {
+            all_tags.insert(lt.tag);
+        }
+    }
+    let tags: Vec<String> = all_tags.into_iter().collect();
+
+    match args.format {
+        OutputFormat::Plain => output::print_tags_list_plain(&tags),
+        OutputFormat::Json => output::print_tags_list_json(&tags),
+    }
+    Ok(())
+}
+
 fn main() -> eyre::Result<()> {
     color_eyre::install()?;
     let cli = Cli::parse();
@@ -108,5 +161,9 @@ fn main() -> eyre::Result<()> {
         Command::Search(args) => cmd_search(vault, args),
         Command::Backlinks(args) => cmd_backlinks(vault, args),
         Command::Rename(args) => cmd_rename(vault, args),
+        Command::Tags(tags_args) => match tags_args.subcommand {
+            args::TagsCommand::Search(args) => cmd_tags_search(vault, args),
+            args::TagsCommand::List(args) => cmd_tags_list(vault, args),
+        },
     }
 }

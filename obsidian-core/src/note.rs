@@ -97,6 +97,17 @@ impl Note {
             .collect()
     }
 
+    pub fn inline_tags(&self) -> Vec<crate::LocatedTag> {
+        let offset = self.frontmatter_line_count;
+        crate::tag::parse_inline_tags(&self.content)
+            .into_iter()
+            .map(|mut lt| {
+                lt.location.line += offset;
+                lt
+            })
+            .collect()
+    }
+
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, NoteError> {
         let content = std::fs::read_to_string(&path)?;
         Ok(Self::parse(path, &content))

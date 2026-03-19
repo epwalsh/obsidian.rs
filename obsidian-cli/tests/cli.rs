@@ -636,3 +636,212 @@ fn backlinks_nonexistent_note_exits_with_error() {
         .failure()
         .stderr(predicate::str::contains("note not found"));
 }
+
+// --- tags list tests ---
+
+#[test]
+fn tags_list_basic() {
+    let vault = make_vault();
+    write_note(vault.path(), "a.md", "---\ntags: [rust, obsidian]\n---\nContent.");
+    write_note(vault.path(), "b.md", "Some #inline tag here.");
+    write_note(vault.path(), "c.md", "No tags.");
+    obsidian()
+        .args(["--vault", vault.path().to_str().unwrap(), "tags", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("rust"))
+        .stdout(predicate::str::contains("obsidian"))
+        .stdout(predicate::str::contains("inline"));
+}
+
+#[test]
+fn tags_list_deduplicated_and_sorted() {
+    let vault = make_vault();
+    write_note(vault.path(), "a.md", "---\ntags: [beta, alpha]\n---\nContent #beta.");
+    write_note(vault.path(), "b.md", "---\ntags: [alpha]\n---\nContent.");
+    let output = obsidian()
+        .args(["--vault", vault.path().to_str().unwrap(), "tags", "list"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let s = String::from_utf8(output).unwrap();
+    let lines: Vec<&str> = s.lines().collect();
+    // Should be sorted and deduplicated
+    assert_eq!(lines, vec!["alpha", "beta"]);
+}
+
+#[test]
+fn tags_list_empty_vault() {
+    let vault = make_vault();
+    write_note(vault.path(), "a.md", "No tags here.");
+    obsidian()
+        .args(["--vault", vault.path().to_str().unwrap(), "tags", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+#[test]
+fn tags_list_json_format() {
+    let vault = make_vault();
+    write_note(vault.path(), "a.md", "---\ntags: [rust]\n---\nContent.");
+    let output = obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "tags",
+            "list",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let s = String::from_utf8(output).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+    assert!(v.is_array());
+    let arr = v.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0].as_str().unwrap(), "rust");
+}
+
+// --- tags search tests ---
+
+#[test]
+fn tags_search_frontmatter_match() {
+    let vault = make_vault();
+    write_note(vault.path(), "match.md", "---\ntags: [rust]\n---\nContent.");
+    write_note(vault.path(), "no-match.md", "---\ntags: [python]\n---\nContent.");
+    obsidian()
+        .args(["--vault", vault.path().to_str().unwrap(), "tags", "search", "rust"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("match.md"))
+        .stdout(predicate::str::contains("no-match.md").not())
+        .stdout(predicate::str::contains("[frontmatter] rust"));
+}
+
+#[test]
+fn tags_search_inline_match() {
+    let vault = make_vault();
+    write_note(vault.path(), "match.md", "See #rust here.");
+    write_note(vault.path(), "no-match.md", "No matching tag.");
+    obsidian()
+        .args(["--vault", vault.path().to_str().unwrap(), "tags", "search", "rust"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("match.md"))
+        .stdout(predicate::str::contains("no-match.md").not());
+}
+
+#[test]
+fn tags_search_multiple_tags_or_semantics() {
+    let vault = make_vault();
+    write_note(vault.path(), "has-foo.md", "---\ntags: [foo]\n---\nContent.");
+    write_note(vault.path(), "has-bar.md", "Content with #bar.");
+    write_note(vault.path(), "has-neither.md", "No relevant tags.");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "tags",
+            "search",
+            "foo",
+            "bar",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("has-foo.md"))
+        .stdout(predicate::str::contains("has-bar.md"))
+        .stdout(predicate::str::contains("has-neither.md").not());
+}
+
+#[test]
+fn tags_search_output_sorted() {
+    let vault = make_vault();
+    write_note(vault.path(), "z.md", "---\ntags: [rust]\n---\nContent.");
+    write_note(vault.path(), "a.md", "---\ntags: [rust]\n---\nContent.");
+    write_note(vault.path(), "m.md", "---\ntags: [rust]\n---\nContent.");
+    let output = obsidian()
+        .args(["--vault", vault.path().to_str().unwrap(), "tags", "search", "rust"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let s = String::from_utf8(output).unwrap();
+    let note_lines: Vec<&str> = s.lines().filter(|l| !l.starts_with("  ")).collect();
+    let mut sorted = note_lines.clone();
+    sorted.sort();
+    assert_eq!(note_lines, sorted);
+}
+
+#[test]
+fn tags_search_json_format() {
+    let vault = make_vault();
+    write_note(
+        vault.path(),
+        "note.md",
+        "---\ntags: [rust]\n---\nContent with #rust inline.",
+    );
+    let output = obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "tags",
+            "search",
+            "--format",
+            "json",
+            "rust",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let s = String::from_utf8(output).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+    assert!(v.is_array());
+    let arr = v.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    let item = &arr[0];
+    assert!(item["path"].as_str().unwrap().contains("note.md"));
+    assert_eq!(item["frontmatter_tags"].as_array().unwrap().len(), 1);
+    assert_eq!(item["frontmatter_tags"][0].as_str().unwrap(), "rust");
+    assert_eq!(item["inline_occurrences"].as_array().unwrap().len(), 1);
+    let occ = &item["inline_occurrences"][0];
+    assert_eq!(occ["tag"].as_str().unwrap(), "rust");
+    assert!(occ["line"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn tags_search_sub_tag_matched_by_parent() {
+    let vault = make_vault();
+    write_note(
+        vault.path(),
+        "has-subtag.md",
+        "---\ntags: [workout/upper-body]\n---\nContent with #workout/legs.",
+    );
+    write_note(vault.path(), "unrelated.md", "---\ntags: [diet]\n---\nContent.");
+    obsidian()
+        .args(["--vault", vault.path().to_str().unwrap(), "tags", "search", "workout"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("has-subtag.md"))
+        .stdout(predicate::str::contains("[frontmatter] workout/upper-body"))
+        .stdout(predicate::str::contains("#workout/legs"))
+        .stdout(predicate::str::contains("unrelated.md").not());
+}
+
+#[test]
+fn tags_search_no_tags_arg_exits_with_error() {
+    let vault = make_vault();
+    obsidian()
+        .args(["--vault", vault.path().to_str().unwrap(), "tags", "search"])
+        .assert()
+        .failure();
+}
