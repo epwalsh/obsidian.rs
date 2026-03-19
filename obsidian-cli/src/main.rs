@@ -10,6 +10,7 @@ use obsidian_core::{LocatedTag, Note, Vault};
 
 use args::{
     BacklinksArgs, Cli, Command, OutputFormat, RenameArgs, SearchArgs, SortOrder, TagsListArgs, TagsSearchArgs,
+    UpdateArgs,
 };
 
 fn modified_time(path: &std::path::Path) -> std::time::SystemTime {
@@ -181,6 +182,32 @@ fn cmd_tags_list(vault: Vault, args: TagsListArgs) -> eyre::Result<()> {
     Ok(())
 }
 
+fn cmd_note_update(vault: Vault, args: UpdateArgs) -> eyre::Result<()> {
+    let (note_path, _) = resolve_note_path(&vault, &args.note)?;
+    let mut note = Note::from_path(&note_path)?;
+
+    let new_tags: Vec<String> = args.tag.into_iter().filter(|t| !note.tags.contains(t)).collect();
+    if !new_tags.is_empty() {
+        let fm = note.frontmatter.get_or_insert_with(indexmap::IndexMap::new);
+        let tags_entry = fm
+            .entry("tags".to_string())
+            .or_insert_with(|| gray_matter::Pod::Array(Vec::new()));
+        if let gray_matter::Pod::Array(arr) = tags_entry {
+            for tag in &new_tags {
+                arr.push(gray_matter::Pod::String(tag.clone()));
+            }
+        }
+        note.tags.extend(new_tags);
+        note.write()?;
+    }
+
+    match args.format {
+        OutputFormat::Plain => output::print_note_update_plain(&note, &vault.path),
+        OutputFormat::Json => output::print_note_update_json(&note, &vault.path),
+    }
+    Ok(())
+}
+
 fn main() -> eyre::Result<()> {
     color_eyre::install()?;
     let cli = Cli::parse();
@@ -194,8 +221,11 @@ fn main() -> eyre::Result<()> {
     let vault = Vault::open(&cli.vault)?;
     match cli.command {
         Command::Search(args) => cmd_search(vault, args),
-        Command::Backlinks(args) => cmd_backlinks(vault, args),
-        Command::Rename(args) => cmd_rename(vault, args),
+        Command::Note(note_args) => match note_args.subcommand {
+            args::NoteCommand::Backlinks(args) => cmd_backlinks(vault, args),
+            args::NoteCommand::Rename(args) => cmd_rename(vault, args),
+            args::NoteCommand::Update(args) => cmd_note_update(vault, args),
+        },
         Command::Tags(tags_args) => match tags_args.subcommand {
             args::TagsCommand::Search(args) => cmd_tags_search(vault, args),
             args::TagsCommand::List(args) => cmd_tags_list(vault, args),

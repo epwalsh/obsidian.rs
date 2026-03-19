@@ -256,6 +256,7 @@ fn backlinks_no_links_returns_empty() {
         .args([
             "--vault",
             vault.path().to_str().unwrap(),
+            "note",
             "backlinks",
             note_path.to_str().unwrap(),
         ])
@@ -274,6 +275,7 @@ fn backlinks_finds_wiki_links() {
         .args([
             "--vault",
             vault.path().to_str().unwrap(),
+            "note",
             "backlinks",
             note_path.to_str().unwrap(),
         ])
@@ -292,6 +294,7 @@ fn backlinks_finds_markdown_links() {
         .args([
             "--vault",
             vault.path().to_str().unwrap(),
+            "note",
             "backlinks",
             note_path.to_str().unwrap(),
         ])
@@ -310,6 +313,7 @@ fn backlinks_json_format() {
         .args([
             "--vault",
             vault.path().to_str().unwrap(),
+            "note",
             "backlinks",
             "--format",
             "json",
@@ -343,6 +347,7 @@ fn rename_renames_note() {
         .args([
             "--vault",
             vault.path().to_str().unwrap(),
+            "note",
             "rename",
             note_path.to_str().unwrap(),
             new_path.to_str().unwrap(),
@@ -365,6 +370,7 @@ fn rename_updates_backlinks() {
         .args([
             "--vault",
             vault.path().to_str().unwrap(),
+            "note",
             "rename",
             note_path.to_str().unwrap(),
             new_path.to_str().unwrap(),
@@ -386,6 +392,7 @@ fn rename_adds_md_extension_if_missing() {
         .args([
             "--vault",
             vault.path().to_str().unwrap(),
+            "note",
             "rename",
             note_path.to_str().unwrap(),
             new_path.to_str().unwrap(),
@@ -408,6 +415,7 @@ fn rename_moves_to_subdirectory() {
         .args([
             "--vault",
             vault.path().to_str().unwrap(),
+            "note",
             "rename",
             note_path.to_str().unwrap(),
             new_path.to_str().unwrap(),
@@ -428,6 +436,7 @@ fn rename_nonexistent_note_exits_with_error() {
         .args([
             "--vault",
             vault.path().to_str().unwrap(),
+            "note",
             "rename",
             "/nonexistent/note.md",
             new_path.to_str().unwrap(),
@@ -447,6 +456,7 @@ fn rename_target_directory_not_found_exits_with_error() {
         .args([
             "--vault",
             vault.path().to_str().unwrap(),
+            "note",
             "rename",
             note_path.to_str().unwrap(),
             new_path.to_str().unwrap(),
@@ -467,6 +477,7 @@ fn rename_target_already_exists_exits_with_error() {
         .args([
             "--vault",
             vault.path().to_str().unwrap(),
+            "note",
             "rename",
             note_path.to_str().unwrap(),
             new_path.to_str().unwrap(),
@@ -488,6 +499,7 @@ fn rename_dry_run_does_not_rename_file() {
         .args([
             "--vault",
             vault.path().to_str().unwrap(),
+            "note",
             "rename",
             "--dry-run",
             note_path.to_str().unwrap(),
@@ -510,6 +522,7 @@ fn rename_dry_run_does_not_modify_backlinks() {
         .args([
             "--vault",
             vault.path().to_str().unwrap(),
+            "note",
             "rename",
             "--dry-run",
             note_path.to_str().unwrap(),
@@ -531,6 +544,7 @@ fn rename_dry_run_outputs_new_path() {
         .args([
             "--vault",
             vault.path().to_str().unwrap(),
+            "note",
             "rename",
             "--dry-run",
             note_path.to_str().unwrap(),
@@ -552,6 +566,7 @@ fn rename_dry_run_outputs_updated_notes() {
         .args([
             "--vault",
             vault.path().to_str().unwrap(),
+            "note",
             "rename",
             "--dry-run",
             note_path.to_str().unwrap(),
@@ -573,6 +588,7 @@ fn rename_dry_run_json_format() {
         .args([
             "--vault",
             vault.path().to_str().unwrap(),
+            "note",
             "rename",
             "--dry-run",
             "--format",
@@ -605,6 +621,7 @@ fn rename_dry_run_no_backlinks() {
         .args([
             "--vault",
             vault.path().to_str().unwrap(),
+            "note",
             "rename",
             "--dry-run",
             "--format",
@@ -629,6 +646,7 @@ fn backlinks_nonexistent_note_exits_with_error() {
         .args([
             "--vault",
             vault.path().to_str().unwrap(),
+            "note",
             "backlinks",
             "/nonexistent/note.md",
         ])
@@ -844,6 +862,151 @@ fn tags_search_no_tags_arg_exits_with_error() {
         .args(["--vault", vault.path().to_str().unwrap(), "tags", "search"])
         .assert()
         .failure();
+}
+
+// --- note update tests ---
+
+#[test]
+fn note_update_adds_tag_to_existing_frontmatter_tags() {
+    let vault = make_vault();
+    write_note(vault.path(), "note.md", "---\ntags: [rust]\n---\nContent.");
+    let note_path = vault.path().join("note.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "update",
+            "--tag",
+            "obsidian",
+            note_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("note.md"));
+    let content = fs::read_to_string(&note_path).unwrap();
+    assert!(content.contains("obsidian"));
+    assert!(content.contains("rust"));
+}
+
+#[test]
+fn note_update_creates_tags_field_when_frontmatter_has_none() {
+    let vault = make_vault();
+    write_note(vault.path(), "note.md", "---\ntitle: My Note\n---\nContent.");
+    let note_path = vault.path().join("note.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "update",
+            "--tag",
+            "newtag",
+            note_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = fs::read_to_string(&note_path).unwrap();
+    assert!(content.contains("newtag"));
+}
+
+#[test]
+fn note_update_creates_frontmatter_when_note_has_none() {
+    let vault = make_vault();
+    write_note(vault.path(), "note.md", "Plain content, no frontmatter.");
+    let note_path = vault.path().join("note.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "update",
+            "--tag",
+            "newtag",
+            note_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = fs::read_to_string(&note_path).unwrap();
+    assert!(content.contains("newtag"));
+    assert!(content.contains("---"));
+}
+
+#[test]
+fn note_update_idempotent_does_not_duplicate_existing_tag() {
+    let vault = make_vault();
+    write_note(vault.path(), "note.md", "---\ntags: [rust]\n---\nContent.");
+    let note_path = vault.path().join("note.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "update",
+            "--tag",
+            "rust",
+            note_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = fs::read_to_string(&note_path).unwrap();
+    assert_eq!(content.matches("rust").count(), 1);
+}
+
+#[test]
+fn note_update_multiple_tags() {
+    let vault = make_vault();
+    write_note(vault.path(), "note.md", "---\ntags: [existing]\n---\nContent.");
+    let note_path = vault.path().join("note.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "update",
+            "--tag",
+            "alpha",
+            "--tag",
+            "beta",
+            note_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = fs::read_to_string(&note_path).unwrap();
+    assert!(content.contains("alpha"));
+    assert!(content.contains("beta"));
+    assert!(content.contains("existing"));
+}
+
+#[test]
+fn note_update_json_format() {
+    let vault = make_vault();
+    write_note(vault.path(), "note.md", "---\ntags: [rust]\n---\nContent.");
+    let note_path = vault.path().join("note.md");
+    let output = obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "update",
+            "--tag",
+            "obsidian",
+            "--format",
+            "json",
+            note_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let s = String::from_utf8(output).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+    assert!(v["path"].as_str().unwrap().contains("note.md"));
+    let tags = v["tags"].as_array().unwrap();
+    let tag_strs: Vec<&str> = tags.iter().map(|t| t.as_str().unwrap()).collect();
+    assert!(tag_strs.contains(&"rust"));
+    assert!(tag_strs.contains(&"obsidian"));
 }
 
 #[test]

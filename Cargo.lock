@@ -509,6 +509,8 @@ dependencies = [
  "clap",
  "color-eyre",
  "colored",
+ "gray_matter",
+ "indexmap",
  "obsidian-core",
  "predicates",
  "serde",

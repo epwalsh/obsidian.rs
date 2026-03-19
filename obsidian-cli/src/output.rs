@@ -171,6 +171,26 @@ pub fn print_tags_list_json(tags: &[String]) {
     println!("{}", serde_json::to_string(tags).unwrap());
 }
 
+pub fn print_note_update_plain(note: &Note, vault_path: &Path) {
+    let rel = note.path.strip_prefix(vault_path).unwrap_or(&note.path);
+    println!("{}", rel.display().to_string().cyan());
+}
+
+#[derive(Serialize)]
+struct NoteUpdateJson<'a> {
+    path: String,
+    tags: &'a [String],
+}
+
+pub fn print_note_update_json(note: &Note, vault_path: &Path) {
+    let rel = note.path.strip_prefix(vault_path).unwrap_or(&note.path);
+    let out = NoteUpdateJson {
+        path: rel.display().to_string(),
+        tags: &note.tags,
+    };
+    println!("{}", serde_json::to_string(&out).unwrap());
+}
+
 pub fn print_backlinks_json(results: &[(Note, Vec<LocatedLink>)], vault_path: &Path) {
     let items: Vec<BacklinkJson> = results
         .iter()

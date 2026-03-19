@@ -139,7 +139,7 @@ impl Note {
                 // serde_yaml may or may not emit a leading "---\n"; strip it so we
                 // control the delimiters ourselves.
                 let yaml = yaml.strip_prefix("---\n").unwrap_or(&yaml);
-                Ok(format!("---\n{}---\n{}", yaml, self.content))
+                Ok(format!("---\n{}---\n\n{}", yaml, self.content))
             }
         }
     }

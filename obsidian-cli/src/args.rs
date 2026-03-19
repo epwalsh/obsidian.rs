@@ -22,10 +22,8 @@ pub struct Cli {
 pub enum Command {
     /// Search for notes in the vault
     Search(SearchArgs),
-    /// Find notes that link to a given note
-    Backlinks(BacklinksArgs),
-    /// Rename a note and update all backlinks
-    Rename(RenameArgs),
+    /// Work with individual notes
+    Note(NoteArgs),
     /// Work with tags across the vault
     Tags(TagsArgs),
 }
@@ -82,6 +80,34 @@ pub struct RenameArgs {
     /// Preview what would change without modifying any files
     #[arg(long)]
     pub dry_run: bool,
+    /// Output format
+    #[arg(long, short = 'f', default_value = "plain")]
+    pub format: OutputFormat,
+}
+
+#[derive(clap::Args)]
+pub struct NoteArgs {
+    #[command(subcommand)]
+    pub subcommand: NoteCommand,
+}
+
+#[derive(Subcommand)]
+pub enum NoteCommand {
+    /// Find notes that link to a given note
+    Backlinks(BacklinksArgs),
+    /// Rename a note and update all backlinks
+    Rename(RenameArgs),
+    /// Update fields of a note
+    Update(UpdateArgs),
+}
+
+#[derive(clap::Args)]
+pub struct UpdateArgs {
+    /// Path to the note (resolved relative to current directory)
+    pub note: PathBuf,
+    /// Add tag(s) to frontmatter (repeatable)
+    #[arg(long, short = 't')]
+    pub tag: Vec<String>,
     /// Output format
     #[arg(long, short = 'f', default_value = "plain")]
     pub format: OutputFormat,
