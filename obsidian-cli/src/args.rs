@@ -48,6 +48,9 @@ pub struct SearchArgs {
     /// Filter by content substring (AND semantics, repeatable)
     #[arg(long, short = 'c')]
     pub content: Vec<String>,
+    /// Filter by exact note ID match
+    #[arg(long)]
+    pub id: Option<String>,
     /// Filter by content regex
     #[arg(long, short = 'r')]
     pub regex: Option<String>,
