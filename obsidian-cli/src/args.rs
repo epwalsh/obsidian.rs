@@ -8,6 +8,12 @@ pub struct Cli {
     /// Path to the vault directory. Defaults to current directory.
     #[arg(long, short = 'v', global = true, env = "OBSIDIAN_VAULT", default_value = ".")]
     pub vault: PathBuf,
+    /// Force color output even when not writing to a TTY
+    #[arg(long, global = true)]
+    pub color: bool,
+    /// Disable color output
+    #[arg(long, global = true)]
+    pub no_color: bool,
     #[command(subcommand)]
     pub command: Command,
 }

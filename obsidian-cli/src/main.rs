@@ -156,6 +156,13 @@ fn cmd_tags_list(vault: Vault, args: TagsListArgs) -> eyre::Result<()> {
 fn main() -> eyre::Result<()> {
     color_eyre::install()?;
     let cli = Cli::parse();
+    if cli.color && cli.no_color {
+        eyre::bail!("--color and --no-color are mutually exclusive");
+    } else if cli.color {
+        colored::control::set_override(true);
+    } else if cli.no_color {
+        colored::control::set_override(false);
+    }
     let vault = Vault::open(&cli.vault)?;
     match cli.command {
         Command::Search(args) => cmd_search(vault, args),
