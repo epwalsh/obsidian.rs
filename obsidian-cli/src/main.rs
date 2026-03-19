@@ -5,6 +5,7 @@ use std::env::current_dir;
 
 use clap::Parser;
 use color_eyre::eyre;
+use colored::Colorize;
 use obsidian_core::{LocatedTag, Note, Vault};
 
 use args::{BacklinksArgs, Cli, Command, OutputFormat, RenameArgs, SearchArgs, TagsListArgs, TagsSearchArgs};
@@ -95,7 +96,7 @@ fn cmd_rename(vault: Vault, args: RenameArgs) -> eyre::Result<()> {
     } else {
         let renamed = vault.rename(&note, &new_path)?;
         let rel = renamed.path.strip_prefix(&vault.path).unwrap_or(&renamed.path);
-        println!("{}", rel.display());
+        println!("{}", rel.display().to_string().cyan());
     }
     Ok(())
 }
@@ -156,6 +157,13 @@ fn cmd_tags_list(vault: Vault, args: TagsListArgs) -> eyre::Result<()> {
 fn main() -> eyre::Result<()> {
     color_eyre::install()?;
     let cli = Cli::parse();
+    if cli.color && cli.no_color {
+        eyre::bail!("--color and --no-color are mutually exclusive");
+    } else if cli.color {
+        colored::control::set_override(true);
+    } else if cli.no_color {
+        colored::control::set_override(false);
+    }
     let vault = Vault::open(&cli.vault)?;
     match cli.command {
         Command::Search(args) => cmd_search(vault, args),

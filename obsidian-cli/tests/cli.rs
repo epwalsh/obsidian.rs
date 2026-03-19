@@ -845,3 +845,20 @@ fn tags_search_no_tags_arg_exits_with_error() {
         .assert()
         .failure();
 }
+
+#[test]
+fn color_and_no_color_are_mutually_exclusive() {
+    let vault = make_vault();
+    write_note(vault.path(), "a.md", "Note A.");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "--color",
+            "--no-color",
+            "search",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--color and --no-color"));
+}

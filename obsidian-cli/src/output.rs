@@ -1,12 +1,13 @@
 use std::path::Path;
 
+use colored::Colorize;
 use obsidian_core::{Link, LocatedLink, LocatedTag, Note, RenamePreview};
 use serde::Serialize;
 
 pub fn print_search_plain(notes: &[Note], vault_path: &Path) {
     for note in notes {
         let rel = note.path.strip_prefix(vault_path).unwrap_or(&note.path);
-        println!("{}", rel.display());
+        println!("{}", rel.display().to_string().cyan());
     }
 }
 
@@ -37,7 +38,7 @@ pub fn print_search_json(notes: &[Note], vault_path: &Path) {
 pub fn print_backlinks_plain(results: &[(Note, Vec<LocatedLink>)], vault_path: &Path) {
     for (note, _) in results {
         let rel = note.path.strip_prefix(vault_path).unwrap_or(&note.path);
-        println!("{}", rel.display());
+        println!("{}", rel.display().to_string().cyan());
     }
 }
 
@@ -59,14 +60,16 @@ struct BacklinkJson<'a> {
 
 pub fn print_rename_preview_plain(preview: &RenamePreview, vault_path: &Path) {
     let rel_new = preview.new_path.strip_prefix(vault_path).unwrap_or(&preview.new_path);
-    println!("{}", rel_new.display());
+    println!("{}", rel_new.display().to_string().cyan().bold());
     for (path, count) in &preview.updated_notes {
         let rel = path.strip_prefix(vault_path).unwrap_or(path);
+        let link_word = if *count == 1 { "link" } else { "links" };
+        let count_str = format!("({} {})", count, link_word).dimmed();
         println!(
-            " ➡️update: {} ({} link{})",
-            rel.display(),
-            count,
-            if *count == 1 { "" } else { "s" }
+            " {} {} {}",
+            "➡️update:".green(),
+            rel.display().to_string().cyan(),
+            count_str
         );
     }
 }
@@ -108,12 +111,14 @@ pub fn print_rename_preview_json(preview: &RenamePreview, vault_path: &Path) {
 pub fn print_tags_search_plain(results: &[(Note, Vec<String>, Vec<LocatedTag>)], vault_path: &Path) {
     for (note, fm_tags, inline_tags) in results {
         let rel = note.path.strip_prefix(vault_path).unwrap_or(&note.path);
-        println!("{}", rel.display());
+        println!("{}", rel.display().to_string().cyan());
         if !fm_tags.is_empty() {
-            println!("  [frontmatter] {}", fm_tags.join(", "));
+            let tags_colored: Vec<String> = fm_tags.iter().map(|t| t.yellow().to_string()).collect();
+            println!("  {} {}", "[frontmatter]".dimmed(), tags_colored.join(", "));
         }
         for lt in inline_tags {
-            println!("  [{}:{}] #{}", lt.location.line, lt.location.col_start, lt.tag);
+            let marker = format!("[{}:{}]", lt.location.line, lt.location.col_start);
+            println!("  {} #{}", marker.dimmed(), lt.tag.yellow());
         }
     }
 }
@@ -158,7 +163,7 @@ pub fn print_tags_search_json(results: &[(Note, Vec<String>, Vec<LocatedTag>)], 
 
 pub fn print_tags_list_plain(tags: &[String]) {
     for tag in tags {
-        println!("{}", tag);
+        println!("{}", tag.yellow());
     }
 }
 
