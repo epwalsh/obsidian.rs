@@ -53,6 +53,9 @@ pub struct SearchArgs {
     /// Filter by content regex
     #[arg(long, short = 'r')]
     pub regex: Option<String>,
+    /// Sort order for results
+    #[arg(long, short = 's', default_value = "path-asc")]
+    pub sort: SortOrder,
     /// Output format
     #[arg(long, short = 'f', default_value = "plain")]
     pub format: OutputFormat,
@@ -62,6 +65,9 @@ pub struct SearchArgs {
 pub struct BacklinksArgs {
     /// Path to the note (resolved relative to current directory)
     pub note: PathBuf,
+    /// Sort order for results
+    #[arg(long, short = 's', default_value = "path-asc")]
+    pub sort: SortOrder,
     /// Output format
     #[arg(long, short = 'f', default_value = "plain")]
     pub format: OutputFormat,
@@ -87,6 +93,15 @@ pub enum OutputFormat {
     Json,
 }
 
+#[derive(Clone, ValueEnum, Default)]
+pub enum SortOrder {
+    #[default]
+    PathAsc,
+    PathDesc,
+    ModifiedAsc,
+    ModifiedDesc,
+}
+
 #[derive(clap::Args)]
 pub struct TagsArgs {
     #[command(subcommand)]
@@ -106,6 +121,9 @@ pub struct TagsSearchArgs {
     /// Tags to search for (OR semantics — occurrences of any given tag are shown)
     #[arg(required = true)]
     pub tags: Vec<String>,
+    /// Sort order for results
+    #[arg(long, short = 's', default_value = "path-asc")]
+    pub sort: SortOrder,
     /// Output format
     #[arg(long, short = 'f', default_value = "plain")]
     pub format: OutputFormat,

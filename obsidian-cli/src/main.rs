@@ -8,7 +8,24 @@ use color_eyre::eyre;
 use colored::Colorize;
 use obsidian_core::{LocatedTag, Note, Vault};
 
-use args::{BacklinksArgs, Cli, Command, OutputFormat, RenameArgs, SearchArgs, TagsListArgs, TagsSearchArgs};
+use args::{
+    BacklinksArgs, Cli, Command, OutputFormat, RenameArgs, SearchArgs, SortOrder, TagsListArgs, TagsSearchArgs,
+};
+
+fn modified_time(path: &std::path::Path) -> std::time::SystemTime {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+}
+
+fn sort_notes_by<T>(items: &mut [T], key: impl Fn(&T) -> &std::path::Path, sort: &SortOrder) {
+    match sort {
+        SortOrder::PathAsc => items.sort_by(|a, b| key(a).cmp(key(b))),
+        SortOrder::PathDesc => items.sort_by(|a, b| key(b).cmp(key(a))),
+        SortOrder::ModifiedAsc => items.sort_by_key(|a| modified_time(key(a))),
+        SortOrder::ModifiedDesc => items.sort_by_key(|b| std::cmp::Reverse(modified_time(key(b)))),
+    }
+}
 
 fn resolve_note_path(
     vault: &Vault,
@@ -62,7 +79,7 @@ fn cmd_search(vault: Vault, args: SearchArgs) -> eyre::Result<()> {
 
     let results = query.execute()?;
     let mut notes: Vec<Note> = results.into_iter().filter_map(|r| r.ok()).collect();
-    notes.sort_by(|a, b| a.path.cmp(&b.path));
+    sort_notes_by(&mut notes, |n| &n.path, &args.sort);
 
     match args.format {
         OutputFormat::Plain => output::print_search_plain(&notes, &vault.path),
@@ -75,7 +92,7 @@ fn cmd_backlinks(vault: Vault, args: BacklinksArgs) -> eyre::Result<()> {
     let (note_path, _) = resolve_note_path(&vault, &args.note)?;
     let note = Note::from_path(&note_path)?;
     let mut results = vault.backlinks(&note);
-    results.sort_by(|(a, _), (b, _)| a.path.cmp(&b.path));
+    sort_notes_by(&mut results, |(n, _)| &n.path, &args.sort);
 
     match args.format {
         OutputFormat::Plain => output::print_backlinks_plain(&results, &vault.path),
@@ -134,7 +151,7 @@ fn cmd_tags_search(vault: Vault, args: TagsSearchArgs) -> eyre::Result<()> {
             }
         })
         .collect();
-    results.sort_by(|(a, _, _), (b, _, _)| a.path.cmp(&b.path));
+    sort_notes_by(&mut results, |(n, _, _)| &n.path, &args.sort);
 
     match args.format {
         OutputFormat::Plain => output::print_tags_search_plain(&results, &vault.path),
