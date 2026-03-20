@@ -196,6 +196,12 @@ impl Vault {
         search::find_notes(&self.path)
     }
 
+    /// Like [`notes`](Self::notes), but skips notes whose path does not satisfy `filter`.
+    /// Filtering happens at the filesystem traversal level, before any file is read.
+    pub fn notes_filtered(&self, filter: impl Fn(&Path) -> bool) -> Vec<Result<Note, NoteError>> {
+        search::find_notes_filtered(&self.path, filter)
+    }
+
     /// Returns a [`SearchQuery`](search::SearchQuery) rooted at this vault's path.
     pub fn search(&self) -> search::SearchQuery {
         search::SearchQuery::new(&self.path)

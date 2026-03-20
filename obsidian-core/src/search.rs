@@ -215,6 +215,17 @@ pub fn find_notes(root: impl AsRef<Path>) -> Vec<Result<Note, NoteError>> {
         .collect()
 }
 
+/// Like [`find_notes`], but only loads notes whose path satisfies `filter`.
+/// Filtering happens before any file I/O, so non-matching files are never read.
+pub fn find_notes_filtered(root: impl AsRef<Path>, filter: impl Fn(&Path) -> bool) -> Vec<Result<Note, NoteError>> {
+    find_note_paths(root)
+        .filter(|path| filter(path))
+        .collect::<Vec<_>>()
+        .into_par_iter()
+        .map(Note::from_path)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

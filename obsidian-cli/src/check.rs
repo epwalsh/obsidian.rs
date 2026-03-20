@@ -26,15 +26,13 @@ pub fn cmd_check(vault: Vault, args: CheckArgs) -> eyre::Result<()> {
 
     let ignore_set = build_ignore_set(&args.ignore)?;
 
-    let all_notes: Vec<_> = vault.notes().into_iter().filter_map(|r| r.ok()).collect();
-
-    // Notes to actually check — those not matched by any ignore pattern.
-    let notes: Vec<_> = all_notes
-        .iter()
-        .filter(|n| {
-            let rel = n.path.strip_prefix(&vault.path).unwrap_or(&n.path);
+    let notes: Vec<_> = vault
+        .notes_filtered(|path| {
+            let rel = path.strip_prefix(&vault.path).unwrap_or(path);
             !ignore_set.is_match(rel)
         })
+        .into_iter()
+        .filter_map(|r| r.ok())
         .collect();
     println!("{} {}", "Notes:     ".bold(), notes.len());
     println!();
@@ -59,8 +57,8 @@ pub fn cmd_check(vault: Vault, args: CheckArgs) -> eyre::Result<()> {
             let mut sorted = paths.clone();
             sorted.sort();
             for path in &sorted {
-                let note = all_notes.iter().find(|n| &n.path == path).unwrap();
-                let backlink_count = vault.backlinks_from(&all_notes, note).len();
+                let note = notes.iter().find(|n| &n.path == path).unwrap();
+                let backlink_count = vault.backlinks_from(&notes, note).len();
                 let rel = path.strip_prefix(&vault.path).unwrap_or(path);
                 println!(
                     "    {} ({} backlinks)",
@@ -92,8 +90,8 @@ pub fn cmd_check(vault: Vault, args: CheckArgs) -> eyre::Result<()> {
             let mut sorted = paths.clone();
             sorted.sort();
             for path in &sorted {
-                let note = all_notes.iter().find(|n| &n.path == path).unwrap();
-                let backlink_count = vault.backlinks_from(&all_notes, note).len();
+                let note = notes.iter().find(|n| &n.path == path).unwrap();
+                let backlink_count = vault.backlinks_from(&notes, note).len();
                 let rel = path.strip_prefix(&vault.path).unwrap_or(path);
                 println!(
                     "    {} ({} backlinks)",
@@ -105,10 +103,8 @@ pub fn cmd_check(vault: Vault, args: CheckArgs) -> eyre::Result<()> {
     }
 
     // --- Broken links ---
-    // Build the set of valid wiki link targets from ALL notes (including ignored ones),
-    // so that links pointing to ignored notes are not flagged as broken.
     let mut valid_wiki_targets: HashSet<String> = HashSet::new();
-    for note in all_notes.iter() {
+    for note in notes.iter() {
         valid_wiki_targets.insert(note.id.clone());
         if let Some(stem) = note.path.file_stem().and_then(|s| s.to_str()) {
             valid_wiki_targets.insert(stem.to_string());
