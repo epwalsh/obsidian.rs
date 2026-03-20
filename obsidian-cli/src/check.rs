@@ -53,14 +53,20 @@ pub fn cmd_check(vault: Vault, args: CheckArgs) -> eyre::Result<()> {
         println!("{}", "✓ No duplicate IDs".green());
     } else {
         has_issues = true;
-        println!("{}", "Duplicate IDs:".red().bold());
+        println!("{}", "✘ Duplicate IDs:".red().bold());
         for (id, paths) in dup_ids {
             println!("  {}", id.yellow());
             let mut sorted = paths.clone();
             sorted.sort();
             for path in &sorted {
+                let note = all_notes.iter().find(|n| &n.path == path).unwrap();
+                let backlink_count = vault.backlinks_from(&all_notes, note).len();
                 let rel = path.strip_prefix(&vault.path).unwrap_or(path);
-                println!("    {}", rel.display().to_string().cyan());
+                println!(
+                    "    {} ({} backlinks)",
+                    rel.display().to_string().cyan(),
+                    backlink_count
+                );
             }
         }
     }
@@ -80,14 +86,20 @@ pub fn cmd_check(vault: Vault, args: CheckArgs) -> eyre::Result<()> {
         println!("{}", "✓ No duplicate aliases".green());
     } else {
         has_issues = true;
-        println!("{}", "Duplicate aliases:".red().bold());
+        println!("{}", "✘ Duplicate aliases:".red().bold());
         for (alias, paths) in dup_aliases {
             println!("  {}", alias.yellow());
             let mut sorted = paths.clone();
             sorted.sort();
             for path in &sorted {
+                let note = all_notes.iter().find(|n| &n.path == path).unwrap();
+                let backlink_count = vault.backlinks_from(&all_notes, note).len();
                 let rel = path.strip_prefix(&vault.path).unwrap_or(path);
-                println!("    {}", rel.display().to_string().cyan());
+                println!(
+                    "    {} ({} backlinks)",
+                    rel.display().to_string().cyan(),
+                    backlink_count
+                );
             }
         }
     }
@@ -143,7 +155,7 @@ pub fn cmd_check(vault: Vault, args: CheckArgs) -> eyre::Result<()> {
         println!("{}", "✓ No broken links".green());
     } else {
         has_issues = true;
-        println!("{}", "Broken links:".red().bold());
+        println!("{}", "✘ Broken links:".red().bold());
         let mut current_path: Option<&PathBuf> = None;
         for (path, line, text) in &broken {
             if current_path != Some(path) {

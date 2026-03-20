@@ -125,6 +125,44 @@ struct MergeOp {
     per_note_replacements: Vec<(PathBuf, Vec<(LocatedLink, String)>)>,
 }
 
+/// Returns all links in `source` that point to `target`, using the vault root `vault_path`
+/// for resolving relative markdown URLs. Returns an empty vec if `source` is `target`.
+fn find_matching_links(source: &Note, target: &Note, vault_path: &std::path::Path) -> Vec<LocatedLink> {
+    if source.path == target.path {
+        return Vec::new();
+    }
+    let target_stem = target.path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string());
+    source
+        .links()
+        .into_iter()
+        .filter(|ll| match &ll.link {
+            Link::Wiki {
+                target: wiki_target, ..
+            } => {
+                wiki_target == &target.id
+                    || target_stem.as_deref().is_some_and(|s| wiki_target == s)
+                    || target.aliases.iter().any(|a| wiki_target == a)
+            }
+            Link::Markdown { url, .. } => {
+                if url.contains("://") || url.starts_with('/') {
+                    return false;
+                }
+                let url_path = match url.find('#') {
+                    Some(i) => &url[..i],
+                    None => url.as_str(),
+                };
+                if !url_path.ends_with(".md") {
+                    return false;
+                }
+                let source_dir = source.path.parent().unwrap_or(&source.path);
+                (normalize_path(&source_dir.join(url_path)) == target.path)
+                    || (url_path == relative_path(vault_path, &target.path).to_string_lossy())
+            }
+            _ => false,
+        })
+        .collect()
+}
+
 impl Vault {
     /// Opens a vault at the given path, returning an error if the path does not exist or is not a
     /// directory.
@@ -169,45 +207,28 @@ impl Vault {
     /// Only wiki links (`[[target]]`) and markdown links (`[text](target.md)`) are
     /// considered. Embed links are excluded. Notes that fail to load are silently skipped.
     pub fn backlinks(&self, target: &Note) -> Vec<(Note, Vec<LocatedLink>)> {
-        let target_stem = target.path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string());
-
         let paths: Vec<_> = search::find_note_paths(&self.path).collect();
         paths
             .into_par_iter()
             .filter_map(|path| {
                 let source = Note::from_path(&path).ok()?;
-                if source.path == target.path {
-                    return None;
+                let matching = find_matching_links(&source, target, &self.path);
+                if matching.is_empty() {
+                    None
+                } else {
+                    Some((source, matching))
                 }
-                let matching: Vec<LocatedLink> = source
-                    .links()
-                    .into_iter()
-                    .filter(|ll| match &ll.link {
-                        Link::Wiki {
-                            target: wiki_target, ..
-                        } => {
-                            wiki_target == &target.id
-                                || target_stem.as_deref().is_some_and(|s| wiki_target == s)
-                                || target.aliases.iter().any(|a| wiki_target == a)
-                        }
-                        Link::Markdown { url, .. } => {
-                            if url.contains("://") || url.starts_with('/') {
-                                return false;
-                            }
-                            let url_path = match url.find('#') {
-                                Some(i) => &url[..i],
-                                None => url.as_str(),
-                            };
-                            if !url_path.ends_with(".md") {
-                                return false;
-                            }
-                            let source_dir = source.path.parent().unwrap_or(&source.path);
-                            (normalize_path(&source_dir.join(url_path)) == target.path)
-                                || (url_path == relative_path(self.path.as_path(), &target.path).to_string_lossy())
-                        }
-                        _ => false,
-                    })
-                    .collect();
+            })
+            .collect()
+    }
+
+    /// Like [`backlinks`](Self::backlinks), but operates on an already-loaded slice of notes
+    /// instead of reading from disk. Returns references into `notes`.
+    pub fn backlinks_from<'a>(&self, notes: &'a [Note], target: &Note) -> Vec<(&'a Note, Vec<LocatedLink>)> {
+        notes
+            .iter()
+            .filter_map(|source| {
+                let matching = find_matching_links(source, target, &self.path);
                 if matching.is_empty() {
                     None
                 } else {
