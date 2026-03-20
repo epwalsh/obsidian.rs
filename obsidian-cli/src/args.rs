@@ -27,6 +27,15 @@ pub enum Command {
     Note(NoteArgs),
     /// Work with tags across the vault
     Tags(TagsArgs),
+    /// Check vault health: report duplicate IDs/aliases and broken links
+    Check(CheckArgs),
+}
+
+#[derive(clap::Args)]
+pub struct CheckArgs {
+    /// Ignore notes matching this glob pattern (matched against vault-relative path, repeatable)
+    #[arg(long, short = 'i')]
+    pub ignore: Vec<String>,
 }
 
 #[derive(clap::Args)]

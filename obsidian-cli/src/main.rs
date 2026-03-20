@@ -1,4 +1,5 @@
 mod args;
+mod check;
 mod note;
 mod output;
 mod search;
@@ -36,5 +37,6 @@ fn main() -> eyre::Result<()> {
             args::TagsCommand::Search(args) => tags::cmd_tags_search(vault, args),
             args::TagsCommand::List(args) => tags::cmd_tags_list(vault, args),
         },
+        Command::Check(args) => check::cmd_check(vault, args),
     }
 }

@@ -509,6 +509,7 @@ dependencies = [
  "clap",
  "color-eyre",
  "colored",
+ "globset",
  "gray_matter",
  "indexmap",
  "obsidian-core",
