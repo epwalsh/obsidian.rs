@@ -2,6 +2,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+#[derive(Clone)]
 pub enum Link {
     Wiki {
         target: String,
@@ -23,12 +24,14 @@ pub enum Link {
 ///
 /// Lines are 1-indexed; columns are 0-indexed and character-based (not byte-based).
 /// `col_end` is exclusive (past-the-end).
+#[derive(Clone)]
 pub struct Location {
     pub line: usize,
     pub col_start: usize,
     pub col_end: usize,
 }
 
+#[derive(Clone)]
 pub struct LocatedLink {
     pub link: Link,
     pub location: Location,

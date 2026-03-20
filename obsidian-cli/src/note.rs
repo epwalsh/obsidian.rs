@@ -31,11 +31,11 @@ pub fn cmd_merge(vault: Vault, args: MergeArgs) -> eyre::Result<()> {
         dest_path.set_extension("md");
     }
 
-    // Resolve and load sources.
+    // Resolve and load sources (content required for body concatenation).
     let mut sources: Vec<Note> = Vec::new();
     for src_arg in source_args {
         let (note_path, _) = resolve_note_path(&vault, &src_arg.to_path_buf())?;
-        sources.push(Note::from_path(&note_path)?);
+        sources.push(Note::from_path_with_content(&note_path)?);
     }
 
     if args.dry_run {
@@ -145,7 +145,7 @@ fn update_single_note(vault: &Vault, note_arg: &std::path::Path, tags: &[String]
             }
         }
         note.tags.extend(new_tags);
-        note.write()?;
+        note.write_frontmatter()?;
     }
 
     Ok(note)

@@ -4,6 +4,7 @@ use regex::Regex;
 
 use crate::link::{FENCED_CODE_RE, INLINE_CODE_RE, Location, byte_to_line_col};
 
+#[derive(Clone)]
 pub struct LocatedTag {
     pub tag: String,
     pub location: Location,

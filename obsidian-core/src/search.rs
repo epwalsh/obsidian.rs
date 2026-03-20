@@ -124,10 +124,17 @@ impl SearchQuery {
             })
             .collect();
 
+        let needs_content = !content_strings.is_empty() || content_regex.is_some();
+
         let results = paths
             .into_par_iter()
             .filter_map(|path| -> Option<Result<Note, NoteError>> {
-                let note = match Note::from_path(&path) {
+                let load = if needs_content {
+                    Note::from_path_with_content(&path)
+                } else {
+                    Note::from_path(&path)
+                };
+                let note = match load {
                     Ok(n) => n,
                     Err(e) => return Some(Err(e)),
                 };
@@ -170,14 +177,18 @@ impl SearchQuery {
                     return None;
                 }
 
-                if !content_strings.iter().all(|s| note.content.contains(s.as_str())) {
-                    return None;
+                if !content_strings.is_empty() {
+                    let body = note.content.as_deref().unwrap_or("");
+                    if !content_strings.iter().all(|s| body.contains(s.as_str())) {
+                        return None;
+                    }
                 }
 
-                if let Some(ref re) = regex
-                    && !re.is_match(&note.content)
-                {
-                    return None;
+                if let Some(ref re) = regex {
+                    let body = note.content.as_deref().unwrap_or("");
+                    if !re.is_match(body) {
+                        return None;
+                    }
                 }
 
                 Some(Ok(note))
@@ -206,12 +217,21 @@ pub fn find_note_paths(root: impl AsRef<Path>) -> impl Iterator<Item = PathBuf> 
         .map(|entry| entry.into_path())
 }
 
-/// Loads all notes found recursively under `root` in parallel.
+/// Loads all notes found recursively under `root` in parallel, without retaining body content.
 pub fn find_notes(root: impl AsRef<Path>) -> Vec<Result<Note, NoteError>> {
     find_note_paths(root)
         .collect::<Vec<_>>()
         .into_par_iter()
         .map(Note::from_path)
+        .collect()
+}
+
+/// Like [`find_notes`], but retains body content in each [`Note::content`].
+pub fn find_notes_with_content(root: impl AsRef<Path>) -> Vec<Result<Note, NoteError>> {
+    find_note_paths(root)
+        .collect::<Vec<_>>()
+        .into_par_iter()
+        .map(Note::from_path_with_content)
         .collect()
 }
 
@@ -223,6 +243,19 @@ pub fn find_notes_filtered(root: impl AsRef<Path>, filter: impl Fn(&Path) -> boo
         .collect::<Vec<_>>()
         .into_par_iter()
         .map(Note::from_path)
+        .collect()
+}
+
+/// Like [`find_notes_filtered`], but retains body content in each [`Note::content`].
+pub fn find_notes_filtered_with_content(
+    root: impl AsRef<Path>,
+    filter: impl Fn(&Path) -> bool,
+) -> Vec<Result<Note, NoteError>> {
+    find_note_paths(root)
+        .filter(|path| filter(path))
+        .collect::<Vec<_>>()
+        .into_par_iter()
+        .map(Note::from_path_with_content)
         .collect()
 }
 

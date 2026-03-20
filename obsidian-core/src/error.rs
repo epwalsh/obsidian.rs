@@ -22,6 +22,8 @@ pub enum NoteError {
     Io(#[from] std::io::Error),
     #[error("failed to serialize frontmatter: {0}")]
     Yaml(#[from] serde_yaml::Error),
+    #[error("note content not loaded; use from_path_with_content() or load_content()")]
+    ContentNotLoaded,
 }
 
 #[derive(Debug, thiserror::Error)]

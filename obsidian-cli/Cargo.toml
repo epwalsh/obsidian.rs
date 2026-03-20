@@ -12,7 +12,7 @@ obsidian-core = { path = "../obsidian-core" }
 clap = { version = "4", features = ["derive", "env"] }
 globset = "0.4"
 color-eyre = "0.6"
-colored = "2"
+colored = "3"
 gray_matter = "0.3.2"
 indexmap = "2"
 serde = { version = "1", features = ["derive"] }
