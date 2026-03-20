@@ -513,6 +513,19 @@ impl Vault {
             );
         }
 
+        // Union remaining source frontmatter fields (dest wins on conflicts; id/tags/aliases are
+        // excluded because they're handled above or must not be inherited from sources).
+        const SKIP_KEYS: &[&str] = &["id", "tags", "aliases"];
+        for source in sources {
+            if let Some(sfm) = &source.frontmatter {
+                for (k, v) in sfm {
+                    if !SKIP_KEYS.contains(&k.as_str()) {
+                        fm.entry(k.clone()).or_insert_with(|| v.clone());
+                    }
+                }
+            }
+        }
+
         let merged_frontmatter = if fm.is_empty() { None } else { Some(fm) };
 
         Ok(MergeOp {
@@ -1242,5 +1255,160 @@ mod tests {
 
         let source_content = fs::read_to_string(dir.path().join("source.md")).unwrap();
         assert_eq!(source_content, "See [[new-stem#h1|display]].");
+    }
+
+    // --- merge tests ---
+
+    #[test]
+    fn merge_basic_creates_dest_and_deletes_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.md"), "Body A.").unwrap();
+        fs::write(dir.path().join("b.md"), "Body B.").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let a = Note::from_path(dir.path().join("a.md")).unwrap();
+        let b = Note::from_path(dir.path().join("b.md")).unwrap();
+        let dest_path = dir.path().join("combined.md");
+        vault.merge(&[a, b], &dest_path).unwrap();
+
+        assert!(!dir.path().join("a.md").exists());
+        assert!(!dir.path().join("b.md").exists());
+        assert!(dest_path.exists());
+        let content = fs::read_to_string(&dest_path).unwrap();
+        assert!(content.contains("Body A."));
+        assert!(content.contains("Body B."));
+    }
+
+    #[test]
+    fn merge_into_existing_appends_content() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("src.md"), "Source body.").unwrap();
+        fs::write(dir.path().join("dest.md"), "Existing body.").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let src = Note::from_path(dir.path().join("src.md")).unwrap();
+        vault.merge(&[src], &dir.path().join("dest.md")).unwrap();
+
+        assert!(!dir.path().join("src.md").exists());
+        let content = fs::read_to_string(dir.path().join("dest.md")).unwrap();
+        assert!(content.contains("Existing body."));
+        assert!(content.contains("Source body."));
+    }
+
+    #[test]
+    fn merge_unions_tags() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.md"), "---\ntags: [rust]\n---\nBody A.").unwrap();
+        fs::write(dir.path().join("b.md"), "---\ntags: [obsidian]\n---\nBody B.").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let a = Note::from_path(dir.path().join("a.md")).unwrap();
+        let b = Note::from_path(dir.path().join("b.md")).unwrap();
+        let dest_path = dir.path().join("combined.md");
+        vault.merge(&[a, b], &dest_path).unwrap();
+
+        let combined = Note::from_path(&dest_path).unwrap();
+        assert!(combined.tags.contains(&"rust".to_string()));
+        assert!(combined.tags.contains(&"obsidian".to_string()));
+    }
+
+    #[test]
+    fn merge_does_not_inherit_source_id() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("src.md"),
+            "---\nid: source-id\nauthor: alice\n---\nBody.",
+        )
+        .unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let src = Note::from_path(dir.path().join("src.md")).unwrap();
+        let dest_path = dir.path().join("dest.md");
+        vault.merge(&[src], &dest_path).unwrap();
+
+        let dest = Note::from_path(&dest_path).unwrap();
+        // id must NOT come from source
+        assert_ne!(dest.id, "source-id");
+        // other fields ARE inherited when dest is new
+        let fm = dest.frontmatter.unwrap();
+        assert!(fm.contains_key("author"));
+        assert!(!fm.contains_key("id"));
+    }
+
+    #[test]
+    fn merge_other_frontmatter_fields_inherited_from_source_when_dest_is_new() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("src.md"),
+            "---\nauthor: alice\ncreated: 2024-01-01\n---\nBody.",
+        )
+        .unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let src = Note::from_path(dir.path().join("src.md")).unwrap();
+        let dest_path = dir.path().join("dest.md");
+        vault.merge(&[src], &dest_path).unwrap();
+
+        let dest = Note::from_path(&dest_path).unwrap();
+        let fm = dest.frontmatter.unwrap();
+        assert!(fm.contains_key("author"));
+        assert!(fm.contains_key("created"));
+    }
+
+    #[test]
+    fn merge_dest_wins_on_conflicting_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("src.md"), "---\nauthor: alice\n---\nSource.").unwrap();
+        fs::write(dir.path().join("dest.md"), "---\nauthor: bob\n---\nDest.").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let src = Note::from_path(dir.path().join("src.md")).unwrap();
+        vault.merge(&[src], &dir.path().join("dest.md")).unwrap();
+
+        let dest = Note::from_path(dir.path().join("dest.md")).unwrap();
+        let fm = dest.frontmatter.unwrap();
+        assert_eq!(fm["author"].as_string().unwrap(), "bob");
+    }
+
+    #[test]
+    fn merge_updates_wiki_backlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("src.md"), "Source.").unwrap();
+        fs::write(dir.path().join("linker.md"), "See [[src]].").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let src = Note::from_path(dir.path().join("src.md")).unwrap();
+        vault.merge(&[src], &dir.path().join("dest.md")).unwrap();
+
+        let linker = fs::read_to_string(dir.path().join("linker.md")).unwrap();
+        assert_eq!(linker, "See [[dest]].");
+    }
+
+    #[test]
+    fn merge_source_is_dest_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("note.md"), "Content.").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("note.md")).unwrap();
+        let result = vault.merge(&[note], &dir.path().join("note.md"));
+
+        assert!(matches!(result, Err(VaultError::MergeSourceIsDestination(_))));
+    }
+
+    #[test]
+    fn merge_preview_does_not_modify_filesystem() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("src.md"), "Source.").unwrap();
+        fs::write(dir.path().join("linker.md"), "See [[src]].").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let src = Note::from_path(dir.path().join("src.md")).unwrap();
+        vault.merge_preview(&[src], &dir.path().join("dest.md")).unwrap();
+
+        assert!(dir.path().join("src.md").exists());
+        assert!(!dir.path().join("dest.md").exists());
+        let linker = fs::read_to_string(dir.path().join("linker.md")).unwrap();
+        assert_eq!(linker, "See [[src]].");
     }
 }
