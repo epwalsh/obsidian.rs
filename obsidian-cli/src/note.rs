@@ -4,9 +4,53 @@ use color_eyre::eyre;
 use colored::Colorize;
 use obsidian_core::{Note, Vault};
 
-use crate::args::{BacklinksArgs, OutputFormat, RenameArgs, UpdateArgs};
+use crate::args::{BacklinksArgs, MergeArgs, OutputFormat, RenameArgs, UpdateArgs};
 use crate::output;
 use crate::utils::{resolve_note_path, sort_notes_by};
+
+pub fn cmd_merge(vault: Vault, args: MergeArgs) -> eyre::Result<()> {
+    if args.paths.len() < 2 {
+        eyre::bail!("at least one source and one destination are required");
+    }
+    let dest_arg = args.paths.last().unwrap();
+    let source_args = &args.paths[..args.paths.len() - 1];
+
+    // Resolve destination path relative to vault root, adding .md if needed.
+    let mut dest_path = if dest_arg.is_absolute() {
+        dest_arg.clone()
+    } else {
+        let cwd = std::env::current_dir()?;
+        let candidate = cwd.join(dest_arg);
+        if candidate.exists() {
+            candidate
+        } else {
+            vault.path.join(dest_arg)
+        }
+    };
+    if dest_path.extension().and_then(|e| e.to_str()) != Some("md") {
+        dest_path.set_extension("md");
+    }
+
+    // Resolve and load sources.
+    let mut sources: Vec<Note> = Vec::new();
+    for src_arg in source_args {
+        let (note_path, _) = resolve_note_path(&vault, &src_arg.to_path_buf())?;
+        sources.push(Note::from_path(&note_path)?);
+    }
+
+    if args.dry_run {
+        let preview = vault.merge_preview(&sources, &dest_path)?;
+        match args.format {
+            OutputFormat::Plain => output::print_merge_preview_plain(&preview, &vault.path),
+            OutputFormat::Json => output::print_merge_preview_json(&preview, &vault.path),
+        }
+    } else {
+        let merged = vault.merge(&sources, &dest_path)?;
+        let rel = merged.path.strip_prefix(&vault.path).unwrap_or(&merged.path);
+        println!("{}", rel.display().to_string().cyan());
+    }
+    Ok(())
+}
 
 pub fn cmd_backlinks(vault: Vault, args: BacklinksArgs) -> eyre::Result<()> {
     let (note_path, _) = resolve_note_path(&vault, &args.note)?;

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `obsidian.rs` is a Rust library and CLI for working with Obsidian vaults. It is structured as a Cargo workspace with sub-crates for various features:
 - `obsidian-core` (crate name: `obsidian_core`): core API used by the other sub-crates.
-- `obsidian-cli` (binary name: `obsidian`): command-line interface exposing `search`, `note`, `tags`, and `check` commands.
+- `obsidian-cli` (binary name: `obsidian`): command-line interface exposing `search`, `note`, `tags`, and `check` commands. The `note` subcommand supports `backlinks`, `merge`, `rename`, and `update`.
 
 ## Workspace Structure
 
@@ -16,7 +16,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - `src/note.rs` — defines the `Note` struct
   - `src/link.rs` — parsing markdown/wiki/embedded links
   - `src/search.rs` — `find_note_paths()` for recursively finding `.md` files (public)
-  - `src/vault.rs` — defines the `Vault` struct; `notes()` loads all notes, `search()` returns a query builder, `backlinks(&Note)` returns notes linking to a given note, `rename(&Note, new_stem)` renames a note and updates all backlinks
+  - `src/vault.rs` — defines the `Vault` struct; `notes()` loads all notes, `search()` returns a query builder, `backlinks(&Note)` returns notes linking to a given note, `rename(&Note, new_path)` renames a note and updates all backlinks, `merge(&[Note], dest_path)` merges multiple notes into a destination and updates all backlinks
 - `obsidian-cli/` — the CLI binary crate
   - `src/main.rs` — entry point, subcommand dispatch
   - `src/args.rs` — clap argument structs and enums

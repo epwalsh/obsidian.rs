@@ -8,6 +8,8 @@ pub enum VaultError {
     NoteAlreadyExists(PathBuf),
     #[error("directory not found: {0}")]
     DirectoryNotFound(PathBuf),
+    #[error("source note is the same as destination: {0}")]
+    MergeSourceIsDestination(PathBuf),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]

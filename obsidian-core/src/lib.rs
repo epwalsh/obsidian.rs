@@ -9,4 +9,4 @@ pub use link::{Link, LocatedLink, Location};
 pub use note::Note;
 pub use search::SearchQuery;
 pub use tag::LocatedTag;
-pub use vault::{RenamePreview, Vault};
+pub use vault::{MergePreview, RenamePreview, Vault};
