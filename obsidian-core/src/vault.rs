@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use gray_matter::Pod;
+use indexmap::IndexMap;
 
 use crate::{Link, LocatedLink, Note, NoteError, VaultError, search};
 use rayon::prelude::*;
@@ -102,6 +103,26 @@ pub struct RenamePreview {
     pub id_will_update: bool,
     /// Notes with backlinks that would be rewritten, sorted by path. Each entry is (path, link_count).
     pub updated_notes: Vec<(PathBuf, usize)>,
+}
+
+/// Public summary of what a merge would change, without touching the filesystem.
+pub struct MergePreview {
+    pub dest_path: PathBuf,
+    pub dest_is_new: bool,
+    /// Source paths that would be deleted.
+    pub sources: Vec<PathBuf>,
+    /// Notes with backlinks to any source that would be rewritten, sorted by path. Each entry is (path, link_count).
+    pub updated_notes: Vec<(PathBuf, usize)>,
+}
+
+struct MergeOp {
+    dest_is_new: bool,
+    /// Combined body content for the destination note (no leading whitespace).
+    merged_content: String,
+    /// Merged frontmatter for the destination note.
+    merged_frontmatter: Option<IndexMap<String, Pod>>,
+    /// External notes (not sources, not dest) with backlinks to rewrite.
+    per_note_replacements: Vec<(PathBuf, Vec<(LocatedLink, String)>)>,
 }
 
 impl Vault {
@@ -326,6 +347,249 @@ impl Vault {
         Ok(RenamePreview {
             new_path: new_path.to_path_buf(),
             id_will_update: op.frontmatter_id_will_update,
+            updated_notes,
+        })
+    }
+
+    /// Computes all changes required to merge `sources` into `dest_path` without performing I/O.
+    fn compute_merge_op(&self, sources: &[Note], dest_path: &Path) -> Result<MergeOp, VaultError> {
+        use std::collections::HashMap;
+
+        let dest_dir = dest_path.parent().unwrap_or_else(|| Path::new("."));
+        if !dest_dir.is_dir() {
+            return Err(VaultError::DirectoryNotFound(dest_dir.to_path_buf()));
+        }
+
+        for source in sources {
+            if source.path == dest_path {
+                return Err(VaultError::MergeSourceIsDestination(source.path.clone()));
+            }
+        }
+
+        let dest_is_new = !dest_path.exists();
+
+        let dest_stem = dest_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_string();
+
+        let source_paths: Vec<&Path> = sources.iter().map(|s| s.path.as_path()).collect();
+
+        // Aggregate backlink replacements per linking note, skipping sources and dest.
+        let mut replacements_by_path: HashMap<PathBuf, Vec<(LocatedLink, String)>> = HashMap::new();
+
+        for source in sources {
+            let backlinks = self.backlinks(source);
+            for (linking_note, links) in backlinks {
+                if source_paths.iter().any(|p| *p == linking_note.path) {
+                    continue;
+                }
+                if linking_note.path == dest_path {
+                    continue;
+                }
+
+                let entry = replacements_by_path.entry(linking_note.path.clone()).or_default();
+
+                for ll in links {
+                    let new_text = match &ll.link {
+                        Link::Wiki { heading, alias, .. } => {
+                            let mut wiki = format!("[[{}", dest_stem);
+                            if let Some(h) = heading {
+                                wiki.push('#');
+                                wiki.push_str(h);
+                            }
+                            if let Some(a) = alias {
+                                wiki.push('|');
+                                wiki.push_str(a);
+                            }
+                            wiki.push_str("]]");
+                            Some(wiki)
+                        }
+                        Link::Markdown { text, url } => {
+                            let fragment = url.find('#').map(|i| url[i..].to_string());
+                            let new_url = relative_path(self.path.as_path(), dest_path);
+                            let new_url_str = new_url.to_string_lossy().replace('\\', "/");
+                            let full_url = match fragment {
+                                Some(f) => format!("{}{}", new_url_str, f),
+                                None => new_url_str.to_string(),
+                            };
+                            Some(format!("[{}]({})", text, full_url))
+                        }
+                        _ => None,
+                    };
+                    if let Some(text) = new_text {
+                        entry.push((ll, text));
+                    }
+                }
+            }
+        }
+
+        let per_note_replacements: Vec<(PathBuf, Vec<(LocatedLink, String)>)> = replacements_by_path
+            .into_iter()
+            .filter(|(_, r)| !r.is_empty())
+            .collect();
+
+        // Load existing destination if present.
+        let (dest_body, dest_fm_tags, dest_fm_aliases, dest_frontmatter) = if dest_is_new {
+            (String::new(), Vec::<String>::new(), Vec::<String>::new(), None)
+        } else {
+            let d = Note::from_path(dest_path)?;
+            let tags = d
+                .frontmatter
+                .as_ref()
+                .and_then(|fm| fm.get("tags"))
+                .and_then(|p| p.as_vec().ok())
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|p| p.as_string().ok())
+                .collect::<Vec<_>>();
+            let aliases = d
+                .frontmatter
+                .as_ref()
+                .and_then(|fm| fm.get("aliases"))
+                .and_then(|p| p.as_vec().ok())
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|p| p.as_string().ok())
+                .collect::<Vec<_>>();
+            let body = d.content.trim_start().to_string();
+            let fm = d.frontmatter;
+            (body, tags, aliases, fm)
+        };
+
+        // Build merged body.
+        let mut body_parts: Vec<String> = Vec::new();
+        if !dest_body.is_empty() {
+            body_parts.push(dest_body);
+        }
+        for source in sources {
+            let body = source.content.trim_start().to_string();
+            if !body.is_empty() {
+                body_parts.push(body);
+            }
+        }
+        let merged_content = body_parts.join("\n\n---\n\n");
+
+        // Build merged frontmatter: dest wins on id/title, union on tags/aliases.
+        let mut fm: IndexMap<String, Pod> = dest_frontmatter.unwrap_or_default();
+
+        let mut tag_strings: Vec<String> = dest_fm_tags;
+        for source in sources {
+            for tag in &source.tags {
+                if !tag_strings.contains(tag) {
+                    tag_strings.push(tag.clone());
+                }
+            }
+        }
+        if !tag_strings.is_empty() {
+            fm.insert(
+                "tags".to_string(),
+                Pod::Array(tag_strings.into_iter().map(Pod::String).collect()),
+            );
+        }
+
+        let mut alias_strings: Vec<String> = dest_fm_aliases;
+        for source in sources {
+            let src_aliases: Vec<String> = source
+                .frontmatter
+                .as_ref()
+                .and_then(|sfm| sfm.get("aliases"))
+                .and_then(|p| p.as_vec().ok())
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|p| p.as_string().ok())
+                .collect();
+            for alias in src_aliases {
+                if !alias_strings.contains(&alias) {
+                    alias_strings.push(alias);
+                }
+            }
+        }
+        if !alias_strings.is_empty() {
+            fm.insert(
+                "aliases".to_string(),
+                Pod::Array(alias_strings.into_iter().map(Pod::String).collect()),
+            );
+        }
+
+        let merged_frontmatter = if fm.is_empty() { None } else { Some(fm) };
+
+        Ok(MergeOp {
+            dest_is_new,
+            merged_content,
+            merged_frontmatter,
+            per_note_replacements,
+        })
+    }
+
+    /// Merges `sources` into `dest_path`: appends each source's body to the destination,
+    /// union-merges tags and aliases, rewrites all backlinks to sources in other notes to
+    /// point to the destination, and deletes the source files.
+    ///
+    /// The destination is created if it doesn't exist, or its content is appended to if it does.
+    /// Returns the resulting destination [`Note`].
+    pub fn merge(&self, sources: &[Note], dest_path: &Path) -> Result<Note, VaultError> {
+        let op = self.compute_merge_op(sources, dest_path)?;
+
+        // Build and write destination note.
+        if op.dest_is_new {
+            let dest = Note {
+                path: dest_path.to_path_buf(),
+                id: dest_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                title: None,
+                aliases: Vec::new(),
+                tags: Vec::new(),
+                content: op.merged_content,
+                frontmatter: op.merged_frontmatter,
+                frontmatter_line_count: 0,
+            };
+            dest.write()?;
+        } else {
+            let mut dest = Note::from_path(dest_path)?;
+            dest.content = op.merged_content;
+            dest.frontmatter = op.merged_frontmatter;
+            dest.write()?;
+        }
+
+        let dest_note = Note::from_path(dest_path)?;
+
+        // Rewrite backlinks in external notes.
+        for (note_path, replacements) in op.per_note_replacements {
+            let raw_content = std::fs::read_to_string(&note_path)?;
+            let new_content = rewrite_links(&raw_content, replacements);
+            std::fs::write(&note_path, new_content)?;
+        }
+
+        // Delete source files.
+        for source in sources {
+            std::fs::remove_file(&source.path)?;
+        }
+
+        Ok(dest_note)
+    }
+
+    /// Returns a preview of what [`merge`](Self::merge) would change without touching the filesystem.
+    ///
+    /// Same validation and error variants as `merge`.
+    pub fn merge_preview(&self, sources: &[Note], dest_path: &Path) -> Result<MergePreview, VaultError> {
+        let op = self.compute_merge_op(sources, dest_path)?;
+
+        let mut updated_notes: Vec<(PathBuf, usize)> = op
+            .per_note_replacements
+            .iter()
+            .map(|(path, reps)| (path.clone(), reps.len()))
+            .collect();
+        updated_notes.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+        Ok(MergePreview {
+            dest_path: dest_path.to_path_buf(),
+            dest_is_new: op.dest_is_new,
+            sources: sources.iter().map(|s| s.path.clone()).collect(),
             updated_notes,
         })
     }

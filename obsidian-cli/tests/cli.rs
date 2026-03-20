@@ -1140,6 +1140,321 @@ fn note_update_stdin_fail_fast_on_bad_path() {
         .stderr(predicate::str::contains("note not found"));
 }
 
+// --- merge tests ---
+
+#[test]
+fn merge_basic() {
+    let vault = make_vault();
+    write_note(vault.path(), "a.md", "Content A.");
+    write_note(vault.path(), "b.md", "Content B.");
+    let a = vault.path().join("a.md");
+    let b = vault.path().join("b.md");
+    let dest = vault.path().join("combined.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "merge",
+            a.to_str().unwrap(),
+            b.to_str().unwrap(),
+            dest.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("combined.md"));
+    assert!(dest.exists());
+    assert!(!a.exists());
+    assert!(!b.exists());
+    let content = fs::read_to_string(&dest).unwrap();
+    assert!(content.contains("Content A."));
+    assert!(content.contains("Content B."));
+}
+
+#[test]
+fn merge_into_existing() {
+    let vault = make_vault();
+    write_note(vault.path(), "src.md", "Source content.");
+    write_note(vault.path(), "dest.md", "Existing content.");
+    let src = vault.path().join("src.md");
+    let dest = vault.path().join("dest.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "merge",
+            src.to_str().unwrap(),
+            dest.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    assert!(!src.exists());
+    assert!(dest.exists());
+    let content = fs::read_to_string(&dest).unwrap();
+    assert!(content.contains("Existing content."));
+    assert!(content.contains("Source content."));
+}
+
+#[test]
+fn merge_updates_backlinks() {
+    let vault = make_vault();
+    write_note(vault.path(), "src.md", "Source.");
+    write_note(vault.path(), "other.md", "See [[src]] and [link](src.md).");
+    let src = vault.path().join("src.md");
+    let dest = vault.path().join("dest.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "merge",
+            src.to_str().unwrap(),
+            dest.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let other = fs::read_to_string(vault.path().join("other.md")).unwrap();
+    assert!(other.contains("[[dest]]"));
+    assert!(other.contains("dest.md"));
+    assert!(!other.contains("[[src]]"));
+}
+
+#[test]
+fn merge_multiple_sources() {
+    let vault = make_vault();
+    write_note(vault.path(), "a.md", "Body A.");
+    write_note(vault.path(), "b.md", "Body B.");
+    write_note(vault.path(), "c.md", "Body C.");
+    let a = vault.path().join("a.md");
+    let b = vault.path().join("b.md");
+    let c = vault.path().join("c.md");
+    let dest = vault.path().join("combined.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "merge",
+            a.to_str().unwrap(),
+            b.to_str().unwrap(),
+            c.to_str().unwrap(),
+            dest.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    assert!(!a.exists());
+    assert!(!b.exists());
+    assert!(!c.exists());
+    assert!(dest.exists());
+    let content = fs::read_to_string(&dest).unwrap();
+    assert!(content.contains("Body A."));
+    assert!(content.contains("Body B."));
+    assert!(content.contains("Body C."));
+}
+
+#[test]
+fn merge_tags_unioned() {
+    let vault = make_vault();
+    write_note(vault.path(), "a.md", "---\ntags: [rust]\n---\nBody A.");
+    write_note(vault.path(), "b.md", "---\ntags: [obsidian]\n---\nBody B.");
+    let a = vault.path().join("a.md");
+    let b = vault.path().join("b.md");
+    let dest = vault.path().join("combined.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "merge",
+            a.to_str().unwrap(),
+            b.to_str().unwrap(),
+            dest.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = fs::read_to_string(&dest).unwrap();
+    assert!(content.contains("rust"));
+    assert!(content.contains("obsidian"));
+}
+
+#[test]
+fn merge_dry_run_no_filesystem_changes() {
+    let vault = make_vault();
+    write_note(vault.path(), "a.md", "Content A.");
+    write_note(vault.path(), "b.md", "Content B.");
+    let a = vault.path().join("a.md");
+    let b = vault.path().join("b.md");
+    let dest = vault.path().join("combined.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "merge",
+            "--dry-run",
+            a.to_str().unwrap(),
+            b.to_str().unwrap(),
+            dest.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("combined.md"));
+    assert!(a.exists());
+    assert!(b.exists());
+    assert!(!dest.exists());
+}
+
+#[test]
+fn merge_dry_run_shows_sources_and_dest() {
+    let vault = make_vault();
+    write_note(vault.path(), "a.md", "Content A.");
+    write_note(vault.path(), "b.md", "Content B.");
+    let a = vault.path().join("a.md");
+    let b = vault.path().join("b.md");
+    let dest = vault.path().join("combined.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "merge",
+            "--dry-run",
+            a.to_str().unwrap(),
+            b.to_str().unwrap(),
+            dest.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("a.md"))
+        .stdout(predicate::str::contains("b.md"))
+        .stdout(predicate::str::contains("(new)"));
+}
+
+#[test]
+fn merge_dry_run_json_format() {
+    let vault = make_vault();
+    write_note(vault.path(), "a.md", "Content A.");
+    write_note(vault.path(), "b.md", "Content B.");
+    write_note(vault.path(), "other.md", "See [[a]].");
+    let a = vault.path().join("a.md");
+    let b = vault.path().join("b.md");
+    let dest = vault.path().join("combined.md");
+    let output = obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "merge",
+            "--dry-run",
+            "--format",
+            "json",
+            a.to_str().unwrap(),
+            b.to_str().unwrap(),
+            dest.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let s = String::from_utf8(output).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+    assert!(v["dest_path"].as_str().unwrap().contains("combined.md"));
+    assert_eq!(v["dest_is_new"].as_bool().unwrap(), true);
+    assert!(v["sources"].as_array().unwrap().len() == 2);
+    let updated = v["updated_notes"].as_array().unwrap();
+    assert_eq!(updated.len(), 1);
+    assert!(updated[0]["path"].as_str().unwrap().contains("other.md"));
+    assert_eq!(updated[0]["link_count"].as_u64().unwrap(), 1);
+}
+
+#[test]
+fn merge_source_is_dest_errors() {
+    let vault = make_vault();
+    write_note(vault.path(), "note.md", "Content.");
+    write_note(vault.path(), "other.md", "Content.");
+    let note = vault.path().join("note.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "merge",
+            note.to_str().unwrap(),
+            note.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("same as destination"));
+}
+
+#[test]
+fn merge_dest_dir_missing_errors() {
+    let vault = make_vault();
+    write_note(vault.path(), "src.md", "Content.");
+    let src = vault.path().join("src.md");
+    let dest = vault.path().join("nonexistent/dest.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "merge",
+            src.to_str().unwrap(),
+            dest.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("directory not found"));
+}
+
+#[test]
+fn merge_adds_md_extension_if_missing() {
+    let vault = make_vault();
+    write_note(vault.path(), "src.md", "Content.");
+    let src = vault.path().join("src.md");
+    let dest_no_ext = vault.path().join("combined");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "merge",
+            src.to_str().unwrap(),
+            dest_no_ext.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("combined.md"));
+    assert!(vault.path().join("combined.md").exists());
+}
+
+#[test]
+fn merge_dry_run_updated_notes_backlinks() {
+    let vault = make_vault();
+    write_note(vault.path(), "src.md", "Source.");
+    write_note(vault.path(), "linker.md", "See [[src]].");
+    let src = vault.path().join("src.md");
+    let dest = vault.path().join("dest.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "merge",
+            "--dry-run",
+            src.to_str().unwrap(),
+            dest.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("linker.md"));
+    // Dry run: no changes
+    let linker = fs::read_to_string(vault.path().join("linker.md")).unwrap();
+    assert_eq!(linker, "See [[src]].");
+}
+
 #[test]
 fn color_and_no_color_are_mutually_exclusive() {
     let vault = make_vault();

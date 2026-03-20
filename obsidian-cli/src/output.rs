@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use colored::Colorize;
-use obsidian_core::{Link, LocatedLink, LocatedTag, Note, RenamePreview};
+use obsidian_core::{Link, LocatedLink, LocatedTag, MergePreview, Note, RenamePreview};
 use serde::Serialize;
 
 pub fn print_search_plain(notes: &[Note], vault_path: &Path) {
@@ -105,6 +105,72 @@ pub fn print_rename_preview_json(preview: &RenamePreview, vault_path: &Path) {
     let out = RenamePreviewJson {
         new_path: rel_new.display().to_string(),
         id_will_update: preview.id_will_update,
+        updated_notes,
+    };
+    println!("{}", serde_json::to_string(&out).unwrap());
+}
+
+pub fn print_merge_preview_plain(preview: &MergePreview, vault_path: &Path) {
+    let rel_dest = preview.dest_path.strip_prefix(vault_path).unwrap_or(&preview.dest_path);
+    let dest_str = rel_dest.display().to_string();
+    let new_label = if preview.dest_is_new { "  (new)" } else { "" };
+    println!("{}{}", dest_str.cyan().bold(), new_label.dimmed());
+    for src in &preview.sources {
+        let rel = src.strip_prefix(vault_path).unwrap_or(src);
+        println!(" {} {}", "delete:".yellow(), rel.display().to_string().cyan());
+    }
+    for (path, count) in &preview.updated_notes {
+        let rel = path.strip_prefix(vault_path).unwrap_or(path);
+        let link_word = if *count == 1 { "link" } else { "links" };
+        let count_str = format!("({} {})", count, link_word).dimmed();
+        println!(
+            " {} {} {}",
+            "update:".green(),
+            rel.display().to_string().cyan(),
+            count_str
+        );
+    }
+}
+
+#[derive(Serialize)]
+struct MergePreviewNoteJson {
+    path: String,
+    link_count: usize,
+}
+
+#[derive(Serialize)]
+struct MergePreviewJson {
+    dest_path: String,
+    dest_is_new: bool,
+    sources: Vec<String>,
+    updated_notes: Vec<MergePreviewNoteJson>,
+}
+
+pub fn print_merge_preview_json(preview: &MergePreview, vault_path: &Path) {
+    let rel_dest = preview.dest_path.strip_prefix(vault_path).unwrap_or(&preview.dest_path);
+    let sources = preview
+        .sources
+        .iter()
+        .map(|s| {
+            let rel = s.strip_prefix(vault_path).unwrap_or(s);
+            rel.display().to_string()
+        })
+        .collect();
+    let updated_notes = preview
+        .updated_notes
+        .iter()
+        .map(|(path, count)| {
+            let rel = path.strip_prefix(vault_path).unwrap_or(path);
+            MergePreviewNoteJson {
+                path: rel.display().to_string(),
+                link_count: *count,
+            }
+        })
+        .collect();
+    let out = MergePreviewJson {
+        dest_path: rel_dest.display().to_string(),
+        dest_is_new: preview.dest_is_new,
+        sources,
         updated_notes,
     };
     println!("{}", serde_json::to_string(&out).unwrap());

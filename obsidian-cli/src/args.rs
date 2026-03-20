@@ -99,6 +99,22 @@ pub struct RenameArgs {
 }
 
 #[derive(clap::Args)]
+pub struct MergeArgs {
+    /// One or more source notes followed by the destination note.
+    /// All paths are resolved relative to the current directory.
+    /// The last path is the destination; all preceding paths are sources.
+    /// Sources are merged into the destination (which is created if it doesn't exist) and deleted.
+    #[arg(required = true, num_args = 2..)]
+    pub paths: Vec<PathBuf>,
+    /// Preview what would change without modifying any files
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Output format
+    #[arg(long, short = 'f', default_value = "plain")]
+    pub format: OutputFormat,
+}
+
+#[derive(clap::Args)]
 pub struct NoteArgs {
     #[command(subcommand)]
     pub subcommand: NoteCommand,
@@ -108,6 +124,8 @@ pub struct NoteArgs {
 pub enum NoteCommand {
     /// Find notes that link to a given note
     Backlinks(BacklinksArgs),
+    /// Merge two or more notes into a single destination note
+    Merge(MergeArgs),
     /// Rename a note and update all backlinks
     Rename(RenameArgs),
     /// Update fields of a note
