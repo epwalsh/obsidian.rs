@@ -115,9 +115,9 @@ impl Note {
 
     /// Atomically write the note to `self.path`, including serialized frontmatter.
     ///
-    /// Frontmatter keys are serialized in alphabetical order. Because the underlying
-    /// YAML parser does not preserve insertion order, keys parsed from disk are sorted
-    /// on load, so round-trips produce deterministic output.
+    /// Frontmatter keys are serialized in a deterministic order: `id` first, then
+    /// `title` (if present), then `aliases`, then `tags`, then all remaining keys
+    /// sorted alphabetically.
     pub fn write(&self) -> Result<(), NoteError> {
         let file_content = self.to_file_content()?;
         let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
@@ -131,10 +131,23 @@ impl Note {
         match &self.frontmatter {
             None => Ok(self.content.clone()),
             Some(fm) => {
-                let mapping: serde_yaml::Mapping = fm
+                const PRIORITY_KEYS: &[&str] = &["id", "title", "aliases", "tags"];
+                let mut mapping = serde_yaml::Mapping::new();
+                // Emit priority keys in fixed order, only if present.
+                for key in PRIORITY_KEYS {
+                    if let Some(v) = fm.get(*key) {
+                        mapping.insert(serde_yaml::Value::String((*key).to_string()), pod_to_yaml_value(v));
+                    }
+                }
+                // Emit remaining keys in alphabetical order.
+                let mut rest: Vec<_> = fm
                     .iter()
-                    .map(|(k, v)| (serde_yaml::Value::String(k.clone()), pod_to_yaml_value(v)))
+                    .filter(|(k, _)| !PRIORITY_KEYS.contains(&k.as_str()))
                     .collect();
+                rest.sort_by(|a, b| a.0.cmp(b.0));
+                for (k, v) in rest {
+                    mapping.insert(serde_yaml::Value::String(k.clone()), pod_to_yaml_value(v));
+                }
                 let yaml = serde_yaml::to_string(&mapping)?;
                 // serde_yaml may or may not emit a leading "---\n"; strip it so we
                 // control the delimiters ourselves.
@@ -313,6 +326,50 @@ mod tests {
     fn tags_empty_when_absent() {
         let note = Note::parse("/vault/note.md", "No frontmatter here.");
         assert!(note.tags.is_empty());
+    }
+
+    #[test]
+    fn write_frontmatter_key_ordering() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        // Provide keys out of order; verify they are written in the canonical order.
+        std::fs::write(
+            tmp.path(),
+            "---\nzebra: last\ntags: [t]\naliases: [a]\ntitle: T\nid: my-id\nauthor: Pete\n---\n\nContent.",
+        )
+        .unwrap();
+
+        let note = Note::from_path(tmp.path()).unwrap();
+        note.write().unwrap();
+
+        let on_disk = std::fs::read_to_string(tmp.path()).unwrap();
+        // Extract only key lines (not list item lines that start with '-').
+        let keys: Vec<&str> = on_disk
+            .lines()
+            .skip(1) // skip opening "---"
+            .take_while(|l| *l != "---")
+            .filter(|l| !l.starts_with('-'))
+            .map(|l| l.split(':').next().unwrap())
+            .collect();
+        assert_eq!(keys, vec!["id", "title", "aliases", "tags", "author", "zebra"]);
+    }
+
+    #[test]
+    fn write_frontmatter_key_ordering_no_title() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), "---\ntags: [t]\nid: my-id\nzebra: last\n---\n\nContent.").unwrap();
+
+        let note = Note::from_path(tmp.path()).unwrap();
+        note.write().unwrap();
+
+        let on_disk = std::fs::read_to_string(tmp.path()).unwrap();
+        let keys: Vec<&str> = on_disk
+            .lines()
+            .skip(1)
+            .take_while(|l| *l != "---")
+            .filter(|l| !l.starts_with('-'))
+            .map(|l| l.split(':').next().unwrap())
+            .collect();
+        assert_eq!(keys, vec!["id", "tags", "zebra"]);
     }
 
     #[test]
