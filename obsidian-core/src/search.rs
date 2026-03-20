@@ -1,9 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
+use ignore::WalkBuilder;
 use rayon::prelude::*;
 use regex::Regex;
-use walkdir::WalkDir;
 
 use crate::{Note, NoteError, SearchError};
 
@@ -209,11 +209,15 @@ fn build_glob_set(patterns: &[String]) -> Result<GlobSet, SearchError> {
 }
 
 /// Returns an iterator over all `.md` file paths found recursively under `root`.
+/// Respects `.gitignore`, `.git/info/exclude`, and `.ignore` files.
 pub fn find_note_paths(root: impl AsRef<Path>) -> impl Iterator<Item = PathBuf> {
-    WalkDir::new(root)
-        .into_iter()
+    WalkBuilder::new(root)
+        .build()
         .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.file_type().is_file() && entry.path().extension().and_then(|e| e.to_str()) == Some("md"))
+        .filter(|entry| {
+            entry.file_type().map(|ft| ft.is_file()).unwrap_or(false)
+                && entry.path().extension().and_then(|e| e.to_str()) == Some("md")
+        })
         .map(|entry| entry.into_path())
 }
 
@@ -647,6 +651,18 @@ mod tests {
 
         assert_eq!(via_query.len(), via_find.len());
         assert_eq!(via_query.len(), 3);
+    }
+
+    #[test]
+    fn gitignore_excludes_ignored_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        write_note(&dir.path().join("included.md"), "Normal note.");
+        write_note(&dir.path().join("excluded").join("secret.md"), "Ignored note.");
+        fs::write(dir.path().join(".ignore"), "excluded/\n").unwrap();
+
+        let paths: Vec<PathBuf> = find_note_paths(dir.path()).collect();
+        assert_eq!(paths.len(), 1);
+        assert!(paths[0].ends_with("included.md"));
     }
 
     #[test]
