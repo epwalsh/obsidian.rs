@@ -4,7 +4,7 @@ use color_eyre::eyre;
 use colored::Colorize;
 use obsidian_core::{Note, Vault};
 
-use crate::args::{BacklinksArgs, MergeArgs, OutputFormat, RenameArgs, UpdateArgs};
+use crate::args::{BacklinksArgs, MergeArgs, OutputFormat, PatchArgs, RenameArgs, UpdateArgs};
 use crate::output;
 use crate::utils::{resolve_note_path, sort_notes_by};
 
@@ -49,6 +49,40 @@ pub fn cmd_merge(vault: Vault, args: MergeArgs) -> eyre::Result<()> {
         let rel = merged.path.strip_prefix(&vault.path).unwrap_or(&merged.path);
         println!("{}", rel.display().to_string().cyan());
     }
+    Ok(())
+}
+
+fn unescape(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => result.push('\n'),
+                Some('t') => result.push('\t'),
+                Some('r') => result.push('\r'),
+                Some('\\') => result.push('\\'),
+                Some(other) => {
+                    result.push('\\');
+                    result.push(other);
+                }
+                None => result.push('\\'),
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+pub fn cmd_note_patch(vault: Vault, args: PatchArgs) -> eyre::Result<()> {
+    let (note_path, _) = resolve_note_path(&vault, &args.note)?;
+    let note = Note::from_path(&note_path)?;
+    let old = unescape(&args.old_string);
+    let new = unescape(&args.new_string);
+    let patched = vault.patch_note(&note, &old, &new)?;
+    let rel = patched.path.strip_prefix(&vault.path).unwrap_or(&patched.path);
+    println!("{}", rel.display().to_string().cyan());
     Ok(())
 }
 

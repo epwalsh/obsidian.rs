@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `obsidian.rs` is a Rust library and CLI for working with Obsidian vaults. It is structured as a Cargo workspace with sub-crates for various features:
 - `obsidian-core` (crate name: `obsidian_core`): core API used by the other sub-crates.
-- `obsidian-cli` (binary name: `obsidian`): command-line interface exposing `search`, `note`, `tags`, and `check` commands. The `note` subcommand supports `backlinks`, `merge`, `rename`, and `update`.
+- `obsidian-cli` (binary name: `obsidian`): command-line interface exposing `search`, `note`, `tags`, and `check` commands. The `note` subcommand supports `backlinks`, `merge`, `patch`, `rename`, and `update`.
 
 ## Workspace Structure
 
@@ -16,7 +16,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - `src/note.rs` — defines the `Note` struct; `content` is `Option<String>` (not loaded by default); `links` and `inline_tags` are always pre-computed; `from_path()` omits content, `from_path_with_content()` retains it; `write()` requires content, `write_frontmatter()` reads body from disk
   - `src/link.rs` — parsing markdown/wiki/embedded links
   - `src/search.rs` — `find_note_paths()` for recursively finding `.md` files (public)
-  - `src/vault.rs` — defines the `Vault` struct; `notes()` loads all notes (no content), `notes_with_content()` loads with body text, `search()` returns a query builder, `backlinks(&Note)` returns notes linking to a given note, `rename(&Note, new_path)` renames a note and updates all backlinks, `merge(&[Note], dest_path)` merges multiple notes (sources must be loaded with content) into a destination and updates all backlinks
+  - `src/vault.rs` — defines the `Vault` struct; `notes()` loads all notes (no content), `notes_with_content()` loads with body text, `search()` returns a query builder, `backlinks(&Note)` returns notes linking to a given note, `rename(&Note, new_path)` renames a note and updates all backlinks, `merge(&[Note], dest_path)` merges multiple notes (sources must be loaded with content) into a destination and updates all backlinks, `patch_note(&Note, old_string, new_string)` replaces exactly one occurrence of a string in the raw file
 - `obsidian-cli/` — the CLI binary crate
   - `src/main.rs` — entry point, subcommand dispatch
   - `src/args.rs` — clap argument structs and enums

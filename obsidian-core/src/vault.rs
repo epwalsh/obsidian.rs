@@ -633,6 +633,26 @@ impl Vault {
         Ok(dest_note)
     }
 
+    /// Replaces the first (and only) occurrence of `old_string` in the raw file content of `note`
+    /// with `new_string`, writing the result back to disk.
+    ///
+    /// Returns [`VaultError::StringNotFound`] if `old_string` does not appear in the file, and
+    /// [`VaultError::StringFoundMultipleTimes`] if it appears more than once. Both checks operate
+    /// on the raw file bytes (frontmatter included).
+    pub fn patch_note(&self, note: &Note, old_string: &str, new_string: &str) -> Result<Note, VaultError> {
+        let raw = std::fs::read_to_string(&note.path)?;
+        let count = raw.matches(old_string).count();
+        if count == 0 {
+            return Err(VaultError::StringNotFound(note.path.clone()));
+        }
+        if count > 1 {
+            return Err(VaultError::StringFoundMultipleTimes(note.path.clone()));
+        }
+        let patched = raw.replacen(old_string, new_string, 1);
+        std::fs::write(&note.path, patched)?;
+        Ok(Note::from_path(&note.path)?)
+    }
+
     /// Returns a preview of what [`merge`](Self::merge) would change without touching the filesystem.
     ///
     /// Same validation and error variants as `merge`.
@@ -952,6 +972,71 @@ mod tests {
         let backlinks = vault.backlinks(&target);
 
         assert!(backlinks.is_empty());
+    }
+
+    // --- patch_note tests ---
+
+    #[test]
+    fn patch_note_replaces_string() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("note.md"), "Hello world.").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("note.md")).unwrap();
+        vault.patch_note(&note, "world", "Rust").unwrap();
+
+        let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
+        assert_eq!(content, "Hello Rust.");
+    }
+
+    #[test]
+    fn patch_note_string_not_found_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("note.md"), "Hello world.").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("note.md")).unwrap();
+        let result = vault.patch_note(&note, "missing", "replacement");
+
+        assert!(matches!(result, Err(VaultError::StringNotFound(_))));
+    }
+
+    #[test]
+    fn patch_note_multiple_matches_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("note.md"), "foo and foo").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("note.md")).unwrap();
+        let result = vault.patch_note(&note, "foo", "bar");
+
+        assert!(matches!(result, Err(VaultError::StringFoundMultipleTimes(_))));
+    }
+
+    #[test]
+    fn patch_note_works_in_frontmatter() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("note.md"), "---\ntitle: Old Title\n---\nBody.").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("note.md")).unwrap();
+        vault.patch_note(&note, "Old Title", "New Title").unwrap();
+
+        let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
+        assert!(content.contains("New Title"));
+        assert!(!content.contains("Old Title"));
+    }
+
+    #[test]
+    fn patch_note_returns_reloaded_note() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("note.md"), "---\ntitle: Before\n---\nBody.").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("note.md")).unwrap();
+        let patched = vault.patch_note(&note, "Before", "After").unwrap();
+
+        assert_eq!(patched.title.as_deref(), Some("After"));
     }
 
     // --- rename tests ---

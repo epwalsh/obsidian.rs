@@ -10,6 +10,10 @@ pub enum VaultError {
     DirectoryNotFound(PathBuf),
     #[error("source note is the same as destination: {0}")]
     MergeSourceIsDestination(PathBuf),
+    #[error("old-string not found in {0}")]
+    StringNotFound(PathBuf),
+    #[error("old-string found multiple times in {0}; must match exactly once")]
+    StringFoundMultipleTimes(PathBuf),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]

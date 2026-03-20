@@ -1586,6 +1586,122 @@ fn merge_dry_run_updated_notes_backlinks() {
     assert_eq!(linker, "See [[src]].");
 }
 
+// --- note patch tests ---
+
+#[test]
+fn note_patch_replaces_string() {
+    let vault = make_vault();
+    write_note(vault.path(), "note.md", "Hello world.");
+    let note_path = vault.path().join("note.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "patch",
+            note_path.to_str().unwrap(),
+            "--old-string",
+            "world",
+            "--new-string",
+            "Rust",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("note.md"));
+    let content = fs::read_to_string(&note_path).unwrap();
+    assert_eq!(content, "Hello Rust.");
+}
+
+#[test]
+fn note_patch_newline_escape_in_new_string() {
+    let vault = make_vault();
+    write_note(vault.path(), "note.md", "Hello world.");
+    let note_path = vault.path().join("note.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "patch",
+            note_path.to_str().unwrap(),
+            "--old-string",
+            "world",
+            "--new-string",
+            "world\nfoo",
+        ])
+        .assert()
+        .success();
+    let content = fs::read_to_string(&note_path).unwrap();
+    assert_eq!(content, "Hello world\nfoo.");
+}
+
+#[test]
+fn note_patch_newline_escape_in_old_string() {
+    let vault = make_vault();
+    write_note(vault.path(), "note.md", "Hello\nworld.");
+    let note_path = vault.path().join("note.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "patch",
+            note_path.to_str().unwrap(),
+            "--old-string",
+            "Hello\nworld",
+            "--new-string",
+            "Goodbye",
+        ])
+        .assert()
+        .success();
+    let content = fs::read_to_string(&note_path).unwrap();
+    assert_eq!(content, "Goodbye.");
+}
+
+#[test]
+fn note_patch_string_not_found_fails() {
+    let vault = make_vault();
+    write_note(vault.path(), "note.md", "Hello world.");
+    let note_path = vault.path().join("note.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "patch",
+            note_path.to_str().unwrap(),
+            "--old-string",
+            "missing",
+            "--new-string",
+            "replacement",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn note_patch_multiple_matches_fails() {
+    let vault = make_vault();
+    write_note(vault.path(), "note.md", "foo and foo");
+    let note_path = vault.path().join("note.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "patch",
+            note_path.to_str().unwrap(),
+            "--old-string",
+            "foo",
+            "--new-string",
+            "bar",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("multiple times"));
+}
+
 #[test]
 fn color_and_no_color_are_mutually_exclusive() {
     let vault = make_vault();
