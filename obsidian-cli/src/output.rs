@@ -16,6 +16,7 @@ struct NoteJson<'a> {
     path: String,
     id: &'a str,
     title: Option<&'a str>,
+    aliases: &'a [String],
     tags: &'a [String],
 }
 
@@ -28,6 +29,7 @@ pub fn print_search_json(notes: &[Note], vault_path: &Path) {
                 path: rel.display().to_string(),
                 id: &n.id,
                 title: n.title.as_deref(),
+                aliases: &n.aliases,
                 tags: &n.tags,
             }
         })

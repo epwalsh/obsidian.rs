@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 obsidian-core = { path = "../obsidian-core" }
 clap = { version = "4", features = ["derive", "env"] }
+globset = "0.4"
 color-eyre = "0.6"
 colored = "2"
 gray_matter = "0.3.2"

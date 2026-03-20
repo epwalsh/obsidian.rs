@@ -115,6 +115,23 @@ impl Vault {
         Ok(Vault { path })
     }
 
+    /// Opens the nearest vault by walking up from the current directory, looking for an
+    /// `.obsidian/` directory. Falls back to the current directory if none is found.
+    pub fn open_from_cwd() -> Result<Self, VaultError> {
+        let cwd = std::env::current_dir()?;
+        let mut current = cwd.as_path();
+        loop {
+            if current.join(".obsidian").is_dir() {
+                return Self::open(current);
+            }
+            match current.parent() {
+                Some(parent) => current = parent,
+                None => break,
+            }
+        }
+        Self::open(&cwd)
+    }
+
     /// Loads all notes in the vault in parallel.
     pub fn notes(&self) -> Vec<Result<Note, NoteError>> {
         search::find_notes(&self.path)
@@ -318,6 +335,33 @@ impl Vault {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn open_from_cwd_finds_obsidian_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let subdir = dir.path().join("notes/daily");
+        fs::create_dir_all(&subdir).unwrap();
+        fs::create_dir(dir.path().join(".obsidian")).unwrap();
+
+        let original_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&subdir).unwrap();
+        let vault = Vault::open_from_cwd().unwrap();
+        std::env::set_current_dir(original_cwd).unwrap();
+
+        assert_eq!(vault.path.canonicalize().unwrap(), dir.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn open_from_cwd_falls_back_to_cwd_when_no_obsidian_dir() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let original_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+        let vault = Vault::open_from_cwd().unwrap();
+        std::env::set_current_dir(original_cwd).unwrap();
+
+        assert_eq!(vault.path.canonicalize().unwrap(), dir.path().canonicalize().unwrap());
+    }
 
     #[test]
     fn open_valid_directory() {

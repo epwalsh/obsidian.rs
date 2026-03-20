@@ -5,9 +5,10 @@ use clap::{Parser, Subcommand, ValueEnum};
 #[derive(Parser)]
 #[command(name = "obsidian", about = "Query and navigate Obsidian vaults")]
 pub struct Cli {
-    /// Path to the vault directory. Defaults to current directory.
-    #[arg(long, short = 'v', global = true, env = "OBSIDIAN_VAULT", default_value = ".")]
-    pub vault: PathBuf,
+    /// Path to the vault directory. Defaults to the nearest parent directory containing
+    /// '.obsidian/', or the current directory if none is found.
+    #[arg(long, short = 'v', global = true, env = "OBSIDIAN_VAULT")]
+    pub vault: Option<PathBuf>,
     /// Force color output even when not writing to a TTY
     #[arg(long, global = true)]
     pub color: bool,
@@ -26,6 +27,15 @@ pub enum Command {
     Note(NoteArgs),
     /// Work with tags across the vault
     Tags(TagsArgs),
+    /// Check vault health: report duplicate IDs/aliases and broken links
+    Check(CheckArgs),
+}
+
+#[derive(clap::Args)]
+pub struct CheckArgs {
+    /// Ignore notes matching this glob pattern (matched against vault-relative path, repeatable)
+    #[arg(long, short = 'i')]
+    pub ignore: Vec<String>,
 }
 
 #[derive(clap::Args)]
@@ -48,6 +58,9 @@ pub struct SearchArgs {
     /// Filter by content substring (AND semantics, repeatable)
     #[arg(long, short = 'c')]
     pub content: Vec<String>,
+    /// Filter by exact note ID match
+    #[arg(long)]
+    pub id: Option<String>,
     /// Filter by content regex
     #[arg(long, short = 'r')]
     pub regex: Option<String>,
