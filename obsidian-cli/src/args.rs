@@ -139,7 +139,13 @@ pub struct UpdateArgs {
     pub note: Option<PathBuf>,
     /// Add tag(s) to frontmatter (repeatable)
     #[arg(long, short = 't')]
-    pub tag: Vec<String>,
+    pub add_tag: Vec<String>,
+    /// Remove tag(s) from frontmatter (repeatable)
+    #[arg(long)]
+    pub rm_tag: Vec<String>,
+    /// Add alias(es) to frontmatter (repeatable)
+    #[arg(long, short = 'a')]
+    pub add_alias: Vec<String>,
     /// Output format
     #[arg(long, short = 'f', default_value = "plain")]
     pub format: OutputFormat,
