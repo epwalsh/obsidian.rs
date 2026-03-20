@@ -877,7 +877,7 @@ fn note_update_adds_tag_to_existing_frontmatter_tags() {
             vault.path().to_str().unwrap(),
             "note",
             "update",
-            "--tag",
+            "--add-tag",
             "obsidian",
             note_path.to_str().unwrap(),
         ])
@@ -900,7 +900,7 @@ fn note_update_creates_tags_field_when_frontmatter_has_none() {
             vault.path().to_str().unwrap(),
             "note",
             "update",
-            "--tag",
+            "--add-tag",
             "newtag",
             note_path.to_str().unwrap(),
         ])
@@ -921,7 +921,7 @@ fn note_update_creates_frontmatter_when_note_has_none() {
             vault.path().to_str().unwrap(),
             "note",
             "update",
-            "--tag",
+            "--add-tag",
             "newtag",
             note_path.to_str().unwrap(),
         ])
@@ -943,7 +943,7 @@ fn note_update_idempotent_does_not_duplicate_existing_tag() {
             vault.path().to_str().unwrap(),
             "note",
             "update",
-            "--tag",
+            "--add-tag",
             "rust",
             note_path.to_str().unwrap(),
         ])
@@ -964,9 +964,9 @@ fn note_update_multiple_tags() {
             vault.path().to_str().unwrap(),
             "note",
             "update",
-            "--tag",
+            "--add-tag",
             "alpha",
-            "--tag",
+            "--add-tag",
             "beta",
             note_path.to_str().unwrap(),
         ])
@@ -989,7 +989,7 @@ fn note_update_json_format() {
             vault.path().to_str().unwrap(),
             "note",
             "update",
-            "--tag",
+            "--add-tag",
             "obsidian",
             "--format",
             "json",
@@ -1009,6 +1009,137 @@ fn note_update_json_format() {
     assert!(tag_strs.contains(&"obsidian"));
 }
 
+#[test]
+fn note_update_rm_tag_removes_existing_tag() {
+    let vault = make_vault();
+    write_note(vault.path(), "note.md", "---\ntags: [rust, obsidian]\n---\nContent.");
+    let note_path = vault.path().join("note.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "update",
+            "--rm-tag",
+            "obsidian",
+            note_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = fs::read_to_string(&note_path).unwrap();
+    assert!(content.contains("rust"));
+    assert!(!content.contains("obsidian"));
+}
+
+#[test]
+fn note_update_rm_tag_no_op_when_tag_absent() {
+    let vault = make_vault();
+    write_note(vault.path(), "note.md", "---\ntags: [rust]\n---\nContent.");
+    let note_path = vault.path().join("note.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "update",
+            "--rm-tag",
+            "nonexistent",
+            note_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = fs::read_to_string(&note_path).unwrap();
+    assert!(content.contains("rust"));
+}
+
+#[test]
+fn note_update_add_and_rm_tag_together() {
+    let vault = make_vault();
+    write_note(vault.path(), "note.md", "---\ntags: [rust]\n---\nContent.");
+    let note_path = vault.path().join("note.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "update",
+            "--add-tag",
+            "obsidian",
+            "--rm-tag",
+            "rust",
+            note_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = fs::read_to_string(&note_path).unwrap();
+    assert!(content.contains("obsidian"));
+    assert!(!content.contains("rust"));
+}
+
+#[test]
+fn note_update_add_alias_adds_to_frontmatter() {
+    let vault = make_vault();
+    write_note(vault.path(), "note.md", "---\ntitle: My Note\n---\nContent.");
+    let note_path = vault.path().join("note.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "update",
+            "--add-alias",
+            "my-alias",
+            note_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = fs::read_to_string(&note_path).unwrap();
+    assert!(content.contains("my-alias"));
+}
+
+#[test]
+fn note_update_add_alias_creates_frontmatter_when_absent() {
+    let vault = make_vault();
+    write_note(vault.path(), "note.md", "Plain content.");
+    let note_path = vault.path().join("note.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "update",
+            "--add-alias",
+            "my-alias",
+            note_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = fs::read_to_string(&note_path).unwrap();
+    assert!(content.contains("my-alias"));
+    assert!(content.contains("---"));
+}
+
+#[test]
+fn note_update_add_alias_idempotent() {
+    let vault = make_vault();
+    write_note(vault.path(), "note.md", "---\naliases: [my-alias]\n---\nContent.");
+    let note_path = vault.path().join("note.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "update",
+            "--add-alias",
+            "my-alias",
+            note_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = fs::read_to_string(&note_path).unwrap();
+    assert_eq!(content.matches("my-alias").count(), 1);
+}
+
 // --- note update stdin tests ---
 
 #[test]
@@ -1025,7 +1156,7 @@ fn note_update_stdin_adds_tag_to_multiple_notes() {
             vault.path().to_str().unwrap(),
             "note",
             "update",
-            "--tag",
+            "--add-tag",
             "obsidian",
         ])
         .write_stdin(stdin_input)
@@ -1053,7 +1184,7 @@ fn note_update_stdin_json_format_returns_array() {
             vault.path().to_str().unwrap(),
             "note",
             "update",
-            "--tag",
+            "--add-tag",
             "obsidian",
             "--format",
             "json",
@@ -1090,7 +1221,7 @@ fn note_update_stdin_skips_empty_lines() {
             vault.path().to_str().unwrap(),
             "note",
             "update",
-            "--tag",
+            "--add-tag",
             "newtag",
         ])
         .write_stdin(stdin_input)
@@ -1110,7 +1241,7 @@ fn note_update_stdin_empty_input_succeeds_with_no_output() {
             vault.path().to_str().unwrap(),
             "note",
             "update",
-            "--tag",
+            "--add-tag",
             "newtag",
         ])
         .write_stdin("")
@@ -1131,7 +1262,7 @@ fn note_update_stdin_fail_fast_on_bad_path() {
             vault.path().to_str().unwrap(),
             "note",
             "update",
-            "--tag",
+            "--add-tag",
             "newtag",
         ])
         .write_stdin(stdin_input)
