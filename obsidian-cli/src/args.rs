@@ -104,7 +104,7 @@ pub struct MergeArgs {
     /// All paths are resolved relative to the current directory.
     /// The last path is the destination; all preceding paths are sources.
     /// Sources are merged into the destination (which is created if it doesn't exist) and deleted.
-    #[arg(required = true, num_args = 2..)]
+    #[arg(name = "PATH", required = true, num_args = 2..)]
     pub paths: Vec<PathBuf>,
     /// Preview what would change without modifying any files
     #[arg(long)]
