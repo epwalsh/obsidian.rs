@@ -21,7 +21,10 @@ fn main() -> eyre::Result<()> {
     } else if cli.no_color {
         colored::control::set_override(false);
     }
-    let vault = Vault::open(&cli.vault)?;
+    let vault = match cli.vault {
+        Some(ref path) => Vault::open(path)?,
+        None => Vault::open_from_cwd()?,
+    };
     match cli.command {
         Command::Search(args) => search::cmd_search(vault, args),
         Command::Note(note_args) => match note_args.subcommand {

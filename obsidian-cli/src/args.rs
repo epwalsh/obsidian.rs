@@ -5,9 +5,10 @@ use clap::{Parser, Subcommand, ValueEnum};
 #[derive(Parser)]
 #[command(name = "obsidian", about = "Query and navigate Obsidian vaults")]
 pub struct Cli {
-    /// Path to the vault directory. Defaults to current directory.
-    #[arg(long, short = 'v', global = true, env = "OBSIDIAN_VAULT", default_value = ".")]
-    pub vault: PathBuf,
+    /// Path to the vault directory. Defaults to the nearest parent directory containing
+    /// '.obsidian/', or the current directory if none is found.
+    #[arg(long, short = 'v', global = true, env = "OBSIDIAN_VAULT")]
+    pub vault: Option<PathBuf>,
     /// Force color output even when not writing to a TTY
     #[arg(long, global = true)]
     pub color: bool,
