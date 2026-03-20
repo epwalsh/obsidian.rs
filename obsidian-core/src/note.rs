@@ -113,6 +113,10 @@ impl Note {
         Ok(Self::parse(path, &content))
     }
 
+    pub fn reload(self) -> Result<Self, NoteError> {
+        Self::from_path(&self.path)
+    }
+
     /// Atomically write the note to `self.path`, including serialized frontmatter.
     ///
     /// Frontmatter keys are serialized in a deterministic order: `id` first, then
