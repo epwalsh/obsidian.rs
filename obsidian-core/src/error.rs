@@ -6,6 +6,8 @@ pub enum VaultError {
     NotADirectory(PathBuf),
     #[error("note already exists at {0}")]
     NoteAlreadyExists(PathBuf),
+    #[error("note not found {0}")]
+    NoteNotFound(PathBuf),
     #[error("directory not found: {0}")]
     DirectoryNotFound(PathBuf),
     #[error("source note is the same as destination: {0}")]
@@ -28,6 +30,8 @@ pub enum NoteError {
     Yaml(#[from] serde_yaml::Error),
     #[error("note content not loaded; use from_path_with_content() or load_content()")]
     ContentNotLoaded,
+    #[error("{0} is not a valid note path")]
+    InvalidPath(PathBuf),
 }
 
 #[derive(Debug, thiserror::Error)]

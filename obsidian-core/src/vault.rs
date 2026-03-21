@@ -1,3 +1,4 @@
+use std::env::current_dir;
 use std::path::{Path, PathBuf};
 
 use gray_matter::Pod;
@@ -191,6 +192,75 @@ impl Vault {
         Self::open(&cwd)
     }
 
+    /// Resolve a note path argument, which may be absolute or relative to either the current working
+    /// directory or the vault root.
+    /// Returns the resolved absolute path and the root it was resolved against, if any.
+    pub fn resolve_note_path(
+        &self,
+        path: impl AsRef<Path>,
+        strict: bool,
+    ) -> Result<(std::path::PathBuf, Option<std::path::PathBuf>), VaultError> {
+        let path = path.as_ref().to_path_buf();
+        if path.is_absolute() {
+            if path.exists() || !strict {
+                return Ok((path, None));
+            } else {
+                return Err(VaultError::NoteNotFound(path));
+            }
+        }
+
+        let cwd = current_dir()?.canonicalize()?;
+
+        // If the cwd is inside of the vault root, prefer resolving against the cwd to avoid surprising
+        // behavior where a note exists in the vault but can't be found because the user is working in
+        // a subdirectory.
+        let mut vault_resolved = self.path.join(path.clone());
+        if cwd.starts_with(&self.path.canonicalize()?) {
+            let mut cwd_resolved = cwd.join(path.clone());
+
+            // Return right away if it exists, otherwise check if the extension is missing.
+            if cwd_resolved.exists() {
+                return Ok((cwd_resolved, Some(cwd)));
+            } else if cwd_resolved.extension().is_none() {
+                cwd_resolved.set_extension("md");
+                if cwd_resolved.exists() {
+                    return Ok((cwd_resolved, Some(cwd)));
+                }
+            }
+
+            // In strict mode, if we still haven't found an existing path, try the same thing against the vault root.
+            // Otherwise return the cwd-resolved path even if it doesn't exist, since
+            // that's more likely what the user intended than the vault root.
+            if strict {
+                if vault_resolved.exists() {
+                    return Ok((vault_resolved, Some(self.path.clone())));
+                } else if vault_resolved.extension().is_none() {
+                    vault_resolved.set_extension("md");
+                    if vault_resolved.exists() {
+                        return Ok((vault_resolved, Some(self.path.clone())));
+                    }
+                }
+            } else {
+                return Ok((cwd_resolved, Some(cwd)));
+            }
+        } else {
+            if vault_resolved.exists() {
+                return Ok((vault_resolved, Some(self.path.clone())));
+            } else if vault_resolved.extension().is_none() {
+                vault_resolved.set_extension("md");
+                if vault_resolved.exists() {
+                    return Ok((vault_resolved, Some(self.path.clone())));
+                }
+            }
+
+            if !strict {
+                return Ok((vault_resolved, Some(self.path.clone())));
+            }
+        }
+
+        Err(VaultError::NoteNotFound(path))
+    }
+
     /// Loads all notes in the vault in parallel, without retaining body content.
     ///
     /// Links and inline tags are still extracted and available on each note.
@@ -353,11 +423,7 @@ impl Vault {
 
         // Update explicit frontmatter `id` when it matched the old stem.
         if op.frontmatter_id_will_update {
-            renamed
-                .frontmatter
-                .as_mut()
-                .unwrap()
-                .insert("id".to_string(), Pod::String(op.new_stem.clone()));
+            renamed.id = op.new_stem;
             renamed.write_frontmatter()?;
             renamed = Note::from_path(new_path)?;
         }
@@ -1459,12 +1525,12 @@ mod tests {
         vault.merge(&[src], &dest_path).unwrap();
 
         let dest = Note::from_path(&dest_path).unwrap();
+        let fm = dest.frontmatter.unwrap();
         // id must NOT come from source
         assert_ne!(dest.id, "source-id");
+        assert!(fm.contains_key("id"));
         // other fields ARE inherited when dest is new
-        let fm = dest.frontmatter.unwrap();
         assert!(fm.contains_key("author"));
-        assert!(!fm.contains_key("id"));
     }
 
     #[test]

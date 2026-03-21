@@ -1,12 +1,12 @@
-use std::io::{BufRead, IsTerminal};
+use std::io::{BufRead, IsTerminal, Read};
 
 use color_eyre::eyre;
 use colored::Colorize;
 use obsidian_core::{Note, Vault};
 
-use crate::args::{BacklinksArgs, MergeArgs, OutputFormat, PatchArgs, RenameArgs, UpdateArgs};
+use crate::args::{BacklinksArgs, MergeArgs, OutputFormat, PatchArgs, RenameArgs, UpdateArgs, WriteArgs};
 use crate::output;
-use crate::utils::{resolve_note_path, sort_notes_by};
+use crate::utils::sort_notes_by;
 
 pub fn cmd_merge(vault: Vault, args: MergeArgs) -> eyre::Result<()> {
     if args.paths.len() < 2 {
@@ -34,7 +34,7 @@ pub fn cmd_merge(vault: Vault, args: MergeArgs) -> eyre::Result<()> {
     // Resolve and load sources (content required for body concatenation).
     let mut sources: Vec<Note> = Vec::new();
     for src_arg in source_args {
-        let (note_path, _) = resolve_note_path(&vault, &src_arg.to_path_buf())?;
+        let (note_path, _) = vault.resolve_note_path(src_arg, true)?;
         sources.push(Note::from_path_with_content(&note_path)?);
     }
 
@@ -46,8 +46,10 @@ pub fn cmd_merge(vault: Vault, args: MergeArgs) -> eyre::Result<()> {
         }
     } else {
         let merged = vault.merge(&sources, &dest_path)?;
-        let rel = merged.path.strip_prefix(&vault.path).unwrap_or(&merged.path);
-        println!("{}", rel.display().to_string().cyan());
+        match args.format {
+            OutputFormat::Plain => output::print_note_plain(&merged, &vault.path),
+            OutputFormat::Json => output::print_note_json(&merged, &vault.path),
+        }
     }
     Ok(())
 }
@@ -75,8 +77,8 @@ fn unescape(s: &str) -> String {
     result
 }
 
-pub fn cmd_note_patch(vault: Vault, args: PatchArgs) -> eyre::Result<()> {
-    let (note_path, _) = resolve_note_path(&vault, &args.note)?;
+pub fn cmd_patch(vault: Vault, args: PatchArgs) -> eyre::Result<()> {
+    let (note_path, _) = vault.resolve_note_path(&args.note, true)?;
     let note = Note::from_path(&note_path)?;
     let old = unescape(&args.old_string);
     let new = unescape(&args.new_string);
@@ -87,7 +89,7 @@ pub fn cmd_note_patch(vault: Vault, args: PatchArgs) -> eyre::Result<()> {
 }
 
 pub fn cmd_backlinks(vault: Vault, args: BacklinksArgs) -> eyre::Result<()> {
-    let (note_path, _) = resolve_note_path(&vault, &args.note)?;
+    let (note_path, _) = vault.resolve_note_path(&args.note, true)?;
     let note = Note::from_path(&note_path)?;
     let mut results = vault.backlinks(&note);
     sort_notes_by(&mut results, |(n, _)| &n.path, &args.sort);
@@ -100,15 +102,20 @@ pub fn cmd_backlinks(vault: Vault, args: BacklinksArgs) -> eyre::Result<()> {
 }
 
 pub fn cmd_rename(vault: Vault, args: RenameArgs) -> eyre::Result<()> {
-    let (note_path, root) = resolve_note_path(&vault, &args.note)?;
+    let (note_path, root) = vault.resolve_note_path(&args.note, true)?;
     let note = Note::from_path(&note_path)?;
 
     let mut new_path = if args.new_path.is_absolute() {
         args.new_path.clone()
     } else {
-        root.join(&args.new_path)
+        if let Some(parent) = root {
+            parent.join(&args.new_path)
+        } else {
+            vault.path.join(&args.new_path)
+        }
     };
-    if new_path.extension().and_then(|e| e.to_str()) != Some("md") {
+
+    if new_path.extension().is_none() {
         new_path.set_extension("md");
     }
 
@@ -120,13 +127,15 @@ pub fn cmd_rename(vault: Vault, args: RenameArgs) -> eyre::Result<()> {
         }
     } else {
         let renamed = vault.rename(&note, &new_path)?;
-        let rel = renamed.path.strip_prefix(&vault.path).unwrap_or(&renamed.path);
-        println!("{}", rel.display().to_string().cyan());
+        match args.format {
+            OutputFormat::Plain => output::print_note_plain(&renamed, &vault.path),
+            OutputFormat::Json => output::print_note_json(&renamed, &vault.path),
+        }
     }
     Ok(())
 }
 
-pub fn cmd_note_update(vault: Vault, args: UpdateArgs) -> eyre::Result<()> {
+pub fn cmd_update(vault: Vault, args: UpdateArgs) -> eyre::Result<()> {
     if let Some(note_path) = args.note {
         let note = update_single_note(&vault, &note_path, &args.add_tag, &args.rm_tag, &args.add_alias)?;
         match args.format {
@@ -176,7 +185,7 @@ fn update_single_note(
     rm_tags: &[String],
     add_aliases: &[String],
 ) -> eyre::Result<Note> {
-    let (note_path, _) = resolve_note_path(vault, &note_arg.to_path_buf())?;
+    let (note_path, _) = vault.resolve_note_path(note_arg, true)?;
     let mut note = Note::from_path(&note_path)?;
 
     let mut dirty = false;
@@ -233,4 +242,33 @@ fn update_single_note(
     }
 
     Ok(note)
+}
+
+pub fn cmd_write(vault: Vault, args: WriteArgs) -> eyre::Result<()> {
+    let (note_path, _) = vault.resolve_note_path(&args.note, false)?;
+    if !args.force && note_path.exists() {
+        eyre::bail!("note already exists: {}\nUse --force to overwrite", note_path.display());
+    }
+
+    let content = if let Some(c) = args.content {
+        c
+    } else if !std::io::stdin().is_terminal() {
+        let mut buf = String::new();
+        std::io::stdin().lock().read_to_string(&mut buf)?;
+        buf
+    } else {
+        eyre::bail!("no note path provided and stdin is a TTY");
+    };
+
+    let mut note = Note::parse(note_path, &content);
+    note.tags.extend(args.tag.clone());
+    note.aliases.extend(args.alias.clone());
+    note.write()?;
+
+    match args.format {
+        OutputFormat::Plain => output::print_note_plain(&note, &vault.path),
+        OutputFormat::Json => output::print_note_json(&note, &vault.path),
+    }
+
+    Ok(())
 }

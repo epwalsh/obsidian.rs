@@ -118,18 +118,6 @@ impl Note {
         }
     }
 
-    /// Returns all links in the note body. Always available regardless of whether
-    /// content was loaded (links are pre-computed at parse time).
-    pub fn links(&self) -> Vec<crate::LocatedLink> {
-        self.links.clone()
-    }
-
-    /// Returns all inline tags in the note body. Always available regardless of whether
-    /// content was loaded (inline tags are pre-computed at parse time).
-    pub fn inline_tags(&self) -> Vec<crate::LocatedTag> {
-        self.inline_tags.clone()
-    }
-
     /// Loads a note from disk without retaining the body content.
     ///
     /// Links and inline tags are still extracted and stored. This is the
@@ -147,6 +135,32 @@ impl Note {
         let path = path.as_ref();
         let raw = std::fs::read_to_string(path)?;
         Ok(Self::parse_impl(path, &raw, true))
+    }
+
+    /// Add an alias.
+    pub fn add_alias(&mut self, alias: String) {
+        if !self.aliases.contains(&alias) {
+            self.aliases.push(alias);
+        }
+    }
+
+    /// Add a tag.
+    pub fn add_tag(&mut self, tag: String) {
+        if !self.tags.contains(&tag) {
+            self.tags.push(tag);
+        }
+    }
+
+    /// Returns all links in the note body. Always available regardless of whether
+    /// content was loaded (links are pre-computed at parse time).
+    pub fn links(&self) -> Vec<crate::LocatedLink> {
+        self.links.clone()
+    }
+
+    /// Returns all inline tags in the note body. Always available regardless of whether
+    /// content was loaded (inline tags are pre-computed at parse time).
+    pub fn inline_tags(&self) -> Vec<crate::LocatedTag> {
+        self.inline_tags.clone()
     }
 
     /// Reloads the note from its path without retaining body content.
@@ -205,33 +219,50 @@ impl Note {
     }
 
     fn to_file_content(&self, body: &str) -> Result<String, serde_yaml::Error> {
-        match &self.frontmatter {
-            None => Ok(body.to_string()),
-            Some(fm) => {
-                const PRIORITY_KEYS: &[&str] = &["id", "title", "aliases", "tags"];
-                let mut mapping = serde_yaml::Mapping::new();
-                // Emit priority keys in fixed order, only if present.
-                for key in PRIORITY_KEYS {
-                    if let Some(v) = fm.get(*key) {
-                        mapping.insert(serde_yaml::Value::String((*key).to_string()), pod_to_yaml_value(v));
-                    }
-                }
-                // Emit remaining keys in alphabetical order.
-                let mut rest: Vec<_> = fm
-                    .iter()
-                    .filter(|(k, _)| !PRIORITY_KEYS.contains(&k.as_str()))
-                    .collect();
-                rest.sort_by(|a, b| a.0.cmp(b.0));
-                for (k, v) in rest {
-                    mapping.insert(serde_yaml::Value::String(k.clone()), pod_to_yaml_value(v));
-                }
-                let yaml = serde_yaml::to_string(&mapping)?;
-                // serde_yaml may or may not emit a leading "---\n"; strip it so we
-                // control the delimiters ourselves.
-                let yaml = yaml.strip_prefix("---\n").unwrap_or(&yaml);
-                Ok(format!("---\n{}---\n\n{}", yaml, body))
+        let mut fm = if let Some(fm) = &self.frontmatter {
+            fm.clone()
+        } else {
+            // No frontmatter; create it.
+            IndexMap::new()
+        };
+
+        // Make sure fields are up-to-date.
+        fm.insert("id".to_string(), Pod::String(self.id.clone()));
+        if !self.aliases.is_empty() {
+            fm.insert(
+                "aliases".to_string(),
+                Pod::Array(self.aliases.iter().cloned().map(Pod::String).collect()),
+            );
+        }
+        if !self.tags.is_empty() {
+            fm.insert(
+                "tags".to_string(),
+                Pod::Array(self.tags.iter().cloned().map(Pod::String).collect()),
+            );
+        }
+
+        const PRIORITY_KEYS: &[&str] = &["id", "title", "aliases", "tags"];
+        let mut mapping = serde_yaml::Mapping::new();
+        // Emit priority keys in fixed order, only if present.
+        for key in PRIORITY_KEYS {
+            if let Some(v) = fm.get(*key) {
+                mapping.insert(serde_yaml::Value::String((*key).to_string()), pod_to_yaml_value(v));
             }
         }
+        // Emit remaining keys in alphabetical order.
+        let mut rest: Vec<_> = fm
+            .iter()
+            .filter(|(k, _)| !PRIORITY_KEYS.contains(&k.as_str()))
+            .collect();
+        rest.sort_by(|a, b| a.0.cmp(b.0));
+        for (k, v) in rest {
+            mapping.insert(serde_yaml::Value::String(k.clone()), pod_to_yaml_value(v));
+        }
+        let yaml = serde_yaml::to_string(&mapping)?;
+        // serde_yaml may or may not emit a leading "---\n"; strip it so we
+        // control the delimiters ourselves.
+        let yaml = yaml.strip_prefix("---\n").unwrap_or(&yaml);
+        Ok(format!("---\n{}---\n\n{}", yaml, body))
     }
 }
 
@@ -459,7 +490,14 @@ mod tests {
         note.write().unwrap();
 
         let on_disk = std::fs::read_to_string(tmp.path()).unwrap();
-        assert_eq!(on_disk, original);
+        assert_eq!(
+            on_disk,
+            format!(
+                "---\nid: {}\n---\n\n{}",
+                tmp.path().file_stem().unwrap().display().to_string(),
+                original
+            )
+        );
     }
 
     #[test]

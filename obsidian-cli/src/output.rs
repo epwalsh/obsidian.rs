@@ -20,6 +20,23 @@ struct NoteJson<'a> {
     tags: &'a [String],
 }
 
+pub fn print_note_json(note: &Note, vault_path: &Path) {
+    let rel = note.path.strip_prefix(vault_path).unwrap_or(&note.path);
+    let out = NoteJson {
+        path: rel.display().to_string(),
+        id: &note.id,
+        title: note.title.as_deref(),
+        aliases: &note.aliases,
+        tags: &note.tags,
+    };
+    println!("{}", serde_json::to_string(&out).unwrap());
+}
+
+pub fn print_note_plain(note: &Note, vault_path: &Path) {
+    let rel = note.path.strip_prefix(vault_path).unwrap_or(&note.path);
+    println!("{}", rel.display().to_string().cyan());
+}
+
 pub fn print_search_json(notes: &[Note], vault_path: &Path) {
     let items: Vec<NoteJson> = notes
         .iter()

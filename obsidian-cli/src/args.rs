@@ -132,6 +132,8 @@ pub enum NoteCommand {
     Rename(RenameArgs),
     /// Update fields of a note
     Update(UpdateArgs),
+    /// Write a new note
+    Write(WriteArgs),
 }
 
 #[derive(clap::Args)]
@@ -148,7 +150,7 @@ pub struct PatchArgs {
 
 #[derive(clap::Args)]
 pub struct UpdateArgs {
-    /// Path to the note (resolved relative to current directory).
+    /// Path to the note (resolved relative to vault root or current directory).
     /// If omitted, note paths are read from stdin (one per line).
     pub note: Option<PathBuf>,
     /// Add tag(s) to frontmatter (repeatable)
@@ -160,6 +162,26 @@ pub struct UpdateArgs {
     /// Add alias(es) to frontmatter (repeatable)
     #[arg(long, short = 'a')]
     pub add_alias: Vec<String>,
+    /// Output format
+    #[arg(long, short = 'f', default_value = "plain")]
+    pub format: OutputFormat,
+}
+
+#[derive(clap::Args)]
+pub struct WriteArgs {
+    /// Path to the note to write (resolved relative to the vault root or current directory, .md added if omitted)
+    pub note: PathBuf,
+    /// Content to write to the note. If omitted, content is read from stdin.
+    pub content: Option<String>,
+    /// Add tag(s) to frontmatter (repeatable)
+    #[arg(long, short = 't')]
+    pub tag: Vec<String>,
+    /// Add alias(es) to frontmatter (repeatable)
+    #[arg(long, short = 'a')]
+    pub alias: Vec<String>,
+    /// Force overwrite any existing note
+    #[arg(long)]
+    pub force: bool,
     /// Output format
     #[arg(long, short = 'f', default_value = "plain")]
     pub format: OutputFormat,
