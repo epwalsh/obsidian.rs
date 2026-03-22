@@ -59,7 +59,7 @@ impl Note {
             .and_then(|p| p.as_string().ok())
             .or_else(|| path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string()))
             .unwrap_or_default();
-        let title = frontmatter
+        let mut title = frontmatter
             .as_ref()
             .and_then(|fm| fm.get("title"))
             .and_then(|p| p.as_string().ok())
@@ -73,11 +73,16 @@ impl Note {
                 .into_iter()
                 .filter_map(|p| p.as_string().ok())
                 .collect();
+
+            // If there's a title, it should be an alias too, and if there's not a title we should
+            // infer it from the first alias
             if let Some(ref t) = title {
                 let clean = strip_title_md(t);
                 if !v.contains(&clean) {
                     v.push(clean);
                 }
+            } else if !v.is_empty() {
+                title = Some(v[0].clone());
             }
             v
         };
@@ -104,6 +109,7 @@ impl Note {
                 lt
             })
             .collect();
+
         Note {
             path: path.to_path_buf(),
             id,

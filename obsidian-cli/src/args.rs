@@ -174,6 +174,8 @@ pub struct WriteArgs {
     pub note: PathBuf,
     /// Content to write to the note. If omitted, content is read from stdin.
     pub content: Option<String>,
+    /// A title for the note if one can't be inferred from the content
+    pub title: Option<String>,
     /// Add tag(s) to frontmatter (repeatable)
     #[arg(long, short = 't')]
     pub tag: Vec<String>,

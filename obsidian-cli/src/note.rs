@@ -260,9 +260,25 @@ pub fn cmd_write(vault: Vault, args: WriteArgs) -> eyre::Result<()> {
         eyre::bail!("no note path provided and stdin is a TTY");
     };
 
+    // Parse note from content, update title, tags, and aliases, then write to disk.
     let mut note = Note::parse(note_path, &content);
-    note.tags.extend(args.tag.clone());
-    note.aliases.extend(args.alias.clone());
+    for tag in args.tag {
+        note.add_tag(tag);
+    }
+    for alias in args.alias {
+        note.add_alias(alias);
+    }
+    if let Some(title) = args.title {
+        note.title = Some(title.clone());
+        note.add_alias(title.clone());
+    } else if note.title.is_none() {
+        if !note.aliases.is_empty() {
+            // If no title but have aliases, use first alias as title
+            note.title = Some(note.aliases[0].clone());
+        } else {
+            eyre::bail!("no title provided and could not infer title from content");
+        }
+    }
     note.write()?;
 
     match args.format {

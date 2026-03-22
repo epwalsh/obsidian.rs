@@ -2,7 +2,7 @@
 checks :
 	cargo fmt --check
 	cargo check
-	cargo clippy
+	cargo clippy -- -D warnings
 	cargo test
 
 .PHONY : install
