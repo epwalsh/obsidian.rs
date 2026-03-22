@@ -140,9 +140,8 @@ mod tests {
         // Frontmatter is lines 1-3; body starts on line 4 with "#foo".
         let content = "---\ntitle: T\n---\n#foo";
         let note = Note::parse("/vault/note.md", content);
-        let tags = note.inline_tags();
-        assert_eq!(tags.len(), 1);
-        let loc = &tags[0].location;
+        assert_eq!(note.inline_tags.len(), 1);
+        let loc = &note.inline_tags[0].location;
         assert_eq!(loc.line, 4);
         assert_eq!(loc.col_start, 0);
         assert_eq!(loc.col_end, 4);

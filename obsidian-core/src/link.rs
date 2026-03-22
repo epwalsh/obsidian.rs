@@ -307,10 +307,9 @@ mod tests {
     #[test]
     fn note_links_delegates() {
         let note = Note::parse("/vault/note.md", "See [[target]] and [text](url).");
-        let links = note.links();
-        assert_eq!(links.len(), 2);
-        assert_wiki(&links[0].link, "target", None, None);
-        assert_md(&links[1].link, "text", "url");
+        assert_eq!(note.links.len(), 2);
+        assert_wiki(&note.links[0].link, "target", None, None);
+        assert_md(&note.links[1].link, "text", "url");
     }
 
     #[test]
@@ -319,9 +318,8 @@ mod tests {
         // Body starts on line 4 with "[[target]]".
         let content = "---\ntitle: T\n---\n[[target]]";
         let note = Note::parse("/vault/note.md", content);
-        let links = note.links();
-        assert_eq!(links.len(), 1);
-        let loc = &links[0].location;
+        assert_eq!(note.links.len(), 1);
+        let loc = &note.links[0].location;
         assert_eq!(loc.line, 4);
         assert_eq!(loc.col_start, 0);
         assert_eq!(loc.col_end, 10);

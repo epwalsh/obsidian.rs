@@ -134,7 +134,8 @@ fn find_matching_links(source: &Note, target: &Note, vault_path: &std::path::Pat
     }
     let target_stem = target.path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string());
     source
-        .links()
+        .links
+        .clone()
         .into_iter()
         .filter(|ll| match &ll.link {
             Link::Wiki {

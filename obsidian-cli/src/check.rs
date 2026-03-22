@@ -116,7 +116,7 @@ pub fn cmd_check(vault: Vault, args: CheckArgs) -> eyre::Result<()> {
 
     let mut broken: Vec<(PathBuf, usize, String)> = Vec::new();
     for note in notes.iter() {
-        for ll in note.links() {
+        for ll in &note.links {
             match &ll.link {
                 Link::Wiki { target, .. } => {
                     if !target.is_empty() && !valid_wiki_targets.contains(target.as_str()) {

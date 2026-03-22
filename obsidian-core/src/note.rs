@@ -137,32 +137,6 @@ impl Note {
         Ok(Self::parse_impl(path, &raw, true))
     }
 
-    /// Add an alias.
-    pub fn add_alias(&mut self, alias: String) {
-        if !self.aliases.contains(&alias) {
-            self.aliases.push(alias);
-        }
-    }
-
-    /// Add a tag.
-    pub fn add_tag(&mut self, tag: String) {
-        if !self.tags.contains(&tag) {
-            self.tags.push(tag);
-        }
-    }
-
-    /// Returns all links in the note body. Always available regardless of whether
-    /// content was loaded (links are pre-computed at parse time).
-    pub fn links(&self) -> Vec<crate::LocatedLink> {
-        self.links.clone()
-    }
-
-    /// Returns all inline tags in the note body. Always available regardless of whether
-    /// content was loaded (inline tags are pre-computed at parse time).
-    pub fn inline_tags(&self) -> Vec<crate::LocatedTag> {
-        self.inline_tags.clone()
-    }
-
     /// Reloads the note from its path without retaining body content.
     pub fn reload(self) -> Result<Self, NoteError> {
         Self::from_path(&self.path)
@@ -181,6 +155,20 @@ impl Note {
             self.content = Some(body);
         }
         Ok(())
+    }
+
+    /// Add an alias.
+    pub fn add_alias(&mut self, alias: String) {
+        if !self.aliases.contains(&alias) {
+            self.aliases.push(alias);
+        }
+    }
+
+    /// Add a tag.
+    pub fn add_tag(&mut self, tag: String) {
+        if !self.tags.contains(&tag) {
+            self.tags.push(tag);
+        }
     }
 
     /// Atomically writes the note to `self.path`, including serialized frontmatter.
@@ -625,13 +613,12 @@ mod tests {
         // Frontmatter is lines 1-3; "[[target]]" is on line 4 and "[text](url)" on line 5.
         let content = "---\ntitle: T\n---\n[[target]]\n[text](url)";
         let note = Note::parse("/vault/note.md", content);
-        let links = note.links();
-        assert_eq!(links.len(), 2);
-        assert_eq!(links[0].location.line, 4);
-        assert_eq!(links[0].location.col_start, 0);
-        assert_eq!(links[0].location.col_end, 10);
-        assert_eq!(links[1].location.line, 5);
-        assert_eq!(links[1].location.col_start, 0);
-        assert_eq!(links[1].location.col_end, 11);
+        assert_eq!(note.links.len(), 2);
+        assert_eq!(note.links[0].location.line, 4);
+        assert_eq!(note.links[0].location.col_start, 0);
+        assert_eq!(note.links[0].location.col_end, 10);
+        assert_eq!(note.links[1].location.line, 5);
+        assert_eq!(note.links[1].location.col_start, 0);
+        assert_eq!(note.links[1].location.col_end, 11);
     }
 }

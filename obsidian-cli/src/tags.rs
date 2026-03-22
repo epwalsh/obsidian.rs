@@ -17,7 +17,8 @@ pub fn cmd_tags_search(vault: Vault, args: TagsSearchArgs) -> eyre::Result<()> {
         .filter_map(|note| {
             let fm_matches: Vec<String> = note.tags.iter().filter(|t| tag_matches_search(t)).cloned().collect();
             let inline_matches: Vec<LocatedTag> = note
-                .inline_tags()
+                .inline_tags
+                .clone()
                 .into_iter()
                 .filter(|lt| tag_matches_search(&lt.tag))
                 .collect();
@@ -45,8 +46,8 @@ pub fn cmd_tags_list(vault: Vault, args: TagsListArgs) -> eyre::Result<()> {
         for tag in &note.tags {
             all_tags.insert(tag.clone());
         }
-        for lt in note.inline_tags() {
-            all_tags.insert(lt.tag);
+        for lt in &note.inline_tags {
+            all_tags.insert(lt.tag.clone());
         }
     }
     let tags: Vec<String> = all_tags.into_iter().collect();

@@ -40,6 +40,9 @@ pub struct CheckArgs {
 
 #[derive(clap::Args)]
 pub struct SearchArgs {
+    /// Filter by exact note ID match
+    #[arg(long)]
+    pub id: Option<String>,
     /// Filter by tag (AND semantics, repeatable)
     #[arg(long, short = 't')]
     pub tag: Vec<String>,
@@ -58,12 +61,10 @@ pub struct SearchArgs {
     /// Filter by content substring (AND semantics, repeatable)
     #[arg(long, short = 'c')]
     pub content: Vec<String>,
-    /// Filter by exact note ID match
-    #[arg(long)]
-    pub id: Option<String>,
-    /// Filter by content regex
+    /// Filter by content regex (https://docs.rs/regex/latest/regex/#syntax) (AND semantics,
+    /// repeatable)
     #[arg(long, short = 'r')]
-    pub regex: Option<String>,
+    pub regex: Vec<String>,
     /// Sort order for results
     #[arg(long, short = 's', default_value = "path-asc")]
     pub sort: SortOrder,

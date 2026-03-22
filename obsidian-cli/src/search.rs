@@ -16,6 +16,9 @@ pub fn cmd_search(vault: Vault, args: SearchArgs) -> eyre::Result<()> {
     for s in &args.content {
         query = query.content_contains(s);
     }
+    for r in &args.regex {
+        query = query.content_matches(r);
+    }
     for t in &args.title_contains {
         query = query.title_contains(t);
     }
@@ -27,9 +30,6 @@ pub fn cmd_search(vault: Vault, args: SearchArgs) -> eyre::Result<()> {
     }
     if let Some(id) = &args.id {
         query = query.id(id);
-    }
-    if let Some(r) = &args.regex {
-        query = query.content_matches(r);
     }
 
     let results = query.execute()?;

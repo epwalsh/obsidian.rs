@@ -26,7 +26,7 @@ pub struct SearchQuery {
     aliases: Vec<String>,
     alias_contains: Vec<String>,
     content_strings: Vec<String>,
-    content_regex: Option<String>,
+    content_regex: Vec<String>,
 }
 
 impl SearchQuery {
@@ -40,7 +40,7 @@ impl SearchQuery {
             aliases: Vec::new(),
             alias_contains: Vec::new(),
             content_strings: Vec::new(),
-            content_regex: None,
+            content_regex: Vec::new(),
         }
     }
 
@@ -89,7 +89,7 @@ impl SearchQuery {
 
     /// Regex match against note body. Last call wins.
     pub fn content_matches(mut self, pattern: impl Into<String>) -> Self {
-        self.content_regex = Some(pattern.into());
+        self.content_regex.push(pattern.into());
         self
     }
 
@@ -111,7 +111,6 @@ impl SearchQuery {
         } = self;
 
         let glob_set = build_glob_set(&globs)?;
-        let regex = content_regex.as_deref().map(Regex::new).transpose()?;
 
         let has_globs = !globs.is_empty();
         let paths: Vec<PathBuf> = find_note_paths(&root)
@@ -123,8 +122,13 @@ impl SearchQuery {
                 glob_set.is_match(rel)
             })
             .collect();
+        let mut regexes: Vec<Regex> = Vec::new();
+        for pattern in content_regex {
+            let re = Regex::new(&pattern).map_err(SearchError::InvalidRegex)?;
+            regexes.push(re);
+        }
 
-        let needs_content = !content_strings.is_empty() || content_regex.is_some();
+        let needs_content = !content_strings.is_empty() || !regexes.is_empty();
 
         let results = paths
             .into_par_iter()
@@ -184,10 +188,12 @@ impl SearchQuery {
                     }
                 }
 
-                if let Some(ref re) = regex {
-                    let body = note.content.as_deref().unwrap_or("");
-                    if !re.is_match(body) {
-                        return None;
+                if !regexes.is_empty() {
+                    for re in &regexes {
+                        let body = note.content.as_deref().unwrap_or("");
+                        if !re.is_match(body) {
+                            return None;
+                        }
                     }
                 }
 
