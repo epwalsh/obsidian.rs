@@ -14,7 +14,9 @@ use args::{Cli, Command};
 
 fn main() -> eyre::Result<()> {
     color_eyre::install()?;
+
     let cli = Cli::parse();
+
     if cli.color && cli.no_color {
         eyre::bail!("--color and --no-color are mutually exclusive");
     } else if cli.color {
@@ -22,10 +24,12 @@ fn main() -> eyre::Result<()> {
     } else if cli.no_color {
         colored::control::set_override(false);
     }
+
     let vault = match cli.vault {
         Some(ref path) => Vault::open(path)?,
         None => Vault::open_from_cwd()?,
     };
+
     match cli.command {
         Command::Search(args) => search::cmd_search(vault, args),
         Command::Note(note_args) => match note_args.subcommand {

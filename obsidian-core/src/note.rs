@@ -193,7 +193,7 @@ impl Note {
         }
         if ["id", "title", "aliases", "tags"].contains(&key) {
             return Err(NoteError::InvalidFieldName(format!(
-                "'{}' is a reserved field name and cannot be set with --set; use the corresponding dedicated option instead",
+                "'{}' is a reserved field name and cannot be set this way",
                 key
             )));
         }
