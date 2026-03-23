@@ -2,24 +2,28 @@ use std::path::PathBuf;
 
 #[derive(Debug, thiserror::Error)]
 pub enum VaultError {
-    #[error("{0} is not a directory")]
+    #[error("'{0}' is not a directory")]
     NotADirectory(PathBuf),
-    #[error("note already exists at {0}")]
+    #[error("note already exists at '{0}'")]
     NoteAlreadyExists(PathBuf),
-    #[error("note not found {0}")]
-    NoteNotFound(PathBuf),
+    #[error("note not found '{0}'")]
+    NoteNotFound(String),
+    #[error("ambigous note identifier '{0}'; multiple matches found")]
+    AmbiguousNoteIdentifier(String, Vec<PathBuf>),
     #[error("directory not found: {0}")]
     DirectoryNotFound(PathBuf),
-    #[error("source note is the same as destination: {0}")]
+    #[error("source note is the same as destination: '{0}'")]
     MergeSourceIsDestination(PathBuf),
-    #[error("old-string not found in {0}")]
+    #[error("old-string not found in '{0}'")]
     StringNotFound(PathBuf),
-    #[error("old-string found multiple times in {0}; must match exactly once")]
+    #[error("old-string found multiple times in '{0}'; must match exactly once")]
     StringFoundMultipleTimes(PathBuf),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Note(#[from] NoteError),
+    #[error(transparent)]
+    Search(#[from] SearchError),
 }
 
 #[derive(Debug, thiserror::Error)]

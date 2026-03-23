@@ -193,6 +193,33 @@ impl Vault {
         Self::open(&cwd)
     }
 
+    /// Resolve a note based on a path, ID, title, or alias.
+    pub fn resolve_note(&self, note: &str) -> Result<Note, VaultError> {
+        // First try as a path.
+        if let Ok((path, _)) = self.resolve_note_path(note, true) {
+            return Note::from_path(path).map_err(VaultError::Note);
+        }
+
+        // Then search.
+        let results = self
+            .search()
+            .id(note)
+            .has_alias(note)
+            .execute()
+            .map_err(VaultError::Search)?;
+        let mut notes: Vec<Note> = results.into_iter().filter_map(|r| r.ok()).collect();
+        if notes.is_empty() {
+            Err(VaultError::NoteNotFound(note.to_string()))
+        } else if notes.len() > 1 {
+            Err(VaultError::AmbiguousNoteIdentifier(
+                note.to_string(),
+                notes.into_iter().map(|n| n.path).collect(),
+            ))
+        } else {
+            Ok(notes.remove(0))
+        }
+    }
+
     /// Resolve a note path argument, which may be absolute or relative to either the current working
     /// directory or the vault root.
     /// Returns the resolved absolute path and the root it was resolved against, if any.
@@ -206,7 +233,7 @@ impl Vault {
             if path.exists() || !strict {
                 return Ok((path, None));
             } else {
-                return Err(VaultError::NoteNotFound(path));
+                return Err(VaultError::NoteNotFound(path.to_string_lossy().to_string()));
             }
         }
 
@@ -259,7 +286,7 @@ impl Vault {
             }
         }
 
-        Err(VaultError::NoteNotFound(path))
+        Err(VaultError::NoteNotFound(path.to_string_lossy().to_string()))
     }
 
     /// Loads all notes in the vault in parallel, without retaining body content.

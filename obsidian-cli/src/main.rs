@@ -29,6 +29,7 @@ fn main() -> eyre::Result<()> {
     match cli.command {
         Command::Search(args) => search::cmd_search(vault, args),
         Command::Note(note_args) => match note_args.subcommand {
+            args::NoteCommand::Resolve(args) => note::cmd_resolve(vault, args),
             args::NoteCommand::Backlinks(args) => note::cmd_backlinks(vault, args),
             args::NoteCommand::Merge(args) => note::cmd_merge(vault, args),
             args::NoteCommand::Patch(args) => note::cmd_patch(vault, args),

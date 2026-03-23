@@ -123,6 +123,8 @@ pub struct NoteArgs {
 
 #[derive(Subcommand)]
 pub enum NoteCommand {
+    /// Resolve a note from a path, ID, or alias.
+    Resolve(ResolveArgs),
     /// Find notes that link to a given note
     Backlinks(BacklinksArgs),
     /// Merge two or more notes into a single destination note
@@ -135,6 +137,15 @@ pub enum NoteCommand {
     Update(UpdateArgs),
     /// Write a new note
     Write(WriteArgs),
+}
+
+#[derive(clap::Args)]
+pub struct ResolveArgs {
+    /// Path, ID, or alias of the note to resolve (resolved relative to current directory if possible)
+    pub note: String,
+    /// Output format
+    #[arg(long, short = 'f', default_value = "plain")]
+    pub format: OutputFormat,
 }
 
 #[derive(clap::Args)]

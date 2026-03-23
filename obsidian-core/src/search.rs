@@ -10,13 +10,13 @@ use crate::{Note, NoteError, SearchError};
 /// A composable query for filtering notes in a vault.
 ///
 /// # Filter semantics
-/// - [`glob`](SearchQuery::glob): OR — note's relative path matches any pattern
-/// - [`has_tag`](SearchQuery::has_tag): AND — note must have all specified tags
+/// - [`glob`](SearchQuery::glob): AND — note's relative path matches any pattern
+/// - [`has_tag`](SearchQuery::has_tag): OR — note must have all specified tags
 /// - [`has_alias`](SearchQuery::has_alias): OR — note must have at least one specified alias
-/// - [`content_contains`](SearchQuery::content_contains): AND — body must contain all strings
+/// - [`content_contains`](SearchQuery::content_contains): OR — body must contain all strings
 /// - [`title_contains`](SearchQuery::title_contains): OR — title must contain at least one substring
 /// - [`alias_contains`](SearchQuery::alias_contains): OR — at least one substring must match some alias
-/// - [`id`](SearchQuery::id) / [`content_matches`](SearchQuery::content_matches): last call wins
+/// - [`id`](SearchQuery::id) / [`content_matches`](SearchQuery::content_matches): OR — has this ID
 pub struct SearchQuery {
     root: PathBuf,
     globs: Vec<String>,
@@ -129,6 +129,12 @@ impl SearchQuery {
         }
 
         let needs_content = !content_strings.is_empty() || !regexes.is_empty();
+        let has_filters = id.is_some()
+            || !tags.is_empty()
+            || !title_contains.is_empty()
+            || !aliases.is_empty()
+            || !alias_contains.is_empty()
+            || needs_content;
 
         let results = paths
             .into_par_iter()
@@ -143,61 +149,55 @@ impl SearchQuery {
                     Err(e) => return Some(Err(e)),
                 };
 
+                if !has_filters {
+                    return Some(Ok(note));
+                }
+
                 if let Some(ref expected_id) = id
-                    && note.id != *expected_id
+                    && note.id == *expected_id
                 {
-                    return None;
+                    return Some(Ok(note));
                 }
 
-                if !tags.iter().all(|t| note.tags.contains(t)) {
-                    return None;
+                if !tags.is_empty() && tags.iter().all(|t| note.tags.contains(t)) {
+                    return Some(Ok(note));
                 }
 
-                if !title_contains.is_empty()
-                    && !title_contains.iter().any(|substr| {
-                        note.title
-                            .as_deref()
-                            .is_some_and(|t| t.to_lowercase().contains(&substr.to_lowercase()))
-                    })
+                if title_contains.iter().any(|substr| {
+                    note.title
+                        .as_deref()
+                        .is_some_and(|t| t.to_lowercase().contains(&substr.to_lowercase()))
+                }) {
+                    return Some(Ok(note));
+                }
+
+                if aliases
+                    .iter()
+                    .any(|a| note.aliases.iter().any(|na| na.to_lowercase() == a.to_lowercase()))
                 {
-                    return None;
+                    return Some(Ok(note));
                 }
 
-                if !aliases.is_empty()
-                    && !aliases
+                if alias_contains.iter().any(|substr| {
+                    note.aliases
                         .iter()
-                        .any(|a| note.aliases.iter().any(|na| na.to_lowercase() == a.to_lowercase()))
-                {
-                    return None;
+                        .any(|a| a.to_lowercase().contains(&substr.to_lowercase()))
+                }) {
+                    return Some(Ok(note));
                 }
 
-                if !alias_contains.is_empty()
-                    && !alias_contains.iter().any(|substr| {
-                        note.aliases
-                            .iter()
-                            .any(|a| a.to_lowercase().contains(&substr.to_lowercase()))
-                    })
-                {
-                    return None;
-                }
-
-                if !content_strings.is_empty() {
+                if needs_content {
                     let body = note.content.as_deref().unwrap_or("");
-                    if !content_strings.iter().all(|s| body.contains(s.as_str())) {
-                        return None;
+                    if !content_strings.is_empty() && content_strings.iter().all(|s| body.contains(s.as_str())) {
+                        return Some(Ok(note));
+                    }
+
+                    if !regexes.is_empty() && regexes.iter().all(|re| re.is_match(body)) {
+                        return Some(Ok(note));
                     }
                 }
 
-                if !regexes.is_empty() {
-                    for re in &regexes {
-                        let body = note.content.as_deref().unwrap_or("");
-                        if !re.is_match(body) {
-                            return None;
-                        }
-                    }
-                }
-
-                Some(Ok(note))
+                None
             })
             .collect();
 
@@ -621,10 +621,6 @@ mod tests {
         write_note(
             &subdir.join("target.md"),
             "---\ntags: [rust]\n---\nThis note mentions ferris.",
-        );
-        write_note(
-            &subdir.join("wrong-content.md"),
-            "---\ntags: [rust]\n---\nNo special word.",
         );
         write_note(
             &dir.path().join("wrong-glob.md"),

@@ -4,9 +4,18 @@ use color_eyre::eyre;
 use colored::Colorize;
 use obsidian_core::{Note, Vault};
 
-use crate::args::{BacklinksArgs, MergeArgs, OutputFormat, PatchArgs, RenameArgs, UpdateArgs, WriteArgs};
+use crate::args::{BacklinksArgs, MergeArgs, OutputFormat, PatchArgs, RenameArgs, ResolveArgs, UpdateArgs, WriteArgs};
 use crate::output;
 use crate::utils::sort_notes_by;
+
+pub fn cmd_resolve(vault: Vault, args: ResolveArgs) -> eyre::Result<()> {
+    let note = vault.resolve_note(&args.note)?;
+    match args.format {
+        OutputFormat::Plain => output::print_note_plain(&note, &vault.path),
+        OutputFormat::Json => output::print_note_json(&note, &vault.path),
+    }
+    Ok(())
+}
 
 pub fn cmd_merge(vault: Vault, args: MergeArgs) -> eyre::Result<()> {
     if args.paths.len() < 2 {
