@@ -544,6 +544,7 @@ dependencies = [
  "indexmap",
  "rayon",
  "regex",
+ "serde_json",
  "serde_yaml",
  "tempfile",
  "thiserror",

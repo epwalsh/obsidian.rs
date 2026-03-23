@@ -247,7 +247,7 @@ impl Note {
         fm
     }
 
-    pub fn encoded_frontmatter(&self) -> Result<String, serde_yaml::Error> {
+    pub fn frontmatter_yaml(&self) -> Result<serde_yaml::Mapping, serde_yaml::Error> {
         let fm = self.frontmatter_map();
 
         const PRIORITY_KEYS: &[&str] = &["id", "title", "aliases", "tags"];
@@ -267,15 +267,27 @@ impl Note {
         for (k, v) in rest {
             mapping.insert(serde_yaml::Value::String(k.clone()), pod_to_yaml_value(v));
         }
-        let yaml = serde_yaml::to_string(&mapping)?;
-        // serde_yaml may or may not emit a leading "---\n"; strip it so we
-        // control the delimiters ourselves.
-        let yaml = yaml.strip_prefix("---\n").unwrap_or(&yaml);
-        Ok(yaml.to_string())
+        Ok(mapping)
+    }
+
+    pub fn frontmatter_json(&self) -> Result<serde_json::Map<String, serde_json::Value>, NoteError> {
+        let fm = self.frontmatter_map();
+        let mut mapping = serde_json::Map::new();
+        for (k, v) in fm {
+            mapping.insert(k, pod_to_json_value(&v)?);
+        }
+        Ok(mapping)
+    }
+
+    pub fn frontmatter_string(&self) -> Result<String, serde_yaml::Error> {
+        let fm = self.frontmatter_yaml()?;
+        let yaml = serde_yaml::to_string(&fm)?;
+        // Strip leading "---\n" if emitted by serde_yaml, since we'll add our own delimiters.
+        Ok(yaml.strip_prefix("---\n").unwrap_or(&yaml).to_string())
     }
 
     fn to_file_content(&self, body: &str) -> Result<String, serde_yaml::Error> {
-        let fm = self.encoded_frontmatter()?;
+        let fm = self.frontmatter_string()?;
         Ok(format!("---\n{}---\n\n{}", fm, body))
     }
 }
@@ -293,6 +305,29 @@ fn pod_to_yaml_value(pod: &Pod) -> serde_yaml::Value {
                 .map(|(k, v)| (serde_yaml::Value::String(k.clone()), pod_to_yaml_value(v)))
                 .collect(),
         ),
+    }
+}
+
+fn pod_to_json_value(pod: &Pod) -> Result<serde_json::Value, NoteError> {
+    match pod {
+        Pod::Null => Ok(serde_json::Value::Null),
+        Pod::String(s) => Ok(serde_json::Value::String(s.clone())),
+        Pod::Integer(i) => Ok(serde_json::Value::Number((*i).into())),
+        Pod::Float(f) => Ok(serde_json::Value::Number(
+            serde_json::Number::from_f64(*f).ok_or_else(|| NoteError::Json(format!("invalid float value: {}", f)))?,
+        )),
+        Pod::Boolean(b) => Ok(serde_json::Value::Bool(*b)),
+        Pod::Array(arr) => {
+            let result: Result<Vec<serde_json::Value>, NoteError> = arr.iter().map(pod_to_json_value).collect();
+            Ok(serde_json::Value::Array(result?))
+        }
+        Pod::Hash(map) => {
+            let result: Result<serde_json::Map<String, serde_json::Value>, NoteError> = map
+                .iter()
+                .map(|(k, v)| pod_to_json_value(v).map(|json_v| (k.clone(), json_v)))
+                .collect();
+            result.map(serde_json::Value::Object)
+        }
     }
 }
 

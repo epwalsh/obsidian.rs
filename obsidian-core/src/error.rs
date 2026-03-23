@@ -32,6 +32,8 @@ pub enum NoteError {
     Io(#[from] std::io::Error),
     #[error("failed to serialize frontmatter: {0}")]
     Yaml(#[from] serde_yaml::Error),
+    #[error("failed to serialize frontmatter: {0}")]
+    Json(String),
     #[error("note content not loaded; use from_path_with_content() or load_content()")]
     ContentNotLoaded,
     #[error("'{0}' is not a valid note path")]
