@@ -4,7 +4,9 @@ use color_eyre::eyre;
 use colored::Colorize;
 use obsidian_core::{Note, Vault};
 
-use crate::args::{BacklinksArgs, MergeArgs, OutputFormat, PatchArgs, RenameArgs, ResolveArgs, UpdateArgs, WriteArgs};
+use crate::args::{
+    BacklinksArgs, MergeArgs, OutputFormat, PatchArgs, ReadArgs, RenameArgs, ResolveArgs, UpdateArgs, WriteArgs,
+};
 use crate::output;
 use crate::utils::sort_notes_by;
 
@@ -14,6 +16,66 @@ pub fn cmd_resolve(vault: Vault, args: ResolveArgs) -> eyre::Result<()> {
         OutputFormat::Plain => output::print_note_plain(&note, &vault.path),
         OutputFormat::Json => output::print_note_json(&note, &vault.path),
     }
+    Ok(())
+}
+
+pub fn cmd_read(vault: Vault, args: ReadArgs) -> eyre::Result<()> {
+    let (note_path, _) = vault.resolve_note_path(&args.note, true)?;
+    let note = if args.no_content {
+        Note::from_path(&note_path)?
+    } else {
+        Note::from_path_with_content(&note_path)?
+    };
+
+    match args.format {
+        OutputFormat::Plain => output::print_note_read_plain(&note, args.frontmatter, args.no_content)?,
+        OutputFormat::Json => output::print_note_read_json(&note, args.frontmatter, args.no_content)?,
+    }
+    Ok(())
+}
+
+pub fn cmd_write(vault: Vault, args: WriteArgs) -> eyre::Result<()> {
+    let (note_path, _) = vault.resolve_note_path(&args.note, false)?;
+    if !args.force && note_path.exists() {
+        eyre::bail!("note already exists: {}\nUse --force to overwrite", note_path.display());
+    }
+
+    let content = if let Some(c) = args.content {
+        c
+    } else if !std::io::stdin().is_terminal() {
+        let mut buf = String::new();
+        std::io::stdin().lock().read_to_string(&mut buf)?;
+        buf
+    } else {
+        eyre::bail!("no note path provided and stdin is a TTY");
+    };
+
+    // Parse note from content, update title, tags, and aliases, then write to disk.
+    let mut note = Note::parse(note_path, &content);
+    for tag in args.tag {
+        note.add_tag(tag);
+    }
+    for alias in args.alias {
+        note.add_alias(alias);
+    }
+    if let Some(title) = args.title {
+        note.title = Some(title.clone());
+        note.add_alias(title.clone());
+    } else if note.title.is_none() {
+        if !note.aliases.is_empty() {
+            // If no title but have aliases, use first alias as title
+            note.title = Some(note.aliases[0].clone());
+        } else {
+            eyre::bail!("no title provided and could not infer title from content");
+        }
+    }
+    note.write()?;
+
+    match args.format {
+        OutputFormat::Plain => output::print_note_plain(&note, &vault.path),
+        OutputFormat::Json => output::print_note_json(&note, &vault.path),
+    }
+
     Ok(())
 }
 
@@ -251,49 +313,4 @@ fn update_single_note(
     }
 
     Ok(note)
-}
-
-pub fn cmd_write(vault: Vault, args: WriteArgs) -> eyre::Result<()> {
-    let (note_path, _) = vault.resolve_note_path(&args.note, false)?;
-    if !args.force && note_path.exists() {
-        eyre::bail!("note already exists: {}\nUse --force to overwrite", note_path.display());
-    }
-
-    let content = if let Some(c) = args.content {
-        c
-    } else if !std::io::stdin().is_terminal() {
-        let mut buf = String::new();
-        std::io::stdin().lock().read_to_string(&mut buf)?;
-        buf
-    } else {
-        eyre::bail!("no note path provided and stdin is a TTY");
-    };
-
-    // Parse note from content, update title, tags, and aliases, then write to disk.
-    let mut note = Note::parse(note_path, &content);
-    for tag in args.tag {
-        note.add_tag(tag);
-    }
-    for alias in args.alias {
-        note.add_alias(alias);
-    }
-    if let Some(title) = args.title {
-        note.title = Some(title.clone());
-        note.add_alias(title.clone());
-    } else if note.title.is_none() {
-        if !note.aliases.is_empty() {
-            // If no title but have aliases, use first alias as title
-            note.title = Some(note.aliases[0].clone());
-        } else {
-            eyre::bail!("no title provided and could not infer title from content");
-        }
-    }
-    note.write()?;
-
-    match args.format {
-        OutputFormat::Plain => output::print_note_plain(&note, &vault.path),
-        OutputFormat::Json => output::print_note_json(&note, &vault.path),
-    }
-
-    Ok(())
 }

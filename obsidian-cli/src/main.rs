@@ -30,12 +30,13 @@ fn main() -> eyre::Result<()> {
         Command::Search(args) => search::cmd_search(vault, args),
         Command::Note(note_args) => match note_args.subcommand {
             args::NoteCommand::Resolve(args) => note::cmd_resolve(vault, args),
+            args::NoteCommand::Read(args) => note::cmd_read(vault, args),
+            args::NoteCommand::Write(args) => note::cmd_write(vault, args),
             args::NoteCommand::Backlinks(args) => note::cmd_backlinks(vault, args),
             args::NoteCommand::Merge(args) => note::cmd_merge(vault, args),
             args::NoteCommand::Patch(args) => note::cmd_patch(vault, args),
             args::NoteCommand::Rename(args) => note::cmd_rename(vault, args),
             args::NoteCommand::Update(args) => note::cmd_update(vault, args),
-            args::NoteCommand::Write(args) => note::cmd_write(vault, args),
         },
         Command::Tags(tags_args) => match tags_args.subcommand {
             args::TagsCommand::Search(args) => tags::cmd_tags_search(vault, args),

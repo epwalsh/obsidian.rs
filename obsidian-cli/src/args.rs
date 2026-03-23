@@ -125,6 +125,10 @@ pub struct NoteArgs {
 pub enum NoteCommand {
     /// Resolve a note from a path, ID, or alias.
     Resolve(ResolveArgs),
+    /// Read contents/frontmatter of a note
+    Read(ReadArgs),
+    /// Write a new note
+    Write(WriteArgs),
     /// Find notes that link to a given note
     Backlinks(BacklinksArgs),
     /// Merge two or more notes into a single destination note
@@ -135,14 +139,49 @@ pub enum NoteCommand {
     Rename(RenameArgs),
     /// Update fields of a note
     Update(UpdateArgs),
-    /// Write a new note
-    Write(WriteArgs),
 }
 
 #[derive(clap::Args)]
 pub struct ResolveArgs {
-    /// Path, ID, or alias of the note to resolve (resolved relative to current directory if possible)
+    /// Path, ID, or alias of the note to resolve
     pub note: String,
+    /// Output format
+    #[arg(long, short = 'f', default_value = "plain")]
+    pub format: OutputFormat,
+}
+
+#[derive(clap::Args)]
+pub struct ReadArgs {
+    /// Path to the note to read (resolved relative to current directory)
+    pub note: PathBuf,
+    /// Include frontmatter in the output
+    #[arg(long)]
+    pub frontmatter: bool,
+    /// Exclude content from the output (--frontmatter is assumed if this is set)
+    #[arg(long)]
+    pub no_content: bool,
+    /// Output format
+    #[arg(long, short = 'f', default_value = "plain")]
+    pub format: OutputFormat,
+}
+
+#[derive(clap::Args)]
+pub struct WriteArgs {
+    /// Path to the note to write (resolved relative to the vault root or current directory, .md added if omitted)
+    pub note: PathBuf,
+    /// Content to write to the note. If omitted, content is read from stdin.
+    pub content: Option<String>,
+    /// A title for the note if one can't be inferred from the content
+    pub title: Option<String>,
+    /// Add tag(s) to frontmatter (repeatable)
+    #[arg(long, short = 't')]
+    pub tag: Vec<String>,
+    /// Add alias(es) to frontmatter (repeatable)
+    #[arg(long, short = 'a')]
+    pub alias: Vec<String>,
+    /// Force overwrite any existing note
+    #[arg(long)]
+    pub force: bool,
     /// Output format
     #[arg(long, short = 'f', default_value = "plain")]
     pub format: OutputFormat,
@@ -174,28 +213,6 @@ pub struct UpdateArgs {
     /// Add alias(es) to frontmatter (repeatable)
     #[arg(long, short = 'a')]
     pub add_alias: Vec<String>,
-    /// Output format
-    #[arg(long, short = 'f', default_value = "plain")]
-    pub format: OutputFormat,
-}
-
-#[derive(clap::Args)]
-pub struct WriteArgs {
-    /// Path to the note to write (resolved relative to the vault root or current directory, .md added if omitted)
-    pub note: PathBuf,
-    /// Content to write to the note. If omitted, content is read from stdin.
-    pub content: Option<String>,
-    /// A title for the note if one can't be inferred from the content
-    pub title: Option<String>,
-    /// Add tag(s) to frontmatter (repeatable)
-    #[arg(long, short = 't')]
-    pub tag: Vec<String>,
-    /// Add alias(es) to frontmatter (repeatable)
-    #[arg(long, short = 'a')]
-    pub alias: Vec<String>,
-    /// Force overwrite any existing note
-    #[arg(long)]
-    pub force: bool,
     /// Output format
     #[arg(long, short = 'f', default_value = "plain")]
     pub format: OutputFormat,

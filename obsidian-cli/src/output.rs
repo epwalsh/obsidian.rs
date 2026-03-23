@@ -1,8 +1,11 @@
 use std::path::Path;
 
+use color_eyre::eyre;
 use colored::Colorize;
+use gray_matter::Pod;
 use obsidian_core::{Link, LocatedLink, LocatedTag, MergePreview, Note, RenamePreview};
 use serde::Serialize;
+use serde_json::json;
 
 pub fn print_search_plain(notes: &[Note], vault_path: &Path) {
     for note in notes {
@@ -35,6 +38,47 @@ pub fn print_note_json(note: &Note, vault_path: &Path) {
 pub fn print_note_plain(note: &Note, vault_path: &Path) {
     let rel = note.path.strip_prefix(vault_path).unwrap_or(&note.path);
     println!("{}", rel.display().to_string().cyan());
+}
+
+pub fn print_note_read_plain(note: &Note, frontmatter: bool, no_content: bool) -> eyre::Result<()> {
+    if no_content {
+        let fm = note.encoded_frontmatter()?;
+        println!("---\n{}---", fm);
+    } else {
+        let content = note.read(frontmatter)?;
+        println!("{}", content);
+    }
+    Ok(())
+}
+
+fn pod_to_json_value(pod: &Pod) -> serde_json::Value {
+    match pod {
+        Pod::Null => serde_json::Value::Null,
+        Pod::String(s) => serde_json::Value::String(s.clone()),
+        Pod::Integer(i) => serde_json::Value::Number((*i).into()),
+        Pod::Float(f) => serde_json::Value::Number(serde_json::Number::from_f64(*f).unwrap()),
+        Pod::Boolean(b) => serde_json::Value::Bool(*b),
+        Pod::Array(arr) => serde_json::Value::Array(arr.iter().map(pod_to_json_value).collect()),
+        Pod::Hash(map) => {
+            serde_json::Value::Object(map.iter().map(|(k, v)| (k.clone(), pod_to_json_value(v))).collect())
+        }
+    }
+}
+
+pub fn print_note_read_json(note: &Note, frontmatter: bool, no_content: bool) -> eyre::Result<()> {
+    // Build up raw content
+    let mut content = json!({});
+    if frontmatter || no_content {
+        content["frontmatter"] = json!({});
+        for (key, value) in note.frontmatter_map() {
+            content["frontmatter"][key] = pod_to_json_value(&value);
+        }
+    }
+    if !no_content {
+        content["content"] = json!(note.read(false)?);
+    }
+    println!("{}", serde_json::to_string(&content)?);
+    Ok(())
 }
 
 pub fn print_search_json(notes: &[Note], vault_path: &Path) {

@@ -212,7 +212,17 @@ impl Note {
         Ok(())
     }
 
-    fn to_file_content(&self, body: &str) -> Result<String, serde_yaml::Error> {
+    pub fn read(&self, include_frontmatter: bool) -> Result<String, NoteError> {
+        let body = self.content.as_deref().ok_or(NoteError::ContentNotLoaded)?;
+        if include_frontmatter {
+            let file_content = self.to_file_content(body)?;
+            Ok(file_content)
+        } else {
+            Ok(body.to_string())
+        }
+    }
+
+    pub fn frontmatter_map(&self) -> IndexMap<String, Pod> {
         let mut fm = if let Some(fm) = &self.frontmatter {
             fm.clone()
         } else {
@@ -234,6 +244,11 @@ impl Note {
                 Pod::Array(self.tags.iter().cloned().map(Pod::String).collect()),
             );
         }
+        fm
+    }
+
+    pub fn encoded_frontmatter(&self) -> Result<String, serde_yaml::Error> {
+        let fm = self.frontmatter_map();
 
         const PRIORITY_KEYS: &[&str] = &["id", "title", "aliases", "tags"];
         let mut mapping = serde_yaml::Mapping::new();
@@ -256,7 +271,12 @@ impl Note {
         // serde_yaml may or may not emit a leading "---\n"; strip it so we
         // control the delimiters ourselves.
         let yaml = yaml.strip_prefix("---\n").unwrap_or(&yaml);
-        Ok(format!("---\n{}---\n\n{}", yaml, body))
+        Ok(yaml.to_string())
+    }
+
+    fn to_file_content(&self, body: &str) -> Result<String, serde_yaml::Error> {
+        let fm = self.encoded_frontmatter()?;
+        Ok(format!("---\n{}---\n\n{}", fm, body))
     }
 }
 
