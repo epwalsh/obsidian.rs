@@ -91,6 +91,7 @@ pub fn print_backlinks_plain(results: &[(Note, Vec<LocatedLink>)], vault_path: &
 struct LinkJson {
     kind: &'static str,
     target: String,
+    display: String,
     line: usize,
     col_start: usize,
     col_end: usize,
@@ -324,14 +325,32 @@ pub fn print_backlinks_json(results: &[(Note, Vec<LocatedLink>)], vault_path: &P
             let link_jsons = links
                 .iter()
                 .map(|ll| {
-                    let (kind, target) = match &ll.link {
-                        Link::Wiki { target, .. } => ("wiki", target.clone()),
-                        Link::Markdown { url, .. } => ("markdown", url.clone()),
-                        Link::Embed { target, .. } => ("embed", target.clone()),
+                    let (kind, mut target, heading, display) = match &ll.link {
+                        Link::Wiki {
+                            target, heading, alias, ..
+                        } => (
+                            "wiki",
+                            target.clone(),
+                            heading.clone(),
+                            alias.clone().unwrap_or(target.clone()),
+                        ),
+                        Link::Markdown { url, text, .. } => ("markdown", url.clone(), None, text.clone()),
+                        Link::Embed {
+                            target, heading, alias, ..
+                        } => (
+                            "embed",
+                            target.clone(),
+                            heading.clone(),
+                            alias.clone().unwrap_or(target.clone()),
+                        ),
                     };
+                    if let Some(h) = heading {
+                        target = format!("{}#{}", target, h);
+                    }
                     LinkJson {
                         kind,
                         target,
+                        display,
                         line: ll.location.line,
                         col_start: ll.location.col_start,
                         col_end: ll.location.col_end,
