@@ -122,6 +122,10 @@ struct MergeOp {
     merged_content: String,
     /// Merged frontmatter for the destination note.
     merged_frontmatter: Option<IndexMap<String, Pod>>,
+    /// Merged tags
+    merged_tags: Vec<String>,
+    /// Merged aliases
+    merged_aliases: Vec<String>,
     /// External notes (not sources, not dest) with backlinks to rewrite.
     per_note_replacements: Vec<(PathBuf, Vec<(LocatedLink, String)>)>,
 }
@@ -624,7 +628,7 @@ impl Vault {
         if !tag_strings.is_empty() {
             fm.insert(
                 "tags".to_string(),
-                Pod::Array(tag_strings.into_iter().map(Pod::String).collect()),
+                Pod::Array(tag_strings.clone().into_iter().map(Pod::String).collect()),
             );
         }
 
@@ -648,7 +652,7 @@ impl Vault {
         if !alias_strings.is_empty() {
             fm.insert(
                 "aliases".to_string(),
-                Pod::Array(alias_strings.into_iter().map(Pod::String).collect()),
+                Pod::Array(alias_strings.clone().into_iter().map(Pod::String).collect()),
             );
         }
 
@@ -671,6 +675,8 @@ impl Vault {
             dest_is_new,
             merged_content,
             merged_frontmatter,
+            merged_tags: tag_strings,
+            merged_aliases: alias_strings,
             per_note_replacements,
         })
     }
@@ -694,8 +700,8 @@ impl Vault {
                     .unwrap_or_default()
                     .to_string(),
                 title: None,
-                aliases: Vec::new(),
-                tags: Vec::new(),
+                aliases: op.merged_aliases,
+                tags: op.merged_tags,
                 content: Some(op.merged_content),
                 links: Vec::new(),
                 inline_tags: Vec::new(),

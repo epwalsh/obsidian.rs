@@ -177,6 +177,44 @@ impl Note {
         }
     }
 
+    pub fn remove_tag(&mut self, tag: &str) {
+        self.tags.retain(|t| t != tag);
+    }
+
+    /// Set a frontmatter field to a value (which can be any YAML type).
+    /// A null value removes the field from the frontmatter.
+    pub fn set_field(&mut self, key: &str, value: &serde_yaml::Value) -> Result<(), NoteError> {
+        // Guard against invalid field names that would cause YAML serialization to fail (e.g. containing newlines),
+        // or that would be confusing to users (e.g. "id", "aliases", "tags" which are derived from other fields and would be ignored).
+        if key.contains('\n') {
+            return Err(NoteError::InvalidFieldName(
+                "field names cannot contain newlines".to_string(),
+            ));
+        }
+        if ["id", "title", "aliases", "tags"].contains(&key) {
+            return Err(NoteError::InvalidFieldName(format!(
+                "'{}' is a reserved field name and cannot be set with --set; use the corresponding dedicated option instead",
+                key
+            )));
+        }
+
+        if self.frontmatter.is_none() {
+            self.frontmatter = Some(IndexMap::new());
+        }
+
+        if value.is_null() {
+            // Remove the field if value is null.
+            self.frontmatter.as_mut().unwrap().shift_remove(key);
+        } else {
+            self.frontmatter
+                .as_mut()
+                .unwrap()
+                .insert(key.to_string(), yaml_to_pod_value(value));
+        }
+
+        Ok(())
+    }
+
     /// Atomically writes the note to `self.path`, including serialized frontmatter.
     ///
     /// Requires [`Note::content`] to be populated. Returns
@@ -232,13 +270,19 @@ impl Note {
 
         // Make sure fields are up-to-date.
         fm.insert("id".to_string(), Pod::String(self.id.clone()));
-        if !self.aliases.is_empty() {
+        if self.aliases.is_empty() {
+            // No aliases; remove the field to avoid emitting an empty array.
+            fm.shift_remove("aliases");
+        } else {
             fm.insert(
                 "aliases".to_string(),
                 Pod::Array(self.aliases.iter().cloned().map(Pod::String).collect()),
             );
         }
-        if !self.tags.is_empty() {
+        if self.tags.is_empty() {
+            // No tags; remove the field to avoid emitting an empty array.
+            fm.shift_remove("tags");
+        } else {
             fm.insert(
                 "tags".to_string(),
                 Pod::Array(self.tags.iter().cloned().map(Pod::String).collect()),
@@ -305,6 +349,34 @@ fn pod_to_yaml_value(pod: &Pod) -> serde_yaml::Value {
                 .map(|(k, v)| (serde_yaml::Value::String(k.clone()), pod_to_yaml_value(v)))
                 .collect(),
         ),
+    }
+}
+
+fn yaml_to_pod_value(yaml: &serde_yaml::Value) -> Pod {
+    match yaml {
+        serde_yaml::Value::Null => Pod::Null,
+        serde_yaml::Value::String(s) => Pod::String(s.clone()),
+        serde_yaml::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Pod::Integer(i)
+            } else if let Some(f) = n.as_f64() {
+                Pod::Float(f)
+            } else {
+                // This should never happen since serde_yaml::Number can only be i64 or f64.
+                Pod::Null
+            }
+        }
+        serde_yaml::Value::Bool(b) => Pod::Boolean(*b),
+        serde_yaml::Value::Sequence(seq) => Pod::Array(seq.iter().map(yaml_to_pod_value).collect()),
+        serde_yaml::Value::Mapping(map) => Pod::Hash(
+            map.iter()
+                .filter_map(|(k, v)| k.as_str().map(|ks| (ks.to_string(), yaml_to_pod_value(v))))
+                .collect(),
+        ),
+        serde_yaml::Value::Tagged(_) => {
+            // YAML tags are not supported in our frontmatter; treat them as null.
+            Pod::Null
+        }
     }
 }
 

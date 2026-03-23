@@ -38,6 +38,8 @@ pub enum NoteError {
     ContentNotLoaded,
     #[error("'{0}' is not a valid note path")]
     InvalidPath(PathBuf),
+    #[error("{0}")]
+    InvalidFieldName(String),
 }
 
 #[derive(Debug, thiserror::Error)]

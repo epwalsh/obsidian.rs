@@ -37,8 +37,8 @@ pub fn cmd_search(vault: Vault, args: SearchArgs) -> eyre::Result<()> {
     sort_notes_by(&mut notes, |n| &n.path, &args.sort);
 
     match args.format {
-        OutputFormat::Plain => output::print_search_plain(&notes, &vault.path),
-        OutputFormat::Json => output::print_search_json(&notes, &vault.path),
+        OutputFormat::Plain => output::print_note_many_plain(&notes, &vault.path),
+        OutputFormat::Json => output::print_note_many_json(&notes, &vault.path)?,
     }
     Ok(())
 }

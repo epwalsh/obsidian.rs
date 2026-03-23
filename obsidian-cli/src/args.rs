@@ -137,7 +137,7 @@ pub enum NoteCommand {
     Patch(PatchArgs),
     /// Rename a note and update all backlinks
     Rename(RenameArgs),
-    /// Update fields of a note
+    /// Update frontmatter metadata fields of a note
     Update(UpdateArgs),
 }
 
@@ -213,6 +213,11 @@ pub struct UpdateArgs {
     /// Add alias(es) to frontmatter (repeatable)
     #[arg(long, short = 'a')]
     pub add_alias: Vec<String>,
+    /// Set a field in the frontmatter to a value (repeatable, --set key=value). The value is
+    /// parsed as YAML, so it can be a string (with or without quotes), number, boolean, list, map, or null.
+    /// If the field already exits, it will be overwritten. To remove a field, set it to null (e.g. --set myfield=null).
+    #[arg(long)]
+    pub set: Vec<String>,
     /// Output format
     #[arg(long, short = 'f', default_value = "plain")]
     pub format: OutputFormat,

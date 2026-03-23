@@ -6,37 +6,36 @@ use obsidian_core::{Link, LocatedLink, LocatedTag, MergePreview, Note, RenamePre
 use serde::Serialize;
 use serde_json::json;
 
-pub fn print_search_plain(notes: &[Note], vault_path: &Path) {
-    for note in notes {
-        let rel = note.path.strip_prefix(vault_path).unwrap_or(&note.path);
-        println!("{}", rel.display().to_string().cyan());
-    }
-}
-
-#[derive(Serialize)]
-struct NoteJson<'a> {
-    path: String,
-    id: &'a str,
-    title: Option<&'a str>,
-    aliases: &'a [String],
-    tags: &'a [String],
-}
-
-pub fn print_note_json(note: &Note, vault_path: &Path) {
+pub fn get_note_json(note: &Note, vault_path: &Path) -> eyre::Result<serde_json::Map<String, serde_json::Value>> {
     let rel = note.path.strip_prefix(vault_path).unwrap_or(&note.path);
-    let out = NoteJson {
-        path: rel.display().to_string(),
-        id: &note.id,
-        title: note.title.as_deref(),
-        aliases: &note.aliases,
-        tags: &note.tags,
-    };
+    let mut json = note.frontmatter_json()?;
+    json.insert("path".to_string(), serde_json::Value::String(rel.display().to_string()));
+    Ok(json)
+}
+
+pub fn print_note_json(note: &Note, vault_path: &Path) -> eyre::Result<()> {
+    let out = get_note_json(note, vault_path)?;
     println!("{}", serde_json::to_string(&out).unwrap());
+    Ok(())
+}
+
+pub fn print_note_many_json(notes: &[Note], vault_path: &Path) -> eyre::Result<()> {
+    let items: eyre::Result<Vec<serde_json::Map<String, serde_json::Value>>> =
+        notes.iter().map(|n| get_note_json(n, vault_path)).collect();
+    println!("{}", serde_json::to_string(&items?).unwrap());
+    Ok(())
 }
 
 pub fn print_note_plain(note: &Note, vault_path: &Path) {
     let rel = note.path.strip_prefix(vault_path).unwrap_or(&note.path);
     println!("{}", rel.display().to_string().cyan());
+}
+
+pub fn print_note_many_plain(notes: &[Note], vault_path: &Path) {
+    for note in notes {
+        let rel = note.path.strip_prefix(vault_path).unwrap_or(&note.path);
+        println!("{}", rel.display().to_string().cyan());
+    }
 }
 
 pub fn print_note_read_plain(note: &Note, frontmatter: bool, no_content: bool) -> eyre::Result<()> {
@@ -61,23 +60,6 @@ pub fn print_note_read_json(note: &Note, frontmatter: bool, no_content: bool) ->
     }
     println!("{}", serde_json::to_string(&content)?);
     Ok(())
-}
-
-pub fn print_search_json(notes: &[Note], vault_path: &Path) {
-    let items: Vec<NoteJson> = notes
-        .iter()
-        .map(|n| {
-            let rel = n.path.strip_prefix(vault_path).unwrap_or(&n.path);
-            NoteJson {
-                path: rel.display().to_string(),
-                id: &n.id,
-                title: n.title.as_deref(),
-                aliases: &n.aliases,
-                tags: &n.tags,
-            }
-        })
-        .collect();
-    println!("{}", serde_json::to_string(&items).unwrap());
 }
 
 pub fn print_backlinks_plain(results: &[(Note, Vec<LocatedLink>)], vault_path: &Path) {
@@ -281,40 +263,6 @@ pub fn print_tags_list_plain(tags: &[String]) {
 
 pub fn print_tags_list_json(tags: &[String]) {
     println!("{}", serde_json::to_string(tags).unwrap());
-}
-
-pub fn print_note_update_plain(note: &Note, vault_path: &Path) {
-    let rel = note.path.strip_prefix(vault_path).unwrap_or(&note.path);
-    println!("{}", rel.display().to_string().cyan());
-}
-
-#[derive(Serialize)]
-struct NoteUpdateJson<'a> {
-    path: String,
-    tags: &'a [String],
-}
-
-pub fn print_note_update_json(note: &Note, vault_path: &Path) {
-    let rel = note.path.strip_prefix(vault_path).unwrap_or(&note.path);
-    let out = NoteUpdateJson {
-        path: rel.display().to_string(),
-        tags: &note.tags,
-    };
-    println!("{}", serde_json::to_string(&out).unwrap());
-}
-
-pub fn print_note_update_many_json(notes: &[Note], vault_path: &Path) {
-    let items: Vec<NoteUpdateJson> = notes
-        .iter()
-        .map(|n| {
-            let rel = n.path.strip_prefix(vault_path).unwrap_or(&n.path);
-            NoteUpdateJson {
-                path: rel.display().to_string(),
-                tags: &n.tags,
-            }
-        })
-        .collect();
-    println!("{}", serde_json::to_string(&items).unwrap());
 }
 
 pub fn print_backlinks_json(results: &[(Note, Vec<LocatedLink>)], vault_path: &Path) {

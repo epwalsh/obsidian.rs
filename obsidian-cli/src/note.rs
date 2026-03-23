@@ -14,7 +14,7 @@ pub fn cmd_resolve(vault: Vault, args: ResolveArgs) -> eyre::Result<()> {
     let note = vault.resolve_note(&args.note)?;
     match args.format {
         OutputFormat::Plain => output::print_note_plain(&note, &vault.path),
-        OutputFormat::Json => output::print_note_json(&note, &vault.path),
+        OutputFormat::Json => output::print_note_json(&note, &vault.path)?,
     }
     Ok(())
 }
@@ -73,7 +73,7 @@ pub fn cmd_write(vault: Vault, args: WriteArgs) -> eyre::Result<()> {
 
     match args.format {
         OutputFormat::Plain => output::print_note_plain(&note, &vault.path),
-        OutputFormat::Json => output::print_note_json(&note, &vault.path),
+        OutputFormat::Json => output::print_note_json(&note, &vault.path)?,
     }
 
     Ok(())
@@ -119,7 +119,7 @@ pub fn cmd_merge(vault: Vault, args: MergeArgs) -> eyre::Result<()> {
         let merged = vault.merge(&sources, &dest_path)?;
         match args.format {
             OutputFormat::Plain => output::print_note_plain(&merged, &vault.path),
-            OutputFormat::Json => output::print_note_json(&merged, &vault.path),
+            OutputFormat::Json => output::print_note_json(&merged, &vault.path)?,
         }
     }
     Ok(())
@@ -200,7 +200,7 @@ pub fn cmd_rename(vault: Vault, args: RenameArgs) -> eyre::Result<()> {
         let renamed = vault.rename(&note, &new_path)?;
         match args.format {
             OutputFormat::Plain => output::print_note_plain(&renamed, &vault.path),
-            OutputFormat::Json => output::print_note_json(&renamed, &vault.path),
+            OutputFormat::Json => output::print_note_json(&renamed, &vault.path)?,
         }
     }
     Ok(())
@@ -208,10 +208,17 @@ pub fn cmd_rename(vault: Vault, args: RenameArgs) -> eyre::Result<()> {
 
 pub fn cmd_update(vault: Vault, args: UpdateArgs) -> eyre::Result<()> {
     if let Some(note_path) = args.note {
-        let note = update_single_note(&vault, &note_path, &args.add_tag, &args.rm_tag, &args.add_alias)?;
+        let note = update_single_note(
+            &vault,
+            &note_path,
+            &args.add_tag,
+            &args.rm_tag,
+            &args.add_alias,
+            &args.set,
+        )?;
         match args.format {
-            OutputFormat::Plain => output::print_note_update_plain(&note, &vault.path),
-            OutputFormat::Json => output::print_note_update_json(&note, &vault.path),
+            OutputFormat::Plain => output::print_note_plain(&note, &vault.path),
+            OutputFormat::Json => output::print_note_json(&note, &vault.path)?,
         }
         return Ok(());
     }
@@ -234,17 +241,14 @@ pub fn cmd_update(vault: Vault, args: UpdateArgs) -> eyre::Result<()> {
             &args.add_tag,
             &args.rm_tag,
             &args.add_alias,
+            &args.set,
         )?;
         notes.push(note);
     }
 
     match args.format {
-        OutputFormat::Plain => {
-            for note in &notes {
-                output::print_note_update_plain(note, &vault.path);
-            }
-        }
-        OutputFormat::Json => output::print_note_update_many_json(&notes, &vault.path),
+        OutputFormat::Plain => output::print_note_many_plain(&notes, &vault.path),
+        OutputFormat::Json => output::print_note_many_json(&notes, &vault.path)?,
     }
     Ok(())
 }
@@ -255,6 +259,7 @@ fn update_single_note(
     add_tags: &[String],
     rm_tags: &[String],
     add_aliases: &[String],
+    set: &[String],
 ) -> eyre::Result<Note> {
     let (note_path, _) = vault.resolve_note_path(note_arg, true)?;
     let mut note = Note::from_path(&note_path)?;
@@ -262,49 +267,39 @@ fn update_single_note(
     let mut dirty = false;
 
     // Add tags
-    let new_tags: Vec<String> = add_tags.iter().filter(|t| !note.tags.contains(*t)).cloned().collect();
-    if !new_tags.is_empty() {
-        let fm = note.frontmatter.get_or_insert_with(indexmap::IndexMap::new);
-        let tags_entry = fm
-            .entry("tags".to_string())
-            .or_insert_with(|| gray_matter::Pod::Array(Vec::new()));
-        if let gray_matter::Pod::Array(arr) = tags_entry {
-            for tag in &new_tags {
-                arr.push(gray_matter::Pod::String(tag.clone()));
-            }
+    if !add_tags.is_empty() {
+        for tag in add_tags {
+            note.add_tag(tag.clone());
         }
-        note.tags.extend(new_tags);
         dirty = true;
     }
 
     // Remove tags
     if !rm_tags.is_empty() {
-        if let Some(fm) = note.frontmatter.as_mut()
-            && let Some(gray_matter::Pod::Array(arr)) = fm.get_mut("tags")
-        {
-            arr.retain(|p| p.as_string().map(|s| !rm_tags.contains(&s)).unwrap_or(true));
-        }
         note.tags.retain(|t| !rm_tags.contains(t));
         dirty = true;
     }
 
     // Add aliases
-    let new_aliases: Vec<String> = add_aliases
-        .iter()
-        .filter(|a| !note.aliases.contains(*a))
-        .cloned()
-        .collect();
-    if !new_aliases.is_empty() {
-        let fm = note.frontmatter.get_or_insert_with(indexmap::IndexMap::new);
-        let aliases_entry = fm
-            .entry("aliases".to_string())
-            .or_insert_with(|| gray_matter::Pod::Array(Vec::new()));
-        if let gray_matter::Pod::Array(arr) = aliases_entry {
-            for alias in &new_aliases {
-                arr.push(gray_matter::Pod::String(alias.clone()));
-            }
+    if !add_aliases.is_empty() {
+        for alias in add_aliases {
+            note.add_alias(alias.clone());
         }
-        note.aliases.extend(new_aliases);
+        dirty = true;
+    }
+
+    // Set other fields
+    if !set.is_empty() {
+        for kv in set {
+            let parts: Vec<&str> = kv.splitn(2, '=').collect();
+            if parts.len() != 2 {
+                eyre::bail!("invalid --set argument (expected key=value): {}", kv);
+            }
+            let key = parts[0].trim();
+            let value = parts[1].trim();
+            let value = serde_yaml::from_str(value).unwrap_or_else(|_| serde_yaml::Value::String(value.to_string()));
+            note.set_field(key, &value)?;
+        }
         dirty = true;
     }
 
