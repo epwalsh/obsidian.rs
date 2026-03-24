@@ -135,8 +135,8 @@ pub fn cmd_check(vault: Vault, args: CheckArgs) -> eyre::Result<()> {
                     if !url_path.ends_with(".md") {
                         continue;
                     }
-                    let source_dir = note.path.parent().unwrap_or(note.path.as_path());
-                    if !source_dir.join(url_path).exists() {
+                    let source_dirs = vec![&vault.path, note.path.parent().unwrap_or(note.path.as_path())];
+                    if !source_dirs.iter().any(|dir| dir.join(url_path).exists()) {
                         broken.push((note.path.clone(), ll.location.line, format!("[...]({})", url)));
                     }
                 }
