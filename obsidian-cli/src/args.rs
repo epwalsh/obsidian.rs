@@ -19,6 +19,7 @@ pub struct Cli {
     pub command: Command,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub enum Command {
     /// Search for notes in the vault
@@ -40,31 +41,53 @@ pub struct CheckArgs {
 
 #[derive(clap::Args)]
 pub struct SearchArgs {
-    /// Filter by exact note ID match
+    /// Filter by glob pattern
     #[arg(long)]
-    pub id: Option<String>,
+    pub glob: Vec<String>,
+    /// Filter by exact note ID match (AND semantics)
+    #[arg(long)]
+    pub and_id: Option<String>,
+    /// Filter by exact note ID match (OR semantics, repeatable)
+    #[arg(long)]
+    pub or_id: Vec<String>,
     /// Filter by tag (AND semantics, repeatable)
-    #[arg(long, short = 't')]
-    pub tag: Vec<String>,
+    #[arg(long)]
+    pub and_tag: Vec<String>,
+    /// Filter by tag (OR semantics, repeatable)
+    #[arg(long)]
+    pub or_tag: Vec<String>,
+    /// Filter by title substring, case-insensitive (AND semantics, repeatable)
+    #[arg(long)]
+    pub and_title_contains: Vec<String>,
     /// Filter by title substring, case-insensitive (OR semantics, repeatable)
     #[arg(long)]
-    pub title_contains: Vec<String>,
+    pub or_title_contains: Vec<String>,
+    /// Filter by exact alias, case-insensitive (AND semantics, repeatable)
+    #[arg(long)]
+    pub and_alias: Vec<String>,
     /// Filter by exact alias, case-insensitive (OR semantics, repeatable)
-    #[arg(long, short = 'a')]
-    pub alias: Vec<String>,
+    #[arg(long)]
+    pub or_alias: Vec<String>,
+    /// Filter by alias substring, case-insensitive (AND semantics, repeatable)
+    #[arg(long)]
+    pub and_alias_contains: Vec<String>,
     /// Filter by alias substring, case-insensitive (OR semantics, repeatable)
     #[arg(long)]
-    pub alias_contains: Vec<String>,
-    /// Filter by glob pattern (OR semantics, repeatable)
-    #[arg(long, short = 'g')]
-    pub glob: Vec<String>,
+    pub or_alias_contains: Vec<String>,
     /// Filter by content substring (AND semantics, repeatable)
-    #[arg(long, short = 'c')]
-    pub content: Vec<String>,
-    /// Filter by content regex (https://docs.rs/regex/latest/regex/#syntax) (AND semantics,
+    #[arg(long)]
+    pub and_content_contains: Vec<String>,
+    /// Filter by content substring (OR semantics, repeatable)
+    #[arg(long)]
+    pub or_content_contains: Vec<String>,
+    /// Filter by content pattern (https://docs.rs/regex/latest/regex/#syntax) (AND semantics,
     /// repeatable)
-    #[arg(long, short = 'r')]
-    pub regex: Vec<String>,
+    #[arg(long)]
+    pub and_content_matches: Vec<String>,
+    /// Filter by content pattern (https://docs.rs/regex/latest/regex/#syntax) (OR semantics,
+    /// repeatable)
+    #[arg(long)]
+    pub or_content_matches: Vec<String>,
     /// Sort order for results
     #[arg(long, short = 's', default_value = "path-asc")]
     pub sort: SortOrder,

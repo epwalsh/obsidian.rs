@@ -7,29 +7,50 @@ use crate::utils::sort_notes_by;
 
 pub fn cmd_search(vault: Vault, args: SearchArgs) -> eyre::Result<()> {
     let mut query = vault.search();
-    for tag in &args.tag {
-        query = query.has_tag(tag);
+    if let Some(id) = &args.and_id {
+        query = query.and_has_id(id);
+    }
+    for id in &args.or_id {
+        query = query.or_has_id(id);
+    }
+    for tag in &args.and_tag {
+        query = query.and_has_tag(tag);
+    }
+    for tag in &args.or_tag {
+        query = query.or_has_tag(tag);
     }
     for glob in &args.glob {
         query = query.glob(glob);
     }
-    for s in &args.content {
-        query = query.content_contains(s);
+    for s in &args.and_content_contains {
+        query = query.and_content_contains(s);
     }
-    for r in &args.regex {
-        query = query.content_matches(r);
+    for s in &args.or_content_contains {
+        query = query.or_content_contains(s);
     }
-    for t in &args.title_contains {
-        query = query.title_contains(t);
+    for r in &args.and_content_matches {
+        query = query.and_content_matches(r);
     }
-    for alias in &args.alias {
-        query = query.has_alias(alias);
+    for r in &args.or_content_matches {
+        query = query.or_content_matches(r);
     }
-    for s in &args.alias_contains {
-        query = query.alias_contains(s);
+    for t in &args.and_title_contains {
+        query = query.and_title_contains(t);
     }
-    if let Some(id) = &args.id {
-        query = query.id(id);
+    for t in &args.or_title_contains {
+        query = query.or_title_contains(t);
+    }
+    for alias in &args.and_alias {
+        query = query.and_has_alias(alias);
+    }
+    for alias in &args.or_alias {
+        query = query.or_has_alias(alias);
+    }
+    for s in &args.and_alias_contains {
+        query = query.and_alias_contains(s);
+    }
+    for s in &args.or_alias_contains {
+        query = query.or_alias_contains(s);
     }
 
     let results = query.execute()?;

@@ -148,6 +148,11 @@ impl Note {
         Self::from_path(&self.path)
     }
 
+    /// Reloads the note from its path while retaining body content.
+    pub fn reload_with_content(self) -> Result<Self, NoteError> {
+        Self::from_path_with_content(&self.path)
+    }
+
     /// Populates [`Note::content`] by reading the note's body from disk.
     /// Does nothing if content is already loaded.
     pub fn load_content(&mut self) -> Result<(), NoteError> {
@@ -177,11 +182,12 @@ impl Note {
         }
     }
 
+    /// Remove a tag.
     pub fn remove_tag(&mut self, tag: &str) {
         self.tags.retain(|t| t != tag);
     }
 
-    /// Set a frontmatter field to a value (which can be any YAML type).
+    /// Set an arbitrary frontmatter field to a value (which can be any YAML type).
     /// A null value removes the field from the frontmatter.
     pub fn set_field(&mut self, key: &str, value: &serde_yaml::Value) -> Result<(), NoteError> {
         // Guard against invalid field names that would cause YAML serialization to fail (e.g. containing newlines),
@@ -224,11 +230,10 @@ impl Note {
     /// `title` (if present), then `aliases`, then `tags`, then all remaining keys
     /// sorted alphabetically.
     pub fn write(&self) -> Result<(), NoteError> {
-        let body = self.content.as_deref().ok_or(NoteError::ContentNotLoaded)?;
-        let file_content = self.to_file_content(body)?;
+        let content = self.read(true)?;
         let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
         let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
-        tmp.write_all(file_content.as_bytes())?;
+        tmp.write_all(content.as_bytes())?;
         tmp.persist(&self.path).map_err(|e| e.error)?;
         Ok(())
     }
@@ -250,6 +255,9 @@ impl Note {
         Ok(())
     }
 
+    /// Read the contents of the note as a string, optionally including frontmatter.
+    /// Requires [`Note::content`] to be populated. Returns
+    /// [`NoteError::ContentNotLoaded`] if content is `None`.
     pub fn read(&self, include_frontmatter: bool) -> Result<String, NoteError> {
         let body = self.content.as_deref().ok_or(NoteError::ContentNotLoaded)?;
         if include_frontmatter {
@@ -260,6 +268,7 @@ impl Note {
         }
     }
 
+    /// Get the note's frontmatter map.
     pub fn frontmatter_map(&self) -> IndexMap<String, Pod> {
         let mut fm = if let Some(fm) = &self.frontmatter {
             fm.clone()
@@ -291,6 +300,7 @@ impl Note {
         fm
     }
 
+    /// Get the note's frontmatter map in a form suitable for YAML serialization.
     pub fn frontmatter_yaml(&self) -> Result<serde_yaml::Mapping, serde_yaml::Error> {
         let fm = self.frontmatter_map();
 
@@ -314,6 +324,7 @@ impl Note {
         Ok(mapping)
     }
 
+    /// Get the note's frontmatter map in a form suitable for JSON serialization.
     pub fn frontmatter_json(&self) -> Result<serde_json::Map<String, serde_json::Value>, NoteError> {
         let fm = self.frontmatter_map();
         let mut mapping = serde_json::Map::new();
@@ -323,6 +334,7 @@ impl Note {
         Ok(mapping)
     }
 
+    /// Get the note's frontmatter as a YAML string (without delimiters).
     pub fn frontmatter_string(&self) -> Result<String, serde_yaml::Error> {
         let fm = self.frontmatter_yaml()?;
         let yaml = serde_yaml::to_string(&fm)?;

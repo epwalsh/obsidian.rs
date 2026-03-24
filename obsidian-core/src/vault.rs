@@ -207,8 +207,8 @@ impl Vault {
         // Then search.
         let results = self
             .search()
-            .id(note)
-            .has_alias(note)
+            .or_has_id(note)
+            .or_has_alias(note)
             .execute()
             .map_err(VaultError::Search)?;
         let mut notes: Vec<Note> = results.into_iter().filter_map(|r| r.ok()).collect();

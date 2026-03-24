@@ -10,23 +10,38 @@ use crate::{Note, NoteError, SearchError};
 /// A composable query for filtering notes in a vault.
 ///
 /// # Filter semantics
-/// - [`glob`](SearchQuery::glob): AND — note's relative path matches any pattern
-/// - [`has_tag`](SearchQuery::has_tag): OR — note must have all specified tags
-/// - [`has_alias`](SearchQuery::has_alias): OR — note must have at least one specified alias
-/// - [`content_contains`](SearchQuery::content_contains): OR — body must contain all strings
-/// - [`title_contains`](SearchQuery::title_contains): OR — title must contain at least one substring
-/// - [`alias_contains`](SearchQuery::alias_contains): OR — at least one substring must match some alias
-/// - [`id`](SearchQuery::id) / [`content_matches`](SearchQuery::content_matches): OR — has this ID
+/// - [`glob`](SearchQuery::glob): note's relative path must match one of these patterns
+/// - [`and_has_id`](SearchQuery::and_has_id): OR — has this ID
+/// - [`or_has_id`](SearchQuery::or_has_id): OR — has one of these IDs
+/// - [`and_has_tag`](SearchQuery::and_has_tag): AND — note has all of these tags
+/// - [`or_has_tag`](SearchQuery::or_has_tag): OR — note has one of these tag
+/// - [`and_has_alias`](SearchQuery::and_has_alias): AND — note has all of these aliases (case insensitive)
+/// - [`or_has_alias`](SearchQuery::or_has_alias): OR — note has any of these aliases (case insensitive)
+/// - [`and_title_contains`](SearchQuery::and_title_contains): AND — title contains all of these substrings
+/// - [`or_title_contains`](SearchQuery::or_title_contains): OR — title contains any of these substrings
+/// - [`and_alias_contains`](SearchQuery::and_alias_contains): AND — all of these substrings must match some alias
+/// - [`or_alias_contains`](SearchQuery::or_alias_contains): OR — one of these substrings matches some alias
+/// - [`and_content_contains`](SearchQuery::and_content_contains): AND — content contains all of these substrings (case-sensitive)
+/// - [`or_content_contains`](SearchQuery::or_content_contains): OR — content contains any of these substrings (case-sensitive)
+/// - [`and_content_matches`](SearchQuery::and_content_matches): AND — content matches all of these patterns
+/// - [`or_content_matches`](SearchQuery::or_content_matches): OR — content matches any of these patterns
 pub struct SearchQuery {
     root: PathBuf,
     globs: Vec<String>,
-    id: Option<String>,
-    tags: Vec<String>,
-    title_contains: Vec<String>,
-    aliases: Vec<String>,
-    alias_contains: Vec<String>,
-    content_strings: Vec<String>,
-    content_regex: Vec<String>,
+    and_id: Option<String>,
+    or_ids: Vec<String>,
+    and_tags: Vec<String>,
+    or_tags: Vec<String>,
+    and_title_contains: Vec<String>,
+    or_title_contains: Vec<String>,
+    and_aliases: Vec<String>,
+    or_aliases: Vec<String>,
+    and_alias_contains: Vec<String>,
+    or_alias_contains: Vec<String>,
+    and_content_contains: Vec<String>,
+    or_content_contains: Vec<String>,
+    and_content_matches: Vec<String>,
+    or_content_matches: Vec<String>,
 }
 
 impl SearchQuery {
@@ -34,13 +49,20 @@ impl SearchQuery {
         SearchQuery {
             root: root.as_ref().to_path_buf(),
             globs: Vec::new(),
-            id: None,
-            tags: Vec::new(),
-            title_contains: Vec::new(),
-            aliases: Vec::new(),
-            alias_contains: Vec::new(),
-            content_strings: Vec::new(),
-            content_regex: Vec::new(),
+            and_id: None,
+            or_ids: Vec::new(),
+            and_tags: Vec::new(),
+            or_tags: Vec::new(),
+            and_title_contains: Vec::new(),
+            or_title_contains: Vec::new(),
+            and_aliases: Vec::new(),
+            or_aliases: Vec::new(),
+            and_alias_contains: Vec::new(),
+            or_alias_contains: Vec::new(),
+            and_content_contains: Vec::new(),
+            or_content_contains: Vec::new(),
+            and_content_matches: Vec::new(),
+            or_content_matches: Vec::new(),
         }
     }
 
@@ -51,45 +73,87 @@ impl SearchQuery {
         self
     }
 
-    /// Filter by exact id match. Last call wins.
-    pub fn id(mut self, id: impl Into<String>) -> Self {
-        self.id = Some(id.into());
+    /// Note must have this ID.
+    pub fn and_has_id(mut self, id: impl Into<String>) -> Self {
+        self.and_id = Some(id.into());
         self
     }
 
-    /// Note must have this tag. Multiple calls use AND semantics.
-    pub fn has_tag(mut self, tag: impl Into<String>) -> Self {
-        self.tags.push(tag.into());
+    /// Note could have this ID.
+    pub fn or_has_id(mut self, id: impl Into<String>) -> Self {
+        self.or_ids.push(id.into());
         self
     }
 
-    /// Case-insensitive substring match on note title. Multiple calls use OR semantics.
-    pub fn title_contains(mut self, s: impl Into<String>) -> Self {
-        self.title_contains.push(s.into());
+    /// Note must have this tag.
+    pub fn and_has_tag(mut self, tag: impl Into<String>) -> Self {
+        self.and_tags.push(tag.into());
         self
     }
 
-    /// Case-insensitive exact match against any of the note's aliases. Multiple calls use OR semantics.
-    pub fn has_alias(mut self, alias: impl Into<String>) -> Self {
-        self.aliases.push(alias.into());
+    /// Note could have this tag.
+    pub fn or_has_tag(mut self, tag: impl Into<String>) -> Self {
+        self.or_tags.push(tag.into());
         self
     }
 
-    /// Case-insensitive substring match against any of the note's aliases. Multiple calls use OR semantics.
-    pub fn alias_contains(mut self, s: impl Into<String>) -> Self {
-        self.alias_contains.push(s.into());
+    /// Must title must contain this substring (case-insensitive).
+    pub fn and_title_contains(mut self, s: impl Into<String>) -> Self {
+        self.and_title_contains.push(s.into());
         self
     }
 
-    /// Note body must contain this string. Multiple calls use AND semantics.
-    pub fn content_contains(mut self, s: impl Into<String>) -> Self {
-        self.content_strings.push(s.into());
+    /// Must title could contain this substring (case-insensitive).
+    pub fn or_title_contains(mut self, s: impl Into<String>) -> Self {
+        self.or_title_contains.push(s.into());
         self
     }
 
-    /// Regex match against note body. Last call wins.
-    pub fn content_matches(mut self, pattern: impl Into<String>) -> Self {
-        self.content_regex.push(pattern.into());
+    /// Note must have this alias.
+    pub fn and_has_alias(mut self, alias: impl Into<String>) -> Self {
+        self.and_aliases.push(alias.into());
+        self
+    }
+
+    /// Note could have this alias.
+    pub fn or_has_alias(mut self, alias: impl Into<String>) -> Self {
+        self.or_aliases.push(alias.into());
+        self
+    }
+
+    /// Case-insensitive substring must match against any of the note's aliases.
+    pub fn and_alias_contains(mut self, s: impl Into<String>) -> Self {
+        self.and_alias_contains.push(s.into());
+        self
+    }
+
+    /// Case-insensitive substring could match against any of the note's aliases.
+    pub fn or_alias_contains(mut self, s: impl Into<String>) -> Self {
+        self.or_alias_contains.push(s.into());
+        self
+    }
+
+    /// Note body must contain this string.
+    pub fn and_content_contains(mut self, s: impl Into<String>) -> Self {
+        self.and_content_contains.push(s.into());
+        self
+    }
+
+    /// Note body could contain this string.
+    pub fn or_content_contains(mut self, s: impl Into<String>) -> Self {
+        self.or_content_contains.push(s.into());
+        self
+    }
+
+    /// Regex body must match this pattern.
+    pub fn and_content_matches(mut self, pattern: impl Into<String>) -> Self {
+        self.and_content_matches.push(pattern.into());
+        self
+    }
+
+    /// Regex body could match this pattern.
+    pub fn or_content_matches(mut self, pattern: impl Into<String>) -> Self {
+        self.or_content_matches.push(pattern.into());
         self
     }
 
@@ -101,13 +165,20 @@ impl SearchQuery {
         let SearchQuery {
             root,
             globs,
-            id,
-            tags,
-            title_contains,
-            aliases,
-            alias_contains,
-            content_strings,
-            content_regex,
+            and_id,
+            or_ids,
+            and_tags,
+            or_tags,
+            and_title_contains,
+            or_title_contains,
+            and_aliases,
+            or_aliases,
+            and_alias_contains,
+            or_alias_contains,
+            and_content_contains,
+            or_content_contains,
+            and_content_matches,
+            or_content_matches,
         } = self;
 
         let glob_set = build_glob_set(&globs)?;
@@ -122,19 +193,38 @@ impl SearchQuery {
                 glob_set.is_match(rel)
             })
             .collect();
-        let mut regexes: Vec<Regex> = Vec::new();
-        for pattern in content_regex {
+
+        let mut and_regexes: Vec<Regex> = Vec::new();
+        for pattern in and_content_matches {
             let re = Regex::new(&pattern).map_err(SearchError::InvalidRegex)?;
-            regexes.push(re);
+            and_regexes.push(re);
         }
 
-        let needs_content = !content_strings.is_empty() || !regexes.is_empty();
-        let has_filters = id.is_some()
-            || !tags.is_empty()
-            || !title_contains.is_empty()
-            || !aliases.is_empty()
-            || !alias_contains.is_empty()
-            || needs_content;
+        let mut or_regexes: Vec<Regex> = Vec::new();
+        for pattern in or_content_matches {
+            let re = Regex::new(&pattern).map_err(SearchError::InvalidRegex)?;
+            or_regexes.push(re);
+        }
+
+        let needs_content = !and_content_contains.is_empty()
+            || !or_content_contains.is_empty()
+            || !and_regexes.is_empty()
+            || !or_regexes.is_empty();
+        let has_or_filters = !or_ids.is_empty()
+            || !or_tags.is_empty()
+            || !or_title_contains.is_empty()
+            || !or_aliases.is_empty()
+            || !or_alias_contains.is_empty()
+            || !or_content_contains.is_empty()
+            || !or_regexes.is_empty();
+        let has_filters = has_or_filters
+            || and_id.is_some()
+            || !and_tags.is_empty()
+            || !and_title_contains.is_empty()
+            || !and_aliases.is_empty()
+            || !and_alias_contains.is_empty()
+            || !and_content_contains.is_empty()
+            || !and_regexes.is_empty();
 
         let results = paths
             .into_par_iter()
@@ -153,17 +243,79 @@ impl SearchQuery {
                     return Some(Ok(note));
                 }
 
-                if let Some(ref expected_id) = id
-                    && note.id == *expected_id
+                // ---------------------------------------------------------------------
+                // Begin AND filters. Exclude note immediately if it fails any of these.
+                // ---------------------------------------------------------------------
+                if let Some(ref expected_id) = and_id
+                    && note.id != *expected_id
                 {
+                    return None;
+                }
+
+                if !and_tags.is_empty() && !and_tags.iter().all(|t| note.tags.contains(t)) {
+                    return None;
+                }
+
+                if !and_aliases.is_empty()
+                    && !and_aliases
+                        .iter()
+                        .all(|a| note.aliases.iter().any(|na| na.to_lowercase() == a.to_lowercase()))
+                {
+                    return None;
+                }
+
+                if !and_title_contains.is_empty()
+                    && !and_title_contains.iter().all(|substr| {
+                        note.title
+                            .as_deref()
+                            .is_some_and(|t| t.to_lowercase().contains(&substr.to_lowercase()))
+                    })
+                {
+                    return None;
+                }
+
+                if !and_alias_contains.is_empty()
+                    && !and_alias_contains.iter().all(|substr| {
+                        note.aliases
+                            .iter()
+                            .any(|a| a.to_lowercase().contains(&substr.to_lowercase()))
+                    })
+                {
+                    return None;
+                }
+
+                if !and_content_contains.is_empty()
+                    && !and_content_contains
+                        .iter()
+                        .all(|s| note.content.as_deref().unwrap().contains(s.as_str()))
+                {
+                    return None;
+                }
+
+                if !and_regexes.is_empty()
+                    && !and_regexes
+                        .iter()
+                        .all(|re| re.is_match(note.content.as_deref().unwrap()))
+                {
+                    return None;
+                }
+
+                // --------------------------------------------------------------------------------------------
+                // Begin OR filters. Include note if it satisfies any of these (or if there are no OR filters).
+                // --------------------------------------------------------------------------------------------
+                if !has_or_filters {
                     return Some(Ok(note));
                 }
 
-                if !tags.is_empty() && tags.iter().all(|t| note.tags.contains(t)) {
+                if or_ids.contains(&note.id) {
                     return Some(Ok(note));
                 }
 
-                if title_contains.iter().any(|substr| {
+                if or_tags.iter().any(|t| note.tags.contains(t)) {
+                    return Some(Ok(note));
+                }
+
+                if or_title_contains.iter().any(|substr| {
                     note.title
                         .as_deref()
                         .is_some_and(|t| t.to_lowercase().contains(&substr.to_lowercase()))
@@ -171,14 +323,14 @@ impl SearchQuery {
                     return Some(Ok(note));
                 }
 
-                if aliases
+                if or_aliases
                     .iter()
                     .any(|a| note.aliases.iter().any(|na| na.to_lowercase() == a.to_lowercase()))
                 {
                     return Some(Ok(note));
                 }
 
-                if alias_contains.iter().any(|substr| {
+                if or_alias_contains.iter().any(|substr| {
                     note.aliases
                         .iter()
                         .any(|a| a.to_lowercase().contains(&substr.to_lowercase()))
@@ -186,15 +338,18 @@ impl SearchQuery {
                     return Some(Ok(note));
                 }
 
-                if needs_content {
-                    let body = note.content.as_deref().unwrap_or("");
-                    if !content_strings.is_empty() && content_strings.iter().all(|s| body.contains(s.as_str())) {
-                        return Some(Ok(note));
-                    }
+                if or_content_contains
+                    .iter()
+                    .any(|s| note.content.as_deref().unwrap().contains(s.as_str()))
+                {
+                    return Some(Ok(note));
+                }
 
-                    if !regexes.is_empty() && regexes.iter().all(|re| re.is_match(body)) {
-                        return Some(Ok(note));
-                    }
+                if or_regexes
+                    .iter()
+                    .any(|re| re.is_match(note.content.as_deref().unwrap()))
+                {
+                    return Some(Ok(note));
                 }
 
                 None
@@ -344,19 +499,19 @@ mod tests {
     }
 
     #[test]
-    fn has_tag_single() {
+    fn and_has_tag_single() {
         let dir = tempfile::tempdir().unwrap();
         write_note(&dir.path().join("tagged.md"), "---\ntags: [rust]\n---\nContent.");
         write_note(&dir.path().join("untagged.md"), "No tags here.");
 
         let ids = sorted_ids(unwrap_notes(
-            SearchQuery::new(dir.path()).has_tag("rust").execute().unwrap(),
+            SearchQuery::new(dir.path()).and_has_tag("rust").execute().unwrap(),
         ));
         assert_eq!(ids, vec!["tagged"]);
     }
 
     #[test]
-    fn has_tag_and_semantics() {
+    fn and_tag_semantics() {
         let dir = tempfile::tempdir().unwrap();
         write_note(
             &dir.path().join("both.md"),
@@ -367,20 +522,29 @@ mod tests {
 
         let ids = sorted_ids(unwrap_notes(
             SearchQuery::new(dir.path())
-                .has_tag("rust")
-                .has_tag("obsidian")
+                .and_has_tag("rust")
+                .and_has_tag("obsidian")
                 .execute()
                 .unwrap(),
         ));
         assert_eq!(ids, vec!["both"]);
+
+        let ids = sorted_ids(unwrap_notes(
+            SearchQuery::new(dir.path())
+                .or_has_tag("rust")
+                .or_has_tag("obsidian")
+                .execute()
+                .unwrap(),
+        ));
+        assert_eq!(ids, vec!["both", "one"]);
     }
 
     #[test]
-    fn has_tag_no_match() {
+    fn and_has_tag_no_match() {
         let dir = tempfile::tempdir().unwrap();
         write_note(&dir.path().join("note.md"), "---\ntags: [rust]\n---\nContent.");
 
-        let notes = unwrap_notes(SearchQuery::new(dir.path()).has_tag("python").execute().unwrap());
+        let notes = unwrap_notes(SearchQuery::new(dir.path()).and_has_tag("python").execute().unwrap());
         assert!(notes.is_empty());
     }
 
@@ -391,7 +555,10 @@ mod tests {
         write_note(&dir.path().join("note-b.md"), "Other note.");
 
         let ids = sorted_ids(unwrap_notes(
-            SearchQuery::new(dir.path()).id("my-special-id").execute().unwrap(),
+            SearchQuery::new(dir.path())
+                .and_has_id("my-special-id")
+                .execute()
+                .unwrap(),
         ));
         assert_eq!(ids, vec!["my-special-id"]);
     }
@@ -403,7 +570,10 @@ mod tests {
         write_note(&dir.path().join("no-match.md"), "# Python Notes\n\nContent.");
 
         let ids = sorted_ids(unwrap_notes(
-            SearchQuery::new(dir.path()).title_contains("rust").execute().unwrap(),
+            SearchQuery::new(dir.path())
+                .and_title_contains("rust")
+                .execute()
+                .unwrap(),
         ));
         assert_eq!(ids, vec!["match"]);
     }
@@ -415,13 +585,13 @@ mod tests {
         write_note(&dir.path().join("has-title.md"), "# My Title\n\nContent.");
 
         let ids = sorted_ids(unwrap_notes(
-            SearchQuery::new(dir.path()).title_contains("my").execute().unwrap(),
+            SearchQuery::new(dir.path()).and_title_contains("my").execute().unwrap(),
         ));
         assert_eq!(ids, vec!["has-title"]);
     }
 
     #[test]
-    fn has_alias_or_semantics() {
+    fn or_has_alias_or_semantics() {
         let dir = tempfile::tempdir().unwrap();
         write_note(
             &dir.path().join("alpha.md"),
@@ -435,8 +605,8 @@ mod tests {
 
         let ids = sorted_ids(unwrap_notes(
             SearchQuery::new(dir.path())
-                .has_alias("alpha-alias")
-                .has_alias("beta-alias")
+                .or_has_alias("alpha-alias")
+                .or_has_alias("beta-alias")
                 .execute()
                 .unwrap(),
         ));
@@ -452,8 +622,8 @@ mod tests {
 
         let ids = sorted_ids(unwrap_notes(
             SearchQuery::new(dir.path())
-                .title_contains("rust")
-                .title_contains("notes")
+                .or_title_contains("rust")
+                .or_title_contains("notes")
                 .execute()
                 .unwrap(),
         ));
@@ -475,8 +645,8 @@ mod tests {
 
         let ids = sorted_ids(unwrap_notes(
             SearchQuery::new(dir.path())
-                .alias_contains("rust")
-                .alias_contains("notes")
+                .or_alias_contains("rust")
+                .or_alias_contains("notes")
                 .execute()
                 .unwrap(),
         ));
@@ -484,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    fn has_alias_case_insensitive() {
+    fn and_has_alias_case_insensitive() {
         let dir = tempfile::tempdir().unwrap();
         write_note(
             &dir.path().join("note.md"),
@@ -493,7 +663,7 @@ mod tests {
 
         let ids = sorted_ids(unwrap_notes(
             SearchQuery::new(dir.path())
-                .has_alias("rust programming")
+                .and_has_alias("rust programming")
                 .execute()
                 .unwrap(),
         ));
@@ -513,7 +683,10 @@ mod tests {
         );
 
         let ids = sorted_ids(unwrap_notes(
-            SearchQuery::new(dir.path()).alias_contains("rust").execute().unwrap(),
+            SearchQuery::new(dir.path())
+                .and_alias_contains("rust")
+                .execute()
+                .unwrap(),
         ));
         assert_eq!(ids, vec!["match"]);
     }
@@ -527,7 +700,10 @@ mod tests {
         );
 
         let ids = sorted_ids(unwrap_notes(
-            SearchQuery::new(dir.path()).alias_contains("suffix").execute().unwrap(),
+            SearchQuery::new(dir.path())
+                .and_alias_contains("suffix")
+                .execute()
+                .unwrap(),
         ));
         assert_eq!(ids, vec!["note"]);
     }
@@ -537,7 +713,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_note(&dir.path().join("note.md"), "---\naliases: [alpha]\n---\nContent.");
 
-        let notes = unwrap_notes(SearchQuery::new(dir.path()).alias_contains("beta").execute().unwrap());
+        let notes = unwrap_notes(
+            SearchQuery::new(dir.path())
+                .and_alias_contains("beta")
+                .execute()
+                .unwrap(),
+        );
         assert!(notes.is_empty());
     }
 
@@ -548,7 +729,7 @@ mod tests {
 
         let notes = unwrap_notes(
             SearchQuery::new(dir.path())
-                .alias_contains("anything")
+                .and_alias_contains("anything")
                 .execute()
                 .unwrap(),
         );
@@ -563,7 +744,7 @@ mod tests {
 
         let ids = sorted_ids(unwrap_notes(
             SearchQuery::new(dir.path())
-                .content_contains("ferris")
+                .and_content_contains("ferris")
                 .execute()
                 .unwrap(),
         ));
@@ -579,8 +760,8 @@ mod tests {
 
         let ids = sorted_ids(unwrap_notes(
             SearchQuery::new(dir.path())
-                .content_contains("alpha")
-                .content_contains("beta")
+                .and_content_contains("alpha")
+                .and_content_contains("beta")
                 .execute()
                 .unwrap(),
         ));
@@ -594,7 +775,10 @@ mod tests {
         write_note(&dir.path().join("no-match.md"), "No numbers here.");
 
         let ids = sorted_ids(unwrap_notes(
-            SearchQuery::new(dir.path()).content_matches(r"\d+").execute().unwrap(),
+            SearchQuery::new(dir.path())
+                .and_content_matches(r"\d+")
+                .execute()
+                .unwrap(),
         ));
         assert_eq!(ids, vec!["match"]);
     }
@@ -602,7 +786,7 @@ mod tests {
     #[test]
     fn content_matches_invalid_regex_errors() {
         let dir = tempfile::tempdir().unwrap();
-        let result = SearchQuery::new(dir.path()).content_matches(r"[invalid").execute();
+        let result = SearchQuery::new(dir.path()).and_content_matches(r"[invalid").execute();
         assert!(matches!(result, Err(SearchError::InvalidRegex(_))));
     }
 
@@ -614,7 +798,7 @@ mod tests {
     }
 
     #[test]
-    fn combined_glob_tag_content() {
+    fn combined_glob_and_tag_content() {
         let dir = tempfile::tempdir().unwrap();
         let subdir = dir.path().join("notes");
 
@@ -630,8 +814,8 @@ mod tests {
         let ids = sorted_ids(unwrap_notes(
             SearchQuery::new(dir.path())
                 .glob("notes/**")
-                .has_tag("rust")
-                .content_contains("ferris")
+                .and_has_tag("rust")
+                .and_content_contains("ferris")
                 .execute()
                 .unwrap(),
         ));
@@ -674,7 +858,7 @@ mod tests {
         write_note(&dir.path().join("untagged.md"), "No tags.");
 
         let vault = crate::Vault::open(dir.path()).unwrap();
-        let ids = sorted_ids(unwrap_notes(vault.search().has_tag("my-tag").execute().unwrap()));
+        let ids = sorted_ids(unwrap_notes(vault.search().and_has_tag("my-tag").execute().unwrap()));
         assert_eq!(ids, vec!["tagged"]);
     }
 }
