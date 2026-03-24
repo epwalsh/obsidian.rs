@@ -216,15 +216,25 @@ impl Vault {
         let mut notes: Vec<Note> = results.into_iter().filter_map(|r| r.ok()).collect();
 
         if notes.is_empty() {
-            Err(VaultError::NoteNotFound(note.to_string()))
-        } else if notes.len() > 1 {
-            Err(VaultError::AmbiguousNoteIdentifier(
-                note.to_string(),
-                notes.into_iter().map(|n| n.path).collect(),
-            ))
-        } else {
-            Ok(notes.remove(0))
+            return Err(VaultError::NoteNotFound(note.to_string()));
         }
+
+        if notes.len() == 1 {
+            return Ok(notes.remove(0));
+        }
+
+        // If we have more than one match, check for *exact* (case-sensitive) matches on ID and aliases before giving up.
+        let paths = notes.iter().map(|n| n.path.clone()).collect();
+        let mut notes: Vec<_> = notes
+            .into_iter()
+            .filter(|n| n.id == note || n.aliases.iter().any(|a| a == note))
+            .collect();
+
+        if notes.len() == 1 {
+            return Ok(notes.remove(0));
+        }
+
+        Err(VaultError::AmbiguousNoteIdentifier(note.to_string(), paths))
     }
 
     /// Resolve a note path argument, which may be absolute or relative to either the current working
