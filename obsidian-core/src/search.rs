@@ -7,6 +7,13 @@ use regex::Regex;
 
 use crate::{Note, NoteError, SearchError};
 
+#[derive(Debug, Clone, Copy)]
+enum CaseSensitivity {
+    Sensitive,
+    Ignore,
+    Smart,
+}
+
 /// A composable query for filtering notes in a vault.
 ///
 /// # Filter semantics
@@ -44,6 +51,7 @@ pub struct SearchQuery {
     or_content_contains: Vec<String>,
     and_content_matches: Vec<String>,
     or_content_matches: Vec<String>,
+    case_sensitivity: Option<CaseSensitivity>,
 }
 
 impl SearchQuery {
@@ -66,6 +74,7 @@ impl SearchQuery {
             or_content_contains: Vec::new(),
             and_content_matches: Vec::new(),
             or_content_matches: Vec::new(),
+            case_sensitivity: None,
         }
     }
 
@@ -81,87 +90,106 @@ impl SearchQuery {
         self
     }
 
-    /// Note must have this ID.
+    /// Note must have this ID (case-sensitive by default).
     pub fn and_has_id(mut self, id: impl Into<String>) -> Self {
         self.and_id = Some(id.into());
         self
     }
 
-    /// Note could have this ID.
+    /// Note could have this ID (case-sensitive by default).
     pub fn or_has_id(mut self, id: impl Into<String>) -> Self {
         self.or_ids.push(id.into());
         self
     }
 
-    /// Note must have this tag.
+    /// Note must have this tag (case-sensitive by default).
     pub fn and_has_tag(mut self, tag: impl Into<String>) -> Self {
         self.and_tags.push(tag.into());
         self
     }
 
-    /// Note could have this tag.
+    /// Note could have this tag (case-sensitive by default).
     pub fn or_has_tag(mut self, tag: impl Into<String>) -> Self {
         self.or_tags.push(tag.into());
         self
     }
 
-    /// Must title must contain this substring (case-insensitive).
+    /// Must title must contain this substring (smart case-sensitive by default).
     pub fn and_title_contains(mut self, s: impl Into<String>) -> Self {
         self.and_title_contains.push(s.into());
         self
     }
 
-    /// Must title could contain this substring (case-insensitive).
+    /// Must title could contain this substring (smart case-sensitive by default).
     pub fn or_title_contains(mut self, s: impl Into<String>) -> Self {
         self.or_title_contains.push(s.into());
         self
     }
 
-    /// Note must have this alias.
+    /// Note must have this alias (smart case-sensitive by default).
     pub fn and_has_alias(mut self, alias: impl Into<String>) -> Self {
         self.and_aliases.push(alias.into());
         self
     }
 
-    /// Note could have this alias.
+    /// Note could have this alias (smart case-sensitive by default).
     pub fn or_has_alias(mut self, alias: impl Into<String>) -> Self {
         self.or_aliases.push(alias.into());
         self
     }
 
-    /// Case-insensitive substring must match against any of the note's aliases.
+    /// Substring must match against any of the note's aliases (smart case-sensitive by default).
     pub fn and_alias_contains(mut self, s: impl Into<String>) -> Self {
         self.and_alias_contains.push(s.into());
         self
     }
 
-    /// Case-insensitive substring could match against any of the note's aliases.
+    /// Substring could match against any of the note's aliases (smart case-sensitive by default).
     pub fn or_alias_contains(mut self, s: impl Into<String>) -> Self {
         self.or_alias_contains.push(s.into());
         self
     }
 
-    /// Note body must contain this string.
+    /// Note body must contain this string (smart case-sensitive by default).
     pub fn and_content_contains(mut self, s: impl Into<String>) -> Self {
         self.and_content_contains.push(s.into());
         self
     }
 
-    /// Note body could contain this string.
+    /// Note body could contain this string (smart case-sensitive by default).
     pub fn or_content_contains(mut self, s: impl Into<String>) -> Self {
         self.or_content_contains.push(s.into());
         self
     }
 
-    /// Regex body must match this pattern.
+    /// Regex body must match this pattern (smart case-sensitive by default).
     pub fn and_content_matches(mut self, pattern: impl Into<String>) -> Self {
         self.and_content_matches.push(pattern.into());
         self
     }
 
-    /// Regex body could match this pattern.
+    /// Regex body could match this pattern (smart case-sensitive by default).
     pub fn or_content_matches(mut self, pattern: impl Into<String>) -> Self {
         self.or_content_matches.push(pattern.into());
+        self
+    }
+
+    /// Execute the search case-sensitively.
+    pub fn case_sensitive(mut self) -> Self {
+        self.case_sensitivity = Some(CaseSensitivity::Sensitive);
+        self
+    }
+
+    /// Execute the search case-insensitively.
+    pub fn ignore_case(mut self) -> Self {
+        self.case_sensitivity = Some(CaseSensitivity::Ignore);
+        self
+    }
+
+    /// Execute the search with smart case sensitivity: case-sensitive if the query contains any uppercase letters,
+    /// otherwise case-insensitive.
+    pub fn smart_case(mut self) -> Self {
+        self.case_sensitivity = Some(CaseSensitivity::Smart);
         self
     }
 
@@ -188,7 +216,31 @@ impl SearchQuery {
             or_content_contains,
             and_content_matches,
             or_content_matches,
+            case_sensitivity,
         } = self;
+
+        let strings_equal = |s: &str, query: &str, cs: CaseSensitivity| match cs {
+            CaseSensitivity::Sensitive => s == query,
+            CaseSensitivity::Ignore => s.eq_ignore_ascii_case(query),
+            CaseSensitivity::Smart => {
+                if query.chars().any(|c| c.is_ascii_uppercase()) {
+                    s == query
+                } else {
+                    s.eq_ignore_ascii_case(query)
+                }
+            }
+        };
+        let string_contains = |s: &str, query: &str, cs: CaseSensitivity| match cs {
+            CaseSensitivity::Sensitive => s.contains(query),
+            CaseSensitivity::Ignore => s.to_lowercase().contains(&query.to_lowercase()),
+            CaseSensitivity::Smart => {
+                if query.chars().any(|c| c.is_ascii_uppercase()) {
+                    s.contains(query)
+                } else {
+                    s.to_lowercase().contains(&query.to_lowercase())
+                }
+            }
+        };
 
         let and_glob_set = build_glob_set(&and_globs)?;
         let or_glob_set = build_glob_set(&or_globs)?;
@@ -205,12 +257,34 @@ impl SearchQuery {
 
         let mut and_regexes: Vec<Regex> = Vec::new();
         for pattern in and_content_matches {
+            let pattern = match case_sensitivity.unwrap_or(CaseSensitivity::Smart) {
+                CaseSensitivity::Sensitive => pattern,
+                CaseSensitivity::Ignore => format!("(?i:{pattern})"),
+                CaseSensitivity::Smart => {
+                    if pattern.chars().any(|c| c.is_ascii_uppercase()) {
+                        pattern
+                    } else {
+                        format!("(?i:{pattern})")
+                    }
+                }
+            };
             let re = Regex::new(&pattern).map_err(SearchError::InvalidRegex)?;
             and_regexes.push(re);
         }
 
         let mut or_regexes: Vec<Regex> = Vec::new();
         for pattern in or_content_matches {
+            let pattern = match case_sensitivity.unwrap_or(CaseSensitivity::Smart) {
+                CaseSensitivity::Sensitive => pattern,
+                CaseSensitivity::Ignore => format!("(?i){pattern}"),
+                CaseSensitivity::Smart => {
+                    if pattern.chars().any(|c| c.is_ascii_uppercase()) {
+                        pattern
+                    } else {
+                        format!("(?i){pattern}")
+                    }
+                }
+            };
             let re = Regex::new(&pattern).map_err(SearchError::InvalidRegex)?;
             or_regexes.push(re);
         }
@@ -258,28 +332,40 @@ impl SearchQuery {
                 // Begin AND filters. Exclude note immediately if it fails any of these.
                 // ---------------------------------------------------------------------
                 if let Some(ref expected_id) = and_id
-                    && note.id != *expected_id
+                    && !strings_equal(
+                        &note.id,
+                        expected_id,
+                        case_sensitivity.unwrap_or(CaseSensitivity::Sensitive),
+                    )
                 {
                     return None;
                 }
 
-                if !and_tags.is_empty() && !and_tags.iter().all(|t| note.tags.contains(t)) {
+                if !and_tags.is_empty()
+                    && !and_tags.iter().all(|t| {
+                        note.tags
+                            .iter()
+                            .any(|nt| strings_equal(nt, t, case_sensitivity.unwrap_or(CaseSensitivity::Sensitive)))
+                    })
+                {
                     return None;
                 }
 
                 if !and_aliases.is_empty()
-                    && !and_aliases
-                        .iter()
-                        .all(|a| note.aliases.iter().any(|na| na.to_lowercase() == a.to_lowercase()))
+                    && !and_aliases.iter().all(|a| {
+                        note.aliases
+                            .iter()
+                            .any(|na| strings_equal(na, a, case_sensitivity.unwrap_or(CaseSensitivity::Smart)))
+                    })
                 {
                     return None;
                 }
 
                 if !and_title_contains.is_empty()
                     && !and_title_contains.iter().all(|substr| {
-                        note.title
-                            .as_deref()
-                            .is_some_and(|t| t.to_lowercase().contains(&substr.to_lowercase()))
+                        note.title.as_deref().is_some_and(|t| {
+                            string_contains(t, substr, case_sensitivity.unwrap_or(CaseSensitivity::Smart))
+                        })
                     })
                 {
                     return None;
@@ -289,16 +375,20 @@ impl SearchQuery {
                     && !and_alias_contains.iter().all(|substr| {
                         note.aliases
                             .iter()
-                            .any(|a| a.to_lowercase().contains(&substr.to_lowercase()))
+                            .any(|a| string_contains(a, substr, case_sensitivity.unwrap_or(CaseSensitivity::Smart)))
                     })
                 {
                     return None;
                 }
 
                 if !and_content_contains.is_empty()
-                    && !and_content_contains
-                        .iter()
-                        .all(|s| note.content.as_deref().unwrap().contains(s.as_str()))
+                    && !and_content_contains.iter().all(|s| {
+                        string_contains(
+                            note.content.as_deref().unwrap(),
+                            s,
+                            case_sensitivity.unwrap_or(CaseSensitivity::Smart),
+                        )
+                    })
                 {
                     return None;
                 }
@@ -322,41 +412,52 @@ impl SearchQuery {
                     return Some(Ok(note));
                 }
 
-                if or_ids.contains(&note.id) {
+                if or_ids
+                    .iter()
+                    .any(|id| strings_equal(&note.id, id, case_sensitivity.unwrap_or(CaseSensitivity::Sensitive)))
+                {
                     return Some(Ok(note));
                 }
 
-                if or_tags.iter().any(|t| note.tags.contains(t)) {
+                if or_tags.iter().any(|t| {
+                    note.tags
+                        .iter()
+                        .any(|nt| strings_equal(nt, t, case_sensitivity.unwrap_or(CaseSensitivity::Sensitive)))
+                }) {
                     return Some(Ok(note));
                 }
 
                 if or_title_contains.iter().any(|substr| {
                     note.title
                         .as_deref()
-                        .is_some_and(|t| t.to_lowercase().contains(&substr.to_lowercase()))
+                        .is_some_and(|t| string_contains(t, substr, case_sensitivity.unwrap_or(CaseSensitivity::Smart)))
                 }) {
                     return Some(Ok(note));
                 }
 
-                if or_aliases
-                    .iter()
-                    .any(|a| note.aliases.iter().any(|na| na.to_lowercase() == a.to_lowercase()))
-                {
+                if or_aliases.iter().any(|a| {
+                    note.aliases
+                        .iter()
+                        .any(|na| strings_equal(na, a, case_sensitivity.unwrap_or(CaseSensitivity::Smart)))
+                }) {
                     return Some(Ok(note));
                 }
 
                 if or_alias_contains.iter().any(|substr| {
                     note.aliases
                         .iter()
-                        .any(|a| a.to_lowercase().contains(&substr.to_lowercase()))
+                        .any(|a| string_contains(a, substr, case_sensitivity.unwrap_or(CaseSensitivity::Smart)))
                 }) {
                     return Some(Ok(note));
                 }
 
-                if or_content_contains
-                    .iter()
-                    .any(|s| note.content.as_deref().unwrap().contains(s.as_str()))
-                {
+                if or_content_contains.iter().any(|s| {
+                    string_contains(
+                        note.content.as_deref().unwrap(),
+                        s,
+                        case_sensitivity.unwrap_or(CaseSensitivity::Smart),
+                    )
+                }) {
                     return Some(Ok(note));
                 }
 

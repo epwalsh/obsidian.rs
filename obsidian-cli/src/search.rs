@@ -55,6 +55,15 @@ pub fn cmd_search(vault: Vault, args: SearchArgs) -> eyre::Result<()> {
     for s in &args.or_alias_contains {
         query = query.or_alias_contains(s);
     }
+    if args.smart_case {
+        query = query.smart_case();
+    }
+    if args.ignore_case {
+        query = query.ignore_case();
+    }
+    if args.case_sensitive {
+        query = query.case_sensitive();
+    }
 
     let results = query.execute()?;
     let mut notes: Vec<Note> = results.into_iter().filter_map(|r| r.ok()).collect();

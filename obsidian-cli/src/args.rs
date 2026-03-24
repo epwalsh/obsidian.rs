@@ -50,49 +50,61 @@ pub struct SearchArgs {
     /// Filter by exact note ID match (AND semantics)
     #[arg(long)]
     pub id: Option<String>,
-    /// Filter by exact note ID match (OR semantics, repeatable)
+    /// Filter by exact note ID match, case-sensitive by default (OR semantics, repeatable)
     #[arg(long)]
     pub or_id: Vec<String>,
-    /// Filter by tag (AND semantics, repeatable)
+    /// Filter by tag, case-sensitive by default (AND semantics, repeatable)
     #[arg(long)]
     pub tag: Vec<String>,
-    /// Filter by tag (OR semantics, repeatable)
+    /// Filter by tag, case-sensitive by default (OR semantics, repeatable)
     #[arg(long)]
     pub or_tag: Vec<String>,
-    /// Filter by title substring, case-insensitive (AND semantics, repeatable)
+    /// Filter by title substring, smart case-sensitive by default (AND semantics, repeatable)
     #[arg(long)]
     pub title_contains: Vec<String>,
-    /// Filter by title substring, case-insensitive (OR semantics, repeatable)
+    /// Filter by title substring, smart case-sensitive by default (OR semantics, repeatable)
     #[arg(long)]
     pub or_title_contains: Vec<String>,
-    /// Filter by exact alias, case-insensitive (AND semantics, repeatable)
+    /// Filter by exact alias, smart case-sensitive by default (AND semantics, repeatable)
     #[arg(long)]
     pub alias: Vec<String>,
-    /// Filter by exact alias, case-insensitive (OR semantics, repeatable)
+    /// Filter by exact alias, smart case-sensitive by default (OR semantics, repeatable)
     #[arg(long)]
     pub or_alias: Vec<String>,
-    /// Filter by alias substring, case-insensitive (AND semantics, repeatable)
+    /// Filter by alias substring, smart case-sensitive by default (AND semantics, repeatable)
     #[arg(long)]
     pub alias_contains: Vec<String>,
-    /// Filter by alias substring, case-insensitive (OR semantics, repeatable)
+    /// Filter by alias substring, smart case-sensitive by default (OR semantics, repeatable)
     #[arg(long)]
     pub or_alias_contains: Vec<String>,
-    /// Filter by content substring (AND semantics, repeatable)
+    /// Filter by content substring, smart case-sensitive by default (AND semantics, repeatable)
     #[arg(long)]
     pub content_contains: Vec<String>,
-    /// Filter by content substring (OR semantics, repeatable)
+    /// Filter by content substring, smart case-sensitive by default (OR semantics, repeatable)
     #[arg(long)]
     pub or_content_contains: Vec<String>,
-    /// Filter by content pattern (https://docs.rs/regex/latest/regex/#syntax) (AND semantics,
-    /// repeatable)
+    /// Filter by content pattern, smart case-sensitive by default (AND semantics, repeatable).
+    /// See https://docs.rs/regex/latest/regex/#syntax.
     #[arg(long)]
     pub content_matches: Vec<String>,
-    /// Filter by content pattern (https://docs.rs/regex/latest/regex/#syntax) (OR semantics,
-    /// repeatable)
+    /// Filter by content pattern, smart case-sensitive by default (OR semantics, repeatable).
+    /// See https://docs.rs/regex/latest/regex/#syntax.
     #[arg(long)]
     pub or_content_matches: Vec<String>,
+    /// Execute the search case sensitive. By default, title, alias, and content filters are
+    /// smart case-insensitive while ID and tag filters are case-sensitive.
+    /// This flag overrides -i/--ignore-case and -S/--smart-case.
+    #[arg(long, short = 's')]
+    pub case_sensitive: bool,
+    /// Execute the search case insensitive. This flag overrides -S/--smart-case.
+    #[arg(long, short = 'i')]
+    pub ignore_case: bool,
+    /// Search case insensitively for patterns that are all lowercase, otherwise search case
+    /// sensitively.
+    #[arg(long, short = 'S')]
+    pub smart_case: bool,
     /// Sort order for results
-    #[arg(long, short = 's', default_value = "path-asc")]
+    #[arg(long, default_value = "path-asc")]
     pub sort: SortOrder,
     /// Output format
     #[arg(long, short = 'f', default_value = "plain")]
