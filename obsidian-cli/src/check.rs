@@ -70,13 +70,16 @@ pub fn cmd_check(vault: Vault, args: CheckArgs) -> eyre::Result<()> {
     }
 
     // --- Duplicate aliases ---
-    let mut alias_map: HashMap<String, Vec<PathBuf>> = HashMap::new();
+    let mut alias_map: HashMap<String, HashSet<PathBuf>> = HashMap::new();
     for note in notes.iter() {
         for alias in &note.aliases {
-            alias_map.entry(alias.clone()).or_default().push(note.path.clone());
+            alias_map
+                .entry(alias.to_lowercase())
+                .or_default()
+                .insert(note.path.clone());
         }
     }
-    let mut dup_aliases: Vec<(&String, &Vec<PathBuf>)> =
+    let mut dup_aliases: Vec<(&String, &HashSet<PathBuf>)> =
         alias_map.iter().filter(|(_, paths)| paths.len() > 1).collect();
     dup_aliases.sort_by_key(|(alias, _)| alias.as_str());
 
@@ -87,7 +90,7 @@ pub fn cmd_check(vault: Vault, args: CheckArgs) -> eyre::Result<()> {
         println!("{}", "✘ Duplicate aliases:".red().bold());
         for (alias, paths) in dup_aliases {
             println!("  {}", alias.yellow());
-            let mut sorted = paths.clone();
+            let mut sorted = paths.iter().cloned().collect::<Vec<_>>();
             sorted.sort();
             for path in &sorted {
                 let note = notes.iter().find(|n| &n.path == path).unwrap();
@@ -111,6 +114,7 @@ pub fn cmd_check(vault: Vault, args: CheckArgs) -> eyre::Result<()> {
         }
         for alias in &note.aliases {
             valid_wiki_targets.insert(alias.clone());
+            valid_wiki_targets.insert(alias.to_lowercase());
         }
     }
 

@@ -205,7 +205,7 @@ impl Vault {
         }
 
         // Then search by ID, aliases, and potentially filename.
-        let mut search = self.search().or_has_id(note).or_has_alias(note);
+        let mut search = self.search().or_has_id(note).or_has_alias(note).ignore_case();
         if note.ends_with(".md") && !note.contains('/') {
             let glob = format!("**/{}", note);
             let stem = note.trim_end_matches(".md");
