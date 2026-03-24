@@ -78,7 +78,7 @@ fn search_glob_filter() {
             "--vault",
             vault.path().to_str().unwrap(),
             "search",
-            "--glob",
+            "--and-glob",
             "notes/**",
         ])
         .assert()

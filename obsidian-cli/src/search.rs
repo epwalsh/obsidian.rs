@@ -7,6 +7,12 @@ use crate::utils::sort_notes_by;
 
 pub fn cmd_search(vault: Vault, args: SearchArgs) -> eyre::Result<()> {
     let mut query = vault.search();
+    for glob in &args.and_glob {
+        query = query.and_glob(glob);
+    }
+    for glob in &args.or_glob {
+        query = query.or_glob(glob);
+    }
     if let Some(id) = &args.and_id {
         query = query.and_has_id(id);
     }
@@ -18,9 +24,6 @@ pub fn cmd_search(vault: Vault, args: SearchArgs) -> eyre::Result<()> {
     }
     for tag in &args.or_tag {
         query = query.or_has_tag(tag);
-    }
-    for glob in &args.glob {
-        query = query.glob(glob);
     }
     for s in &args.and_content_contains {
         query = query.and_content_contains(s);

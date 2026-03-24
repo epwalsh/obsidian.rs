@@ -197,21 +197,24 @@ impl Vault {
         Self::open(&cwd)
     }
 
-    /// Resolve a note based on a path, ID, title, or alias.
+    /// Resolve a note based on a path, filename, ID, title, or alias.
     pub fn resolve_note(&self, note: &str) -> Result<Note, VaultError> {
         // First try as a path.
         if let Ok((path, _)) = self.resolve_note_path(note, true) {
             return Note::from_path(path).map_err(VaultError::Note);
         }
 
-        // Then search.
-        let results = self
-            .search()
-            .or_has_id(note)
-            .or_has_alias(note)
-            .execute()
-            .map_err(VaultError::Search)?;
+        // Then search by ID, aliases, and potentially filename.
+        let mut search = self.search().or_has_id(note).or_has_alias(note);
+        if note.ends_with(".md") && !note.contains('/') {
+            let glob = format!("**/{}", note);
+            let stem = note.trim_end_matches(".md");
+            search = search.or_glob(glob).or_has_id(stem).or_has_alias(stem);
+        }
+
+        let results = search.execute().map_err(VaultError::Search)?;
         let mut notes: Vec<Note> = results.into_iter().filter_map(|r| r.ok()).collect();
+
         if notes.is_empty() {
             Err(VaultError::NoteNotFound(note.to_string()))
         } else if notes.len() > 1 {

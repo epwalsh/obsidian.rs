@@ -10,7 +10,8 @@ use crate::{Note, NoteError, SearchError};
 /// A composable query for filtering notes in a vault.
 ///
 /// # Filter semantics
-/// - [`glob`](SearchQuery::glob): note's relative path must match one of these patterns
+/// - [`and_glob`](SearchQuery::and_glob): AND — note's relative path matches one of these patterns
+/// - [`or_glob`](SearchQuery::or_glob): OR — note's relative path matches one of these patterns
 /// - [`and_has_id`](SearchQuery::and_has_id): OR — has this ID
 /// - [`or_has_id`](SearchQuery::or_has_id): OR — has one of these IDs
 /// - [`and_has_tag`](SearchQuery::and_has_tag): AND — note has all of these tags
@@ -27,7 +28,8 @@ use crate::{Note, NoteError, SearchError};
 /// - [`or_content_matches`](SearchQuery::or_content_matches): OR — content matches any of these patterns
 pub struct SearchQuery {
     root: PathBuf,
-    globs: Vec<String>,
+    and_globs: Vec<String>,
+    or_globs: Vec<String>,
     and_id: Option<String>,
     or_ids: Vec<String>,
     and_tags: Vec<String>,
@@ -48,7 +50,8 @@ impl SearchQuery {
     pub fn new(root: impl AsRef<Path>) -> Self {
         SearchQuery {
             root: root.as_ref().to_path_buf(),
-            globs: Vec::new(),
+            and_globs: Vec::new(),
+            or_globs: Vec::new(),
             and_id: None,
             or_ids: Vec::new(),
             and_tags: Vec::new(),
@@ -66,10 +69,15 @@ impl SearchQuery {
         }
     }
 
-    /// Filter by glob pattern matched against the note's path relative to the vault root.
-    /// Multiple calls use OR semantics: a note passes if it matches any pattern.
-    pub fn glob(mut self, pattern: impl Into<String>) -> Self {
-        self.globs.push(pattern.into());
+    /// Note path must match this glob pattern (matched against the note's path relative to the vault root).
+    pub fn and_glob(mut self, pattern: impl Into<String>) -> Self {
+        self.and_globs.push(pattern.into());
+        self
+    }
+
+    /// Note path could match this glob pattern (matched against the note's path relative to the vault root).
+    pub fn or_glob(mut self, pattern: impl Into<String>) -> Self {
+        self.or_globs.push(pattern.into());
         self
     }
 
@@ -164,7 +172,8 @@ impl SearchQuery {
     pub fn execute(self) -> Result<Vec<Result<Note, NoteError>>, SearchError> {
         let SearchQuery {
             root,
-            globs,
+            and_globs,
+            or_globs,
             and_id,
             or_ids,
             and_tags,
@@ -181,16 +190,16 @@ impl SearchQuery {
             or_content_matches,
         } = self;
 
-        let glob_set = build_glob_set(&globs)?;
+        let and_glob_set = build_glob_set(&and_globs)?;
+        let or_glob_set = build_glob_set(&or_globs)?;
 
-        let has_globs = !globs.is_empty();
         let paths: Vec<PathBuf> = find_note_paths(&root)
             .filter(|path| {
-                if !has_globs {
+                if and_globs.is_empty() {
                     return true;
                 }
                 let rel = path.strip_prefix(&root).unwrap_or(path);
-                glob_set.is_match(rel)
+                and_glob_set.is_match(rel)
             })
             .collect();
 
@@ -210,7 +219,8 @@ impl SearchQuery {
             || !or_content_contains.is_empty()
             || !and_regexes.is_empty()
             || !or_regexes.is_empty();
-        let has_or_filters = !or_ids.is_empty()
+        let has_or_filters = !or_globs.is_empty()
+            || !or_ids.is_empty()
             || !or_tags.is_empty()
             || !or_title_contains.is_empty()
             || !or_aliases.is_empty()
@@ -229,6 +239,7 @@ impl SearchQuery {
         let results = paths
             .into_par_iter()
             .filter_map(|path| -> Option<Result<Note, NoteError>> {
+                let rel = path.strip_prefix(&root).unwrap_or(&path);
                 let load = if needs_content {
                     Note::from_path_with_content(&path)
                 } else {
@@ -304,6 +315,10 @@ impl SearchQuery {
                 // Begin OR filters. Include note if it satisfies any of these (or if there are no OR filters).
                 // --------------------------------------------------------------------------------------------
                 if !has_or_filters {
+                    return Some(Ok(note));
+                }
+
+                if !or_globs.is_empty() && or_glob_set.is_match(rel) {
                     return Some(Ok(note));
                 }
 
@@ -453,7 +468,7 @@ mod tests {
         write_note(&dir.path().join("root.md"), "root note");
         write_note(&subdir.join("sub.md"), "sub note");
 
-        let results = SearchQuery::new(dir.path()).glob("subdir/**").execute().unwrap();
+        let results = SearchQuery::new(dir.path()).and_glob("subdir/**").execute().unwrap();
         let notes = unwrap_notes(results);
         assert_eq!(notes.len(), 1);
         assert!(notes[0].path.ends_with("subdir/sub.md"));
@@ -468,8 +483,8 @@ mod tests {
 
         let notes = unwrap_notes(
             SearchQuery::new(dir.path())
-                .glob("a/**")
-                .glob("b/**")
+                .and_glob("a/**")
+                .and_glob("b/**")
                 .execute()
                 .unwrap(),
         );
@@ -494,7 +509,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_note(&dir.path().join("note.md"), "content");
 
-        let notes = unwrap_notes(SearchQuery::new(dir.path()).glob("nonexistent/**").execute().unwrap());
+        let notes = unwrap_notes(
+            SearchQuery::new(dir.path())
+                .and_glob("nonexistent/**")
+                .execute()
+                .unwrap(),
+        );
         assert!(notes.is_empty());
     }
 
@@ -793,7 +813,7 @@ mod tests {
     #[test]
     fn invalid_glob_errors() {
         let dir = tempfile::tempdir().unwrap();
-        let result = SearchQuery::new(dir.path()).glob("[invalid").execute();
+        let result = SearchQuery::new(dir.path()).and_glob("[invalid").execute();
         assert!(matches!(result, Err(SearchError::InvalidGlob(_))));
     }
 
@@ -813,7 +833,7 @@ mod tests {
 
         let ids = sorted_ids(unwrap_notes(
             SearchQuery::new(dir.path())
-                .glob("notes/**")
+                .and_glob("notes/**")
                 .and_has_tag("rust")
                 .and_content_contains("ferris")
                 .execute()

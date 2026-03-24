@@ -41,9 +41,12 @@ pub struct CheckArgs {
 
 #[derive(clap::Args)]
 pub struct SearchArgs {
-    /// Filter by glob pattern
+    /// Only include notes whose path matches one of these glob patterns (matched against vault-relative path, repeatable)
     #[arg(long)]
-    pub glob: Vec<String>,
+    pub and_glob: Vec<String>,
+    /// Same as --and-glob but with global OR semantics
+    #[arg(long)]
+    pub or_glob: Vec<String>,
     /// Filter by exact note ID match (AND semantics)
     #[arg(long)]
     pub and_id: Option<String>,
