@@ -4,6 +4,7 @@ checks :
 	cargo check
 	cargo clippy -- -D warnings
 	cargo test
+	cargo install --bin obsidian --path obsidian-cli/
 
 .PHONY : install
 install :
