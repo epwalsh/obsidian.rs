@@ -40,7 +40,7 @@ fn search_tag_filter() {
     write_note(vault.path(), "tagged.md", "---\ntags: [rust]\n---\nContent.");
     write_note(vault.path(), "untagged.md", "No tags.");
     obsidian()
-        .args(["--vault", vault.path().to_str().unwrap(), "search", "--and-tag", "rust"])
+        .args(["--vault", vault.path().to_str().unwrap(), "search", "--tag", "rust"])
         .assert()
         .success()
         .stdout(predicate::str::contains("tagged.md"))
@@ -57,9 +57,9 @@ fn search_tag_and_semantics() {
             "--vault",
             vault.path().to_str().unwrap(),
             "search",
-            "--and-tag",
+            "--tag",
             "rust",
-            "--and-tag",
+            "--tag",
             "obsidian",
         ])
         .assert()
@@ -78,7 +78,7 @@ fn search_glob_filter() {
             "--vault",
             vault.path().to_str().unwrap(),
             "search",
-            "--and-glob",
+            "--glob",
             "notes/**",
         ])
         .assert()
@@ -97,7 +97,7 @@ fn search_content_filter() {
             "--vault",
             vault.path().to_str().unwrap(),
             "search",
-            "--and-content-contains",
+            "--content-contains",
             "ferris",
         ])
         .assert()
@@ -116,7 +116,7 @@ fn search_regex_filter() {
             "--vault",
             vault.path().to_str().unwrap(),
             "search",
-            "--and-content-matches",
+            "--content-matches",
             r"\d+",
         ])
         .assert()
@@ -135,7 +135,7 @@ fn search_alias_exact_filter() {
             "--vault",
             vault.path().to_str().unwrap(),
             "search",
-            "--and-alias",
+            "--alias",
             "my alias",
         ])
         .assert()
@@ -181,7 +181,7 @@ fn search_alias_contains_filter() {
             "--vault",
             vault.path().to_str().unwrap(),
             "search",
-            "--and-alias-contains",
+            "--alias-contains",
             "rust",
         ])
         .assert()
@@ -198,7 +198,7 @@ fn search_invalid_regex_exits_with_error() {
             "--vault",
             vault.path().to_str().unwrap(),
             "search",
-            "--and-content-matches",
+            "--content-matches",
             "[invalid",
         ])
         .assert()

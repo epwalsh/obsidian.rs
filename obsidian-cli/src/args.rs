@@ -43,50 +43,50 @@ pub struct CheckArgs {
 pub struct SearchArgs {
     /// Only include notes whose path matches one of these glob patterns (matched against vault-relative path, repeatable)
     #[arg(long)]
-    pub and_glob: Vec<String>,
-    /// Same as --and-glob but with global OR semantics
+    pub glob: Vec<String>,
+    /// Same as --glob but with global OR semantics
     #[arg(long)]
     pub or_glob: Vec<String>,
     /// Filter by exact note ID match (AND semantics)
     #[arg(long)]
-    pub and_id: Option<String>,
+    pub id: Option<String>,
     /// Filter by exact note ID match (OR semantics, repeatable)
     #[arg(long)]
     pub or_id: Vec<String>,
     /// Filter by tag (AND semantics, repeatable)
     #[arg(long)]
-    pub and_tag: Vec<String>,
+    pub tag: Vec<String>,
     /// Filter by tag (OR semantics, repeatable)
     #[arg(long)]
     pub or_tag: Vec<String>,
     /// Filter by title substring, case-insensitive (AND semantics, repeatable)
     #[arg(long)]
-    pub and_title_contains: Vec<String>,
+    pub title_contains: Vec<String>,
     /// Filter by title substring, case-insensitive (OR semantics, repeatable)
     #[arg(long)]
     pub or_title_contains: Vec<String>,
     /// Filter by exact alias, case-insensitive (AND semantics, repeatable)
     #[arg(long)]
-    pub and_alias: Vec<String>,
+    pub alias: Vec<String>,
     /// Filter by exact alias, case-insensitive (OR semantics, repeatable)
     #[arg(long)]
     pub or_alias: Vec<String>,
     /// Filter by alias substring, case-insensitive (AND semantics, repeatable)
     #[arg(long)]
-    pub and_alias_contains: Vec<String>,
+    pub alias_contains: Vec<String>,
     /// Filter by alias substring, case-insensitive (OR semantics, repeatable)
     #[arg(long)]
     pub or_alias_contains: Vec<String>,
     /// Filter by content substring (AND semantics, repeatable)
     #[arg(long)]
-    pub and_content_contains: Vec<String>,
+    pub content_contains: Vec<String>,
     /// Filter by content substring (OR semantics, repeatable)
     #[arg(long)]
     pub or_content_contains: Vec<String>,
     /// Filter by content pattern (https://docs.rs/regex/latest/regex/#syntax) (AND semantics,
     /// repeatable)
     #[arg(long)]
-    pub and_content_matches: Vec<String>,
+    pub content_matches: Vec<String>,
     /// Filter by content pattern (https://docs.rs/regex/latest/regex/#syntax) (OR semantics,
     /// repeatable)
     #[arg(long)]
