@@ -7,23 +7,39 @@ use clap::{Parser, Subcommand, ValueEnum};
 pub struct Cli {
     /// Path to the vault directory. Defaults to the nearest parent directory containing
     /// '.obsidian/', or the current directory if none is found.
-    #[arg(long, short = 'v', global = true, env = "OBSIDIAN_VAULT")]
+    #[arg(
+        long,
+        short = 'v',
+        global = true,
+        env = "OBSIDIAN_VAULT",
+        help_heading = "Global options"
+    )]
     pub vault: Option<PathBuf>,
     /// Force color output even when not writing to a TTY
-    #[arg(long, global = true)]
+    #[arg(long, global = true, help_heading = "Global options")]
     pub color: bool,
     /// Disable color output
-    #[arg(long, global = true)]
+    #[arg(long, global = true, help_heading = "Global options")]
     pub no_color: bool,
     #[command(subcommand)]
     pub command: Command,
 }
 
-#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub enum Command {
-    /// Search for notes in the vault
-    Search(SearchArgs),
+    /// Search for notes in the vault.
+    ///
+    /// Filters are applied in two stages:
+    ///
+    /// 1. First 'AND' filters are applied to narrow down the candidate set of notes.
+    ///    If any 'AND' filter is specified, only notes that match all 'AND' filters will be included
+    ///    in the candidate set. If no 'AND' filters are specified, all notes in the vault will be
+    ///    included in the candidate set.
+    ///
+    /// 2. Then 'OR' filters are applied to the candidate set. If any 'OR' filter is specified, only notes
+    ///    that match at least one 'OR' filter will be included in the final results. If no 'OR' filters
+    ///    are specified, all notes in the candidate set will be included in the final results.
+    Search(Box<SearchArgs>),
     /// Work with individual notes
     Note(NoteArgs),
     /// Work with tags across the vault
@@ -42,72 +58,72 @@ pub struct CheckArgs {
 #[derive(clap::Args)]
 pub struct SearchArgs {
     /// Only include notes whose path matches one of these glob patterns (matched against vault-relative path, repeatable)
-    #[arg(long)]
+    #[arg(long, help_heading = "Path filters")]
     pub glob: Vec<String>,
     /// Same as --glob but with global OR semantics
-    #[arg(long)]
+    #[arg(long, help_heading = "Path filters")]
     pub or_glob: Vec<String>,
     /// Filter by exact note ID match (AND semantics)
-    #[arg(long)]
+    #[arg(long, help_heading = "Metadata filters")]
     pub id: Option<String>,
     /// Filter by exact note ID match, case-sensitive by default (OR semantics, repeatable)
-    #[arg(long)]
+    #[arg(long, help_heading = "Metadata filters")]
     pub or_id: Vec<String>,
     /// Filter by tag, case-sensitive by default (AND semantics, repeatable)
-    #[arg(long)]
+    #[arg(long, help_heading = "Metadata filters")]
     pub tag: Vec<String>,
     /// Filter by tag, case-sensitive by default (OR semantics, repeatable)
-    #[arg(long)]
+    #[arg(long, help_heading = "Metadata filters")]
     pub or_tag: Vec<String>,
     /// Filter by title substring, smart case-sensitive by default (AND semantics, repeatable)
-    #[arg(long)]
+    #[arg(long, help_heading = "Metadata filters")]
     pub title_contains: Vec<String>,
     /// Filter by title substring, smart case-sensitive by default (OR semantics, repeatable)
-    #[arg(long)]
+    #[arg(long, help_heading = "Metadata filters")]
     pub or_title_contains: Vec<String>,
     /// Filter by exact alias, smart case-sensitive by default (AND semantics, repeatable)
-    #[arg(long)]
+    #[arg(long, help_heading = "Metadata filters")]
     pub alias: Vec<String>,
     /// Filter by exact alias, smart case-sensitive by default (OR semantics, repeatable)
-    #[arg(long)]
+    #[arg(long, help_heading = "Metadata filters")]
     pub or_alias: Vec<String>,
     /// Filter by alias substring, smart case-sensitive by default (AND semantics, repeatable)
-    #[arg(long)]
+    #[arg(long, help_heading = "Metadata filters")]
     pub alias_contains: Vec<String>,
     /// Filter by alias substring, smart case-sensitive by default (OR semantics, repeatable)
-    #[arg(long)]
+    #[arg(long, help_heading = "Metadata filters")]
     pub or_alias_contains: Vec<String>,
     /// Filter by content substring, smart case-sensitive by default (AND semantics, repeatable)
-    #[arg(long)]
+    #[arg(long, help_heading = "Content filters")]
     pub content_contains: Vec<String>,
     /// Filter by content substring, smart case-sensitive by default (OR semantics, repeatable)
-    #[arg(long)]
+    #[arg(long, help_heading = "Content filters")]
     pub or_content_contains: Vec<String>,
     /// Filter by content pattern, smart case-sensitive by default (AND semantics, repeatable).
     /// See https://docs.rs/regex/latest/regex/#syntax.
-    #[arg(long)]
+    #[arg(long, help_heading = "Content filters")]
     pub content_matches: Vec<String>,
     /// Filter by content pattern, smart case-sensitive by default (OR semantics, repeatable).
     /// See https://docs.rs/regex/latest/regex/#syntax.
-    #[arg(long)]
+    #[arg(long, help_heading = "Content filters")]
     pub or_content_matches: Vec<String>,
     /// Execute the search case sensitive. By default, title, alias, and content filters are
     /// smart case-insensitive while ID and tag filters are case-sensitive.
     /// This flag overrides -i/--ignore-case and -S/--smart-case.
-    #[arg(long, short = 's')]
+    #[arg(long, short = 's', help_heading = "Filter behavior")]
     pub case_sensitive: bool,
     /// Execute the search case insensitive. This flag overrides -S/--smart-case.
-    #[arg(long, short = 'i')]
+    #[arg(long, short = 'i', help_heading = "Filter behavior")]
     pub ignore_case: bool,
     /// Search case insensitively for patterns that are all lowercase, otherwise search case
     /// sensitively.
-    #[arg(long, short = 'S')]
+    #[arg(long, short = 'S', help_heading = "Filter behavior")]
     pub smart_case: bool,
     /// Sort order for results
-    #[arg(long, default_value = "path-asc")]
+    #[arg(long, default_value = "path-asc", help_heading = "Output options")]
     pub sort: SortOrder,
     /// Output format
-    #[arg(long, short = 'f', default_value = "plain")]
+    #[arg(long, short = 'f', default_value = "plain", help_heading = "Output options")]
     pub format: OutputFormat,
 }
 
@@ -116,10 +132,10 @@ pub struct BacklinksArgs {
     /// Path to the note (resolved relative to current directory)
     pub note: PathBuf,
     /// Sort order for results
-    #[arg(long, short = 's', default_value = "path-asc")]
+    #[arg(long, short = 's', default_value = "path-asc", help_heading = "Output options")]
     pub sort: SortOrder,
     /// Output format
-    #[arg(long, short = 'f', default_value = "plain")]
+    #[arg(long, short = 'f', default_value = "plain", help_heading = "Output options")]
     pub format: OutputFormat,
 }
 
@@ -133,7 +149,7 @@ pub struct RenameArgs {
     #[arg(long)]
     pub dry_run: bool,
     /// Output format
-    #[arg(long, short = 'f', default_value = "plain")]
+    #[arg(long, short = 'f', default_value = "plain", help_heading = "Output options")]
     pub format: OutputFormat,
 }
 
@@ -149,7 +165,7 @@ pub struct MergeArgs {
     #[arg(long)]
     pub dry_run: bool,
     /// Output format
-    #[arg(long, short = 'f', default_value = "plain")]
+    #[arg(long, short = 'f', default_value = "plain", help_heading = "Output options")]
     pub format: OutputFormat,
 }
 
@@ -163,6 +179,8 @@ pub struct NoteArgs {
 pub enum NoteCommand {
     /// Resolve a note from a path, ID, or alias.
     Resolve(ResolveArgs),
+    /// Search for notes (alias for 'obsidian search')
+    Search(Box<SearchArgs>),
     /// Read contents/frontmatter of a note
     Read(ReadArgs),
     /// Write a new note
@@ -184,7 +202,7 @@ pub struct ResolveArgs {
     /// Path, ID, or alias of the note to resolve
     pub note: String,
     /// Output format
-    #[arg(long, short = 'f', default_value = "plain")]
+    #[arg(long, short = 'f', default_value = "plain", help_heading = "Output options")]
     pub format: OutputFormat,
 }
 
@@ -193,13 +211,13 @@ pub struct ReadArgs {
     /// Path to the note to read (resolved relative to current directory)
     pub note: PathBuf,
     /// Include frontmatter in the output
-    #[arg(long)]
+    #[arg(long, help_heading = "Output options")]
     pub frontmatter: bool,
     /// Exclude content from the output (--frontmatter is assumed if this is set)
-    #[arg(long)]
+    #[arg(long, help_heading = "Output options")]
     pub no_content: bool,
     /// Output format
-    #[arg(long, short = 'f', default_value = "plain")]
+    #[arg(long, short = 'f', default_value = "plain", help_heading = "Output options")]
     pub format: OutputFormat,
 }
 
@@ -210,9 +228,10 @@ pub struct WriteArgs {
     /// Content to write to the note. If omitted, content is read from stdin.
     pub content: Option<String>,
     /// A title for the note if one can't be inferred from the content
+    #[arg(long, short = 't')]
     pub title: Option<String>,
     /// Add tag(s) to frontmatter (repeatable)
-    #[arg(long, short = 't')]
+    #[arg(long)]
     pub tag: Vec<String>,
     /// Add alias(es) to frontmatter (repeatable)
     #[arg(long, short = 'a')]
@@ -221,7 +240,7 @@ pub struct WriteArgs {
     #[arg(long)]
     pub force: bool,
     /// Output format
-    #[arg(long, short = 'f', default_value = "plain")]
+    #[arg(long, short = 'f', default_value = "plain", help_heading = "Output options")]
     pub format: OutputFormat,
 }
 
@@ -235,6 +254,9 @@ pub struct PatchArgs {
     /// The string to replace it with
     #[arg(long)]
     pub new_string: String,
+    /// Output format
+    #[arg(long, short = 'f', default_value = "plain", help_heading = "Output options")]
+    pub format: OutputFormat,
 }
 
 #[derive(clap::Args)]
@@ -257,7 +279,7 @@ pub struct UpdateArgs {
     #[arg(long)]
     pub set: Vec<String>,
     /// Output format
-    #[arg(long, short = 'f', default_value = "plain")]
+    #[arg(long, short = 'f', default_value = "plain", help_heading = "Output options")]
     pub format: OutputFormat,
 }
 
@@ -296,16 +318,16 @@ pub struct TagsSearchArgs {
     #[arg(required = true)]
     pub tags: Vec<String>,
     /// Sort order for results
-    #[arg(long, short = 's', default_value = "path-asc")]
+    #[arg(long, short = 's', default_value = "path-asc", help_heading = "Output options")]
     pub sort: SortOrder,
     /// Output format
-    #[arg(long, short = 'f', default_value = "plain")]
+    #[arg(long, short = 'f', default_value = "plain", help_heading = "Output options")]
     pub format: OutputFormat,
 }
 
 #[derive(clap::Args)]
 pub struct TagsListArgs {
     /// Output format
-    #[arg(long, short = 'f', default_value = "plain")]
+    #[arg(long, short = 'f', default_value = "plain", help_heading = "Output options")]
     pub format: OutputFormat,
 }

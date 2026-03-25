@@ -1,7 +1,6 @@
 use std::io::{BufRead, IsTerminal, Read};
 
 use color_eyre::eyre;
-use colored::Colorize;
 use obsidian_core::{Note, Vault};
 
 use crate::args::{
@@ -154,8 +153,10 @@ pub fn cmd_patch(vault: Vault, args: PatchArgs) -> eyre::Result<()> {
     let old = unescape(&args.old_string);
     let new = unescape(&args.new_string);
     let patched = vault.patch_note(&note, &old, &new)?;
-    let rel = patched.path.strip_prefix(&vault.path).unwrap_or(&patched.path);
-    println!("{}", rel.display().to_string().cyan());
+    match args.format {
+        OutputFormat::Plain => output::print_note_plain(&patched, &vault.path),
+        OutputFormat::Json => output::print_note_json(&patched, &vault.path)?,
+    }
     Ok(())
 }
 
