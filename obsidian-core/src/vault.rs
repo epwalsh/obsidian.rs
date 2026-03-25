@@ -793,6 +793,8 @@ mod tests {
     use super::*;
     use std::fs;
 
+    // --- constructor tests ---
+
     #[test]
     fn open_from_cwd_finds_obsidian_dir() {
         let dir = tempfile::tempdir().unwrap();
@@ -840,6 +842,51 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // --- note resolution tests ---
+
+    #[test]
+    fn resolve_note_by_filename() {
+        let dir = tempfile::tempdir().unwrap();
+        let subdir = dir.path().join("subdir");
+        fs::create_dir(&subdir).unwrap();
+        fs::write(dir.path().join("root.md"), "---\nid: root\n---\n\nRoot note.").unwrap();
+        fs::write(subdir.join("nested.md"), "---\nid: nested\n---\n\nNested note.").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = vault.resolve_note("root.md").expect("should resolve root.md");
+        assert_eq!(note.id, "root");
+
+        let note = vault
+            .resolve_note("nested.md")
+            .expect("should resolve subdir/nested.md");
+        assert_eq!(note.id, "nested");
+    }
+
+    #[test]
+    fn resolve_note_by_alias_exact_match() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("note_a.md"),
+            "---\nid: note_a\naliases: [Foo, A]\n---\n\nNote A.",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("note_b.md"),
+            "---\nid: note_b\naliases: [foo, B]\n---\n\nNote B.",
+        )
+        .unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+
+        let note = vault.resolve_note("Foo").expect("should resolve note");
+        assert_eq!(note.id, "note_a");
+
+        let note = vault.resolve_note("foo").expect("should resolve note");
+        assert_eq!(note.id, "note_b");
+    }
+
+    // --- note loading tests ---
+
     #[test]
     fn notes_loads_md_files() {
         let dir = tempfile::tempdir().unwrap();
@@ -865,6 +912,8 @@ mod tests {
         assert_eq!(notes.len(), 2);
     }
 
+    // --- utils tests ---
+
     #[test]
     fn normalize_path_removes_dot() {
         assert_eq!(normalize_path(&PathBuf::from("/a/./b")), PathBuf::from("/a/b"));
@@ -885,6 +934,8 @@ mod tests {
         // /a/../../b: after processing, ends up as /b (the extra .. can't go above /)
         assert_eq!(normalize_path(&PathBuf::from("/a/../../b")), PathBuf::from("/b"));
     }
+
+    // --- backlinks tests ---
 
     #[test]
     fn backlinks_wiki_by_id() {
