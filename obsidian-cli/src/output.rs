@@ -6,10 +6,19 @@ use obsidian_core::{Link, LocatedLink, LocatedTag, MergePreview, Note, RenamePre
 use serde::Serialize;
 use serde_json::json;
 
+pub fn get_rel_path(path: impl AsRef<Path>, vault_path: &Path) -> String {
+    let rel = if let Ok(cwd) = std::env::current_dir() {
+        path.as_ref().strip_prefix(cwd).unwrap_or(path.as_ref())
+    } else {
+        path.as_ref().strip_prefix(vault_path).unwrap_or(path.as_ref())
+    };
+    rel.display().to_string()
+}
+
 pub fn get_note_json(note: &Note, vault_path: &Path) -> eyre::Result<serde_json::Map<String, serde_json::Value>> {
-    let rel = note.path.strip_prefix(vault_path).unwrap_or(&note.path);
+    let rel = get_rel_path(&note.path, vault_path);
     let mut json = note.frontmatter_json()?;
-    json.insert("path".to_string(), serde_json::Value::String(rel.display().to_string()));
+    json.insert("path".to_string(), serde_json::Value::String(rel));
     Ok(json)
 }
 
@@ -27,14 +36,13 @@ pub fn print_note_many_json(notes: &[Note], vault_path: &Path) -> eyre::Result<(
 }
 
 pub fn print_note_plain(note: &Note, vault_path: &Path) {
-    let rel = note.path.strip_prefix(vault_path).unwrap_or(&note.path);
-    println!("{}", rel.display().to_string().cyan());
+    println!("{}", get_rel_path(&note.path, vault_path).cyan());
 }
 
 pub fn print_note_many_plain(notes: &[Note], vault_path: &Path) {
     for note in notes {
-        let rel = note.path.strip_prefix(vault_path).unwrap_or(&note.path);
-        println!("{}", rel.display().to_string().cyan());
+        let rel = get_rel_path(&note.path, vault_path);
+        println!("{}", rel.cyan());
     }
 }
 
@@ -64,8 +72,8 @@ pub fn print_note_read_json(note: &Note, frontmatter: bool, no_content: bool) ->
 
 pub fn print_backlinks_plain(results: &[(Note, Vec<LocatedLink>)], vault_path: &Path) {
     for (note, _) in results {
-        let rel = note.path.strip_prefix(vault_path).unwrap_or(&note.path);
-        println!("{}", rel.display().to_string().cyan());
+        let rel = get_rel_path(&note.path, vault_path);
+        println!("{}", rel.cyan());
     }
 }
 
@@ -87,18 +95,13 @@ struct BacklinkJson<'a> {
 }
 
 pub fn print_rename_preview_plain(preview: &RenamePreview, vault_path: &Path) {
-    let rel_new = preview.new_path.strip_prefix(vault_path).unwrap_or(&preview.new_path);
-    println!("{}", rel_new.display().to_string().cyan().bold());
+    let rel_new = get_rel_path(&preview.new_path, vault_path);
+    println!("{}", rel_new.cyan().bold());
     for (path, count) in &preview.updated_notes {
-        let rel = path.strip_prefix(vault_path).unwrap_or(path);
+        let rel = get_rel_path(path, vault_path);
         let link_word = if *count == 1 { "link" } else { "links" };
         let count_str = format!("({} {})", count, link_word).dimmed();
-        println!(
-            " {} {} {}",
-            "➡️update:".green(),
-            rel.display().to_string().cyan(),
-            count_str
-        );
+        println!(" {} {} {}", "➡️update:".green(), rel.cyan(), count_str);
     }
 }
 
@@ -116,20 +119,20 @@ struct RenamePreviewJson {
 }
 
 pub fn print_rename_preview_json(preview: &RenamePreview, vault_path: &Path) {
-    let rel_new = preview.new_path.strip_prefix(vault_path).unwrap_or(&preview.new_path);
+    let rel_new = get_rel_path(&preview.new_path, vault_path);
     let updated_notes = preview
         .updated_notes
         .iter()
         .map(|(path, count)| {
-            let rel = path.strip_prefix(vault_path).unwrap_or(path);
+            let rel = get_rel_path(path, vault_path);
             RenamePreviewNoteJson {
-                path: rel.display().to_string(),
+                path: rel,
                 link_count: *count,
             }
         })
         .collect();
     let out = RenamePreviewJson {
-        new_path: rel_new.display().to_string(),
+        new_path: rel_new,
         id_will_update: preview.id_will_update,
         updated_notes,
     };
@@ -137,24 +140,18 @@ pub fn print_rename_preview_json(preview: &RenamePreview, vault_path: &Path) {
 }
 
 pub fn print_merge_preview_plain(preview: &MergePreview, vault_path: &Path) {
-    let rel_dest = preview.dest_path.strip_prefix(vault_path).unwrap_or(&preview.dest_path);
-    let dest_str = rel_dest.display().to_string();
+    let rel_dest = get_rel_path(&preview.dest_path, vault_path);
     let new_label = if preview.dest_is_new { "  (new)" } else { "" };
-    println!("{}{}", dest_str.cyan().bold(), new_label.dimmed());
+    println!("{}{}", rel_dest.cyan().bold(), new_label.dimmed());
     for src in &preview.sources {
-        let rel = src.strip_prefix(vault_path).unwrap_or(src);
-        println!(" {} {}", "delete:".yellow(), rel.display().to_string().cyan());
+        let rel = get_rel_path(src, vault_path);
+        println!(" {} {}", "delete:".yellow(), rel.cyan());
     }
     for (path, count) in &preview.updated_notes {
-        let rel = path.strip_prefix(vault_path).unwrap_or(path);
+        let rel = get_rel_path(path, vault_path);
         let link_word = if *count == 1 { "link" } else { "links" };
         let count_str = format!("({} {})", count, link_word).dimmed();
-        println!(
-            " {} {} {}",
-            "update:".green(),
-            rel.display().to_string().cyan(),
-            count_str
-        );
+        println!(" {} {} {}", "update:".green(), rel.cyan(), count_str);
     }
 }
 
@@ -173,28 +170,21 @@ struct MergePreviewJson {
 }
 
 pub fn print_merge_preview_json(preview: &MergePreview, vault_path: &Path) {
-    let rel_dest = preview.dest_path.strip_prefix(vault_path).unwrap_or(&preview.dest_path);
-    let sources = preview
-        .sources
-        .iter()
-        .map(|s| {
-            let rel = s.strip_prefix(vault_path).unwrap_or(s);
-            rel.display().to_string()
-        })
-        .collect();
+    let rel_dest = get_rel_path(&preview.dest_path, vault_path);
+    let sources = preview.sources.iter().map(|s| get_rel_path(s, vault_path)).collect();
     let updated_notes = preview
         .updated_notes
         .iter()
         .map(|(path, count)| {
-            let rel = path.strip_prefix(vault_path).unwrap_or(path);
+            let rel = get_rel_path(path, vault_path);
             MergePreviewNoteJson {
-                path: rel.display().to_string(),
+                path: rel,
                 link_count: *count,
             }
         })
         .collect();
     let out = MergePreviewJson {
-        dest_path: rel_dest.display().to_string(),
+        dest_path: rel_dest,
         dest_is_new: preview.dest_is_new,
         sources,
         updated_notes,
@@ -204,8 +194,8 @@ pub fn print_merge_preview_json(preview: &MergePreview, vault_path: &Path) {
 
 pub fn print_tags_search_plain(results: &[(Note, Vec<String>, Vec<LocatedTag>)], vault_path: &Path) {
     for (note, fm_tags, inline_tags) in results {
-        let rel = note.path.strip_prefix(vault_path).unwrap_or(&note.path);
-        println!("{}", rel.display().to_string().cyan());
+        let rel = get_rel_path(&note.path, vault_path);
+        println!("{}", rel.cyan());
         if !fm_tags.is_empty() {
             let tags_colored: Vec<String> = fm_tags.iter().map(|t| t.yellow().to_string()).collect();
             println!("  {} {}", "[frontmatter]".dimmed(), tags_colored.join(", "));
@@ -236,9 +226,9 @@ pub fn print_tags_search_json(results: &[(Note, Vec<String>, Vec<LocatedTag>)], 
     let items: Vec<TagsSearchResultJson> = results
         .iter()
         .map(|(note, fm_tags, inline_tags)| {
-            let rel = note.path.strip_prefix(vault_path).unwrap_or(&note.path);
+            let rel = get_rel_path(&note.path, vault_path);
             TagsSearchResultJson {
-                path: rel.display().to_string(),
+                path: rel,
                 frontmatter_tags: fm_tags.clone(),
                 inline_occurrences: inline_tags
                     .iter()
@@ -269,7 +259,7 @@ pub fn print_backlinks_json(results: &[(Note, Vec<LocatedLink>)], vault_path: &P
     let items: Vec<BacklinkJson> = results
         .iter()
         .map(|(note, links)| {
-            let rel = note.path.strip_prefix(vault_path).unwrap_or(&note.path);
+            let rel = get_rel_path(&note.path, vault_path);
             let link_jsons = links
                 .iter()
                 .map(|ll| {
@@ -306,7 +296,7 @@ pub fn print_backlinks_json(results: &[(Note, Vec<LocatedLink>)], vault_path: &P
                 })
                 .collect();
             BacklinkJson {
-                source_path: rel.display().to_string(),
+                source_path: rel,
                 source_id: &note.id,
                 links: link_jsons,
             }
