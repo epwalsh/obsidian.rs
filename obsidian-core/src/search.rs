@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
@@ -52,6 +53,7 @@ pub struct SearchQuery {
     and_content_matches: Vec<String>,
     or_content_matches: Vec<String>,
     case_sensitivity: Option<CaseSensitivity>,
+    include_inline_tags: bool,
 }
 
 impl SearchQuery {
@@ -75,6 +77,7 @@ impl SearchQuery {
             and_content_matches: Vec::new(),
             or_content_matches: Vec::new(),
             case_sensitivity: None,
+            include_inline_tags: false,
         }
     }
 
@@ -193,6 +196,11 @@ impl SearchQuery {
         self
     }
 
+    pub fn include_inline_tags(mut self) -> Self {
+        self.include_inline_tags = true;
+        self
+    }
+
     /// Execute the query, returning matching notes.
     ///
     /// Returns `Err` if any glob or regex pattern is invalid.
@@ -217,6 +225,7 @@ impl SearchQuery {
             and_content_matches,
             or_content_matches,
             case_sensitivity,
+            include_inline_tags,
         } = self;
 
         let strings_equal = |s: &str, query: &str, cs: CaseSensitivity| match cs {
@@ -238,6 +247,25 @@ impl SearchQuery {
                     s.contains(query)
                 } else {
                     s.to_lowercase().contains(&query.to_lowercase())
+                }
+            }
+        };
+        let compare_tag = |note_tag: &str, query_tag: &str, cs: CaseSensitivity| match cs {
+            CaseSensitivity::Sensitive => note_tag == query_tag || note_tag.starts_with(&format!("{query_tag}/")),
+            CaseSensitivity::Ignore => {
+                note_tag.eq_ignore_ascii_case(query_tag)
+                    || note_tag
+                        .to_lowercase()
+                        .starts_with(&format!("{}{}", query_tag.to_lowercase(), "/"))
+            }
+            CaseSensitivity::Smart => {
+                if query_tag.chars().any(|c| c.is_ascii_uppercase()) {
+                    note_tag == query_tag || note_tag.starts_with(&format!("{query_tag}/"))
+                } else {
+                    note_tag.eq_ignore_ascii_case(query_tag)
+                        || note_tag
+                            .to_lowercase()
+                            .starts_with(&format!("{}{}", query_tag.to_lowercase(), "/"))
                 }
             }
         };
@@ -345,7 +373,11 @@ impl SearchQuery {
                     && !and_tags.iter().all(|t| {
                         note.tags
                             .iter()
-                            .any(|nt| strings_equal(nt, t, case_sensitivity.unwrap_or(CaseSensitivity::Sensitive)))
+                            .any(|nt| compare_tag(nt, t, case_sensitivity.unwrap_or(CaseSensitivity::Sensitive)))
+                            || (include_inline_tags
+                                && note.inline_tags.iter().any(|lt| {
+                                    compare_tag(&lt.tag, t, case_sensitivity.unwrap_or(CaseSensitivity::Sensitive))
+                                }))
                     })
                 {
                     return None;
@@ -422,7 +454,11 @@ impl SearchQuery {
                 if or_tags.iter().any(|t| {
                     note.tags
                         .iter()
-                        .any(|nt| strings_equal(nt, t, case_sensitivity.unwrap_or(CaseSensitivity::Sensitive)))
+                        .any(|nt| compare_tag(nt, t, case_sensitivity.unwrap_or(CaseSensitivity::Sensitive)))
+                        || (include_inline_tags
+                            && note.inline_tags.iter().any(|lt| {
+                                compare_tag(&lt.tag, t, case_sensitivity.unwrap_or(CaseSensitivity::Sensitive))
+                            }))
                 }) {
                     return Some(Ok(note));
                 }
@@ -505,6 +541,78 @@ pub fn find_notes(root: impl AsRef<Path>) -> Vec<Result<Note, NoteError>> {
         .into_par_iter()
         .map(Note::from_path)
         .collect()
+}
+
+/// Find all tags
+pub fn find_all_tags(root: impl AsRef<Path>) -> Result<Vec<String>, NoteError> {
+    let tags = find_note_paths(root)
+        .collect::<Vec<_>>()
+        .into_par_iter()
+        .map(Note::from_path)
+        .filter_map(|res| match res {
+            Ok(note) => {
+                let mut tags = BTreeSet::new();
+                for tag in note.tags {
+                    tags.insert(tag);
+                }
+                for lt in note.inline_tags.iter() {
+                    tags.insert(lt.tag.clone());
+                }
+                Some(Ok(tags))
+            }
+            Err(e) => Some(Err(e)),
+        })
+        .flatten()
+        .flatten()
+        .collect::<BTreeSet<String>>();
+
+    let tags: Vec<String> = tags.into_iter().collect();
+    Ok(tags)
+}
+
+pub struct NoteTags {
+    pub path: PathBuf,
+    pub frontmatter_tags: Vec<String>,
+    pub inline_tags: Vec<crate::LocatedTag>,
+}
+
+/// Find occurrences of specific tags. Returns a list of matching notes, along with which of the
+/// search tags they contain and where those tags are located (frontmatter vs. inline).
+pub fn find_tags(root: impl AsRef<Path>, tags: &[String]) -> Result<Vec<NoteTags>, SearchError> {
+    let mut search = SearchQuery::new(root).include_inline_tags();
+    for tag in tags {
+        search = search.or_has_tag(tag);
+    }
+    let notes: Vec<Note> = search.execute()?.into_iter().filter_map(|r| r.ok()).collect();
+
+    // A note tag matches a search term if it equals the term exactly or is a sub-tag of it
+    // (e.g. "workout/upper-body" matches search term "workout").
+    let tag_matches_search = |tag: &str| tags.iter().any(|s| tag == s || tag.starts_with(&format!("{s}/")));
+
+    let results: Vec<NoteTags> = notes
+        .into_iter()
+        .filter_map(|note| {
+            let fm_matches: Vec<String> = note.tags.iter().filter(|t| tag_matches_search(t)).cloned().collect();
+            let inline_matches: Vec<crate::LocatedTag> = note
+                .inline_tags
+                .clone()
+                .into_iter()
+                .filter(|lt| tag_matches_search(&lt.tag))
+                .collect();
+
+            if fm_matches.is_empty() && inline_matches.is_empty() {
+                None
+            } else {
+                Some(NoteTags {
+                    path: note.path.clone(),
+                    frontmatter_tags: fm_matches.clone(),
+                    inline_tags: inline_matches.clone(),
+                })
+            }
+        })
+        .collect();
+
+    Ok(results)
 }
 
 /// Like [`find_notes`], but retains body content in each [`Note::content`].

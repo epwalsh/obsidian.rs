@@ -1,0 +1,32 @@
+mod error;
+mod server;
+mod tools;
+
+#[tokio::main]
+async fn main() -> color_eyre::Result<()> {
+    color_eyre::install()?;
+
+    // All logging goes to stderr — stdout is reserved for the JSON-RPC stream.
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
+    let vault_path = match std::env::var("OBSIDIAN_VAULT") {
+        Ok(p) => std::path::PathBuf::from(p),
+        Err(_) => {
+            obsidian_core::Vault::open_from_cwd()
+                .map_err(|e| color_eyre::eyre::eyre!("could not find vault: {e}"))?
+                .path
+        }
+    };
+
+    let vault =
+        obsidian_core::Vault::open(&vault_path).map_err(|e| color_eyre::eyre::eyre!("failed to open vault: {e}"))?;
+
+    let server = server::VaultServer::new(vault);
+    let transport = rmcp::transport::io::stdio();
+    rmcp::ServiceExt::serve(server, transport).await?.waiting().await?;
+
+    Ok(())
+}

@@ -335,6 +335,15 @@ impl Vault {
         search::SearchQuery::new(&self.path)
     }
 
+    /// Returns all unique tags used in the vault, aggregated from frontmatter and inline tags.
+    pub fn list_tags(&self) -> Result<Vec<String>, VaultError> {
+        search::find_all_tags(&self.path).map_err(VaultError::Note)
+    }
+
+    pub fn find_tags(&self, tags: &[String]) -> Result<Vec<search::NoteTags>, VaultError> {
+        search::find_tags(&self.path, tags).map_err(VaultError::Search)
+    }
+
     /// Returns all notes in the vault that link to `target`, paired with the specific
     /// [`LocatedLink`]s within each note that point to it.
     ///

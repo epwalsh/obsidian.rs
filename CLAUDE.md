@@ -7,6 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `obsidian.rs` is a Rust library and CLI for working with Obsidian vaults. It is structured as a Cargo workspace with sub-crates for various features:
 - `obsidian-core` (crate name: `obsidian_core`): core API used by the other sub-crates.
 - `obsidian-cli` (binary name: `obsidian`): command-line interface exposing `search`, `note`, `tags`, and `check` commands. The `note` subcommand supports `backlinks`, `merge`, `patch`, `rename`, and `update`.
+- `obsidian-mcp` (binary name: `obsidian-mcp`): MCP (Model Context Protocol) server over STDIO transport. Exposes vault operations as MCP tools: `read_note`, `write_note`, `patch_note`, `update_note`, `search_notes`, `rename_note`, `list_tags`, `search_tags`. Vault path configured via `OBSIDIAN_VAULT` env var (falls back to `open_from_cwd()`). Uses the `rmcp` crate with `tokio` for async handling of blocking vault I/O.
 
 ## Workspace Structure
 
@@ -24,6 +25,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - `src/output.rs` — plain and JSON rendering
   - `src/error.rs` — `CliError` type
   - `tests/cli.rs` — integration tests via `assert_cmd`
+- `obsidian-mcp/` — the MCP server binary crate
+  - `src/main.rs` — entry point: reads `OBSIDIAN_VAULT`, opens vault, starts STDIO server
+  - `src/server.rs` — `VaultServer` struct with `#[tool_router]` impl (8 tools) and `#[tool_handler]` `ServerHandler` impl
+  - `src/tools.rs` — parameter structs (`Deserialize + JsonSchema`) for all 8 tools
+  - `src/error.rs` — `vault_err`, `note_err`, `search_err`, `other_err` helpers converting core errors to `rmcp::ErrorData`
 
 ## Development
 
