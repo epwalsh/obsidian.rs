@@ -119,6 +119,9 @@ pub struct SearchArgs {
     /// sensitively.
     #[arg(long, short = 'S', help_heading = "Filter behavior")]
     pub smart_case: bool,
+    /// Include inline tags in the search, as opposed to just frontmatter tags
+    #[arg(long, help_heading = "Filter behavior")]
+    pub inline_tags: bool,
     /// Sort order for results
     #[arg(long, default_value = "path-asc", help_heading = "Output options")]
     pub sort: SortOrder,

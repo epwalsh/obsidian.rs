@@ -3,4 +3,5 @@ resolver = "3"
 members = [
     "obsidian-core",
     "obsidian-cli",
+    "obsidian-mcp",
 ]

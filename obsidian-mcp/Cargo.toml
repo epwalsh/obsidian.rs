@@ -1,0 +1,20 @@
+[package]
+name = "obsidian-mcp"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "obsidian-mcp"
+path = "src/main.rs"
+
+[dependencies]
+obsidian-core = { path = "../obsidian-core" }
+rmcp = { version = "1", features = ["server", "transport-io", "macros"] }
+tokio = { version = "1", features = ["full"] }
+schemars = "1.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+color-eyre = "0.6"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

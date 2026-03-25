@@ -2,7 +2,7 @@ use std::path::Path;
 
 use color_eyre::eyre;
 use colored::Colorize;
-use obsidian_core::{Link, LocatedLink, LocatedTag, MergePreview, Note, RenamePreview};
+use obsidian_core::{Link, LocatedLink, MergePreview, Note, RenamePreview, search};
 use serde::Serialize;
 use serde_json::json;
 
@@ -192,15 +192,15 @@ pub fn print_merge_preview_json(preview: &MergePreview, vault_path: &Path) {
     println!("{}", serde_json::to_string(&out).unwrap());
 }
 
-pub fn print_tags_search_plain(results: &[(Note, Vec<String>, Vec<LocatedTag>)], vault_path: &Path) {
-    for (note, fm_tags, inline_tags) in results {
-        let rel = get_rel_path(&note.path, vault_path);
+pub fn print_tags_search_plain(results: &[search::NoteTags], vault_path: &Path) {
+    for nt in results {
+        let rel = get_rel_path(&nt.path, vault_path);
         println!("{}", rel.cyan());
-        if !fm_tags.is_empty() {
-            let tags_colored: Vec<String> = fm_tags.iter().map(|t| t.yellow().to_string()).collect();
+        if !nt.frontmatter_tags.is_empty() {
+            let tags_colored: Vec<String> = nt.frontmatter_tags.iter().map(|t| t.yellow().to_string()).collect();
             println!("  {} {}", "[frontmatter]".dimmed(), tags_colored.join(", "));
         }
-        for lt in inline_tags {
+        for lt in &nt.inline_tags {
             let marker = format!("[{}:{}]", lt.location.line, lt.location.col_start);
             println!("  {} #{}", marker.dimmed(), lt.tag.yellow());
         }
@@ -222,15 +222,16 @@ struct TagsSearchResultJson {
     inline_occurrences: Vec<InlineTagJson>,
 }
 
-pub fn print_tags_search_json(results: &[(Note, Vec<String>, Vec<LocatedTag>)], vault_path: &Path) {
+pub fn print_tags_search_json(results: &[search::NoteTags], vault_path: &Path) {
     let items: Vec<TagsSearchResultJson> = results
         .iter()
-        .map(|(note, fm_tags, inline_tags)| {
-            let rel = get_rel_path(&note.path, vault_path);
+        .map(|nt| {
+            let rel = get_rel_path(&nt.path, vault_path);
             TagsSearchResultJson {
                 path: rel,
-                frontmatter_tags: fm_tags.clone(),
-                inline_occurrences: inline_tags
+                frontmatter_tags: nt.frontmatter_tags.clone(),
+                inline_occurrences: nt
+                    .inline_tags
                     .iter()
                     .map(|lt| InlineTagJson {
                         tag: lt.tag.clone(),
