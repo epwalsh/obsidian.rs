@@ -1,5 +1,10 @@
 # obsidian.rs
 
+A collection of tools for working with Obsidian vaults, written in Rust.
+
+- `obsidian-core`: A Rust library with the core functionality that the other tools build on top of
+- `obsidian-cli`: A command-line tool for querying and managing vaults
+
 ## Roadmap
 
 - [x] Implement basics of core library
