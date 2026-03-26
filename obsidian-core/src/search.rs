@@ -107,13 +107,13 @@ impl SearchQuery {
 
     /// Note must have this tag (case-insensitive by default).
     pub fn and_has_tag(mut self, tag: impl Into<String>) -> Self {
-        self.and_tags.push(tag.into());
+        self.and_tags.push(crate::tag::clean_tag(&tag.into()));
         self
     }
 
     /// Note could have this tag (case-insensitive by default).
     pub fn or_has_tag(mut self, tag: impl Into<String>) -> Self {
-        self.or_tags.push(tag.into());
+        self.or_tags.push(crate::tag::clean_tag(&tag.into()));
         self
     }
 
@@ -545,7 +545,7 @@ pub fn find_all_tags(root: impl AsRef<Path>) -> Result<Vec<String>, NoteError> {
         .map(Note::from_path)
         .filter_map(|res| match res {
             Ok(note) => {
-                let tags: BTreeSet<String> = note.tags.into_iter().map(|lt| lt.tag).collect();
+                let tags: BTreeSet<String> = note.tags.into_iter().map(|lt| lt.tag.to_lowercase()).collect();
                 Some(Ok(tags))
             }
             Err(e) => Some(Err(e)),
@@ -561,8 +561,9 @@ pub fn find_all_tags(root: impl AsRef<Path>) -> Result<Vec<String>, NoteError> {
 /// Find occurrences of specific tags. Returns a list of located tags grouped by the note in which
 /// they were found.
 pub fn find_tags(root: impl AsRef<Path>, tags: &[String]) -> Result<Vec<crate::NoteTags>, SearchError> {
+    let tags = tags.iter().map(|t| crate::tag::clean_tag(t)).collect::<Vec<String>>();
     let mut search = SearchQuery::new(root).include_inline_tags();
-    for tag in tags {
+    for tag in &tags {
         search = search.or_has_tag(tag);
     }
     let notes: Vec<Note> = search.execute()?.into_iter().filter_map(|r| r.ok()).collect();

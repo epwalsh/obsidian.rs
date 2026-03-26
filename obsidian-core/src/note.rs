@@ -183,11 +183,12 @@ impl Note {
     }
 
     /// Add a frontmatter tag.
-    pub fn add_tag(&mut self, tag: String) {
+    pub fn add_tag(&mut self, tag: impl Into<String>) {
+        let tag = crate::tag::clean_tag(&tag.into());
         let already_present = self
             .tags
             .iter()
-            .any(|t| t.tag == tag && matches!(t.location, Location::Frontmatter));
+            .any(|t| t.tag.eq_ignore_ascii_case(&tag) && matches!(t.location, Location::Frontmatter));
         if !already_present {
             self.tags.push(crate::LocatedTag {
                 tag,
@@ -198,8 +199,9 @@ impl Note {
 
     /// Remove a frontmatter tag.
     pub fn remove_tag(&mut self, tag: &str) {
+        let tag = crate::tag::clean_tag(tag);
         self.tags
-            .retain(|t| !(t.tag == tag && matches!(t.location, Location::Frontmatter)));
+            .retain(|t| !(t.tag.eq_ignore_ascii_case(&tag) && matches!(t.location, Location::Frontmatter)));
     }
 
     /// Set an arbitrary frontmatter field to a value (which can be any YAML type).

@@ -18,6 +18,11 @@ pub struct NoteTags {
     pub tags: Vec<crate::LocatedTag>,
 }
 
+pub(crate) fn clean_tag(tag: &str) -> String {
+    // Remove leading '#'
+    tag.trim_start_matches('#').to_string()
+}
+
 // Tags must start with a letter, then may contain letters, digits, hyphens, underscores,
 // or slashes (for nested tags like #project/work).
 // The leading `(?:^|\s)` ensures we don't match `#` in URLs like `https://example.com/#anchor`.
