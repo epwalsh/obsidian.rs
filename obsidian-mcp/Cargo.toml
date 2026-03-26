@@ -1,5 +1,5 @@
 [package]
-name = "obsidian-mcp"
+name = "obsidian-rs-mcp"
 version = "0.1.0"
 edition = "2024"
 
@@ -8,7 +8,8 @@ name = "obsidian-mcp"
 path = "src/main.rs"
 
 [dependencies]
-obsidian-core = { path = "../obsidian-core" }
+obsidian-rs-core = { path = "../obsidian-core" }
+clap = { version = "4", features = ["derive"] }
 rmcp = { version = "1", features = ["server", "transport-io", "macros"] }
 tokio = { version = "1", features = ["full"] }
 schemars = "1.0"

@@ -2,6 +2,16 @@ mod error;
 mod server;
 mod tools;
 
+use clap::Parser;
+
+#[derive(Parser)]
+#[command(about = "MCP server for an Obsidian vault")]
+struct Args {
+    /// Path to the Obsidian vault. Overrides the OBSIDIAN_VAULT environment variable.
+    #[arg(long)]
+    vault: Option<std::path::PathBuf>,
+}
+
 #[tokio::main]
 async fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
@@ -12,13 +22,16 @@ async fn main() -> color_eyre::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let vault_path = match std::env::var("OBSIDIAN_VAULT") {
-        Ok(p) => std::path::PathBuf::from(p),
-        Err(_) => {
-            obsidian_core::Vault::open_from_cwd()
-                .map_err(|e| color_eyre::eyre::eyre!("could not find vault: {e}"))?
-                .path
-        }
+    let args = Args::parse();
+
+    let vault_path = if let Some(p) = args.vault {
+        p
+    } else if let Ok(p) = std::env::var("OBSIDIAN_VAULT") {
+        std::path::PathBuf::from(p)
+    } else {
+        obsidian_core::Vault::open_from_cwd()
+            .map_err(|e| color_eyre::eyre::eyre!("could not find vault: {e}"))?
+            .path
     };
 
     let vault =

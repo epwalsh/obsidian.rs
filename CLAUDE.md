@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `obsidian.rs` is a Rust library and CLI for working with Obsidian vaults. It is structured as a Cargo workspace with sub-crates for various features:
 - `obsidian-core` (crate name: `obsidian_core`): core API used by the other sub-crates.
 - `obsidian-cli` (binary name: `obsidian`): command-line interface exposing `search`, `note`, `tags`, and `check` commands. The `note` subcommand supports `backlinks`, `merge`, `patch`, `rename`, and `update`.
-- `obsidian-mcp` (binary name: `obsidian-mcp`): MCP (Model Context Protocol) server over STDIO transport. Exposes vault operations as MCP tools: `read_note`, `write_note`, `patch_note`, `update_note`, `search_notes`, `rename_note`, `list_tags`, `search_tags`. Vault path configured via `OBSIDIAN_VAULT` env var (falls back to `open_from_cwd()`). Uses the `rmcp` crate with `tokio` for async handling of blocking vault I/O.
+- `obsidian-mcp` (binary name: `obsidian-mcp`): MCP (Model Context Protocol) server over STDIO transport. Exposes vault operations as MCP tools: `read_note`, `write_note`, `patch_note`, `update_note`, `search_notes`, `rename_note`, `list_tags`, `search_tags`. Vault path resolved in order: `--vault <PATH>` CLI arg, then `OBSIDIAN_VAULT` env var, then `open_from_cwd()`. Uses the `rmcp` crate with `tokio` for async handling of blocking vault I/O.
 
 ## Workspace Structure
 

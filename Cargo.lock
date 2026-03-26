@@ -797,7 +797,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "obsidian-cli"
+name = "obsidian-rs-cli"
 version = "0.1.0"
 dependencies = [
  "assert_cmd",
@@ -807,7 +807,7 @@ dependencies = [
  "globset",
  "gray_matter",
  "indexmap",
- "obsidian-core",
+ "obsidian-rs-core",
  "predicates",
  "serde",
  "serde_json",
@@ -816,7 +816,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "obsidian-core"
+name = "obsidian-rs-core"
 version = "0.1.0"
 dependencies = [
  "globset",
@@ -832,11 +832,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "obsidian-mcp"
+name = "obsidian-rs-mcp"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "color-eyre",
- "obsidian-core",
+ "obsidian-rs-core",
  "rmcp",
  "schemars",
  "serde",
