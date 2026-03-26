@@ -1,6 +1,6 @@
 [package]
 name = "obsidian-rs-mcp"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "Apache-2.0"
 description = "An MCP server for interacting with Obsidian vaults"
@@ -10,7 +10,7 @@ name = "obsidian-mcp"
 path = "src/main.rs"
 
 [dependencies]
-obsidian-rs-core = { path = "../obsidian-core", version = "0.1" }
+obsidian-rs-core = { path = "../obsidian-core", version = "0.1.1" }
 clap = { version = "4", features = ["derive"] }
 rmcp = { version = "1", features = ["server", "transport-io", "macros"] }
 tokio = { version = "1", features = ["full"] }

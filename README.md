@@ -2,17 +2,17 @@
 
 A collection of tools for working with Obsidian vaults, written in Rust.
 
-- 📦 `obsidian-core`: A Rust library with the core functionality that the other tools build on top of
-- ⌨️ `obsidian-cli`: A command-line tool for querying and managing vaults
+- 📦 `obsidian-rs-core`: A Rust library with the core functionality that the other tools build on top of
+- ⌨️ `obsidian-rs-cli`: A command-line tool for querying and managing vaults
   ```
-  cargo install --bin obsidian-cli --git https://github.com/epwalsh/obsidian.rs obsidian-cli
+  cargo install obsidian-rs-cli
   ```
-- 🤖 `obsidian-mcp`: A model context protocol (MCP) server for agents to interact with vaults
+- 🤖 `obsidian-rs-mcp`: A model context protocol (MCP) server for agents to interact with vaults
   ```
-  cargo install --bin obsidian-mcp --git https://github.com/epwalsh/obsidian.rs obsidian-mcp
+  cargo install obsidian-rs-mcp
   claude mcp add obsidian --scope user obsidian-mcp --vault /path/to/my/vault
   ```
-- 🔡 `obsidian-lsp`: A language server so you can use your favorite IDE to work on your vault
+- 🔡 `obsidian-rs-lsp`: A language server so you can use your favorite IDE to work on your vault
 
 ## Roadmap
 

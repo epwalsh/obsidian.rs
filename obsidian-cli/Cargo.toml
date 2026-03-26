@@ -1,6 +1,6 @@
 [package]
 name = "obsidian-rs-cli"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "Apache-2.0"
 description = "A CLI for interacting with Obsidian vaults"
@@ -10,7 +10,7 @@ name = "obsidian"
 path = "src/main.rs"
 
 [dependencies]
-obsidian-rs-core = { path = "../obsidian-core", version = "0.1" }
+obsidian-rs-core = { path = "../obsidian-core", version = "0.1.1" }
 clap = { version = "4", features = ["derive", "env"] }
 globset = "0.4"
 color-eyre = "0.6"
