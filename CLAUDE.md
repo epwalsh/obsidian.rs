@@ -14,7 +14,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `Cargo.toml` — workspace root
 - `obsidian-core/` — the core library crate
   - `src/lib.rs` — library entry point
-  - `src/note.rs` — defines the `Note` struct; `content` is `Option<String>` (not loaded by default); `links` and `inline_tags` are always pre-computed; `from_path()` omits content, `from_path_with_content()` retains it; `write()` requires content, `write_frontmatter()` reads body from disk
+  - `src/note.rs` — defines the `Note` struct; `content` is `Option<String>` (not loaded by default); `links` and `tags` are always pre-computed; `from_path()` omits content, `from_path_with_content()` retains it; `write()` requires content, `write_frontmatter()` reads body from disk. `tags: Vec<LocatedTag>` holds all tags — frontmatter tags have `location: Location::Frontmatter`, inline body tags have `location: Location::Inline(InlineLocation)`
   - `src/link.rs` — parsing markdown/wiki/embedded links
   - `src/search.rs` — `find_note_paths()` for recursively finding `.md` files (public)
   - `src/vault.rs` — defines the `Vault` struct; `notes()` loads all notes (no content), `notes_with_content()` loads with body text, `search()` returns a query builder, `backlinks(&Note)` returns notes linking to a given note, `rename(&Note, new_path)` renames a note and updates all backlinks, `merge(&[Note], dest_path)` merges multiple notes (sources must be loaded with content) into a destination and updates all backlinks, `patch_note(&Note, old_string, new_string)` replaces exactly one occurrence of a string in the raw file

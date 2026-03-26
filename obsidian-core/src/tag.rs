@@ -2,13 +2,13 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::InlineLocation;
 use crate::link::{FENCED_CODE_RE, INLINE_CODE_RE, byte_to_line_col};
+use crate::{InlineLocation, Location};
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LocatedTag {
     pub tag: String,
-    pub location: InlineLocation,
+    pub location: Location,
 }
 
 // Tags must start with a letter, then may contain letters, digits, hyphens, underscores,
@@ -36,11 +36,11 @@ pub(crate) fn parse_inline_tags(content: &str) -> Vec<LocatedTag> {
         let tag_name = content[tag_match.start() + 1..tag_match.end()].to_string();
         tags.push(LocatedTag {
             tag: tag_name,
-            location: InlineLocation {
+            location: Location::Inline(InlineLocation {
                 line,
                 col_start,
                 col_end,
-            },
+            }),
         });
     }
     tags
@@ -110,7 +110,9 @@ mod tests {
     fn inline_tag_location_first_line() {
         let tags = parse_inline_tags("#foo");
         assert_eq!(tags.len(), 1);
-        let loc = &tags[0].location;
+        let Location::Inline(ref loc) = tags[0].location else {
+            panic!("expected inline")
+        };
         assert_eq!(loc.line, 1);
         assert_eq!(loc.col_start, 0);
         assert_eq!(loc.col_end, 4); // "#foo" is 4 chars, col_end is exclusive
@@ -119,7 +121,9 @@ mod tests {
     #[test]
     fn inline_tag_location_with_prefix() {
         let tags = parse_inline_tags("See #foo here.");
-        let loc = &tags[0].location;
+        let Location::Inline(ref loc) = tags[0].location else {
+            panic!("expected inline")
+        };
         assert_eq!(loc.line, 1);
         assert_eq!(loc.col_start, 4); // "See " is 4 chars
         assert_eq!(loc.col_end, 8); // "#foo" adds 4 more
@@ -130,7 +134,9 @@ mod tests {
         let content = "First line.\n#foo";
         let tags = parse_inline_tags(content);
         assert_eq!(tags.len(), 1);
-        let loc = &tags[0].location;
+        let Location::Inline(ref loc) = tags[0].location else {
+            panic!("expected inline")
+        };
         assert_eq!(loc.line, 2);
         assert_eq!(loc.col_start, 0);
         assert_eq!(loc.col_end, 4);
@@ -141,8 +147,14 @@ mod tests {
         // Frontmatter is lines 1-3; body starts on line 4 with "#foo".
         let content = "---\ntitle: T\n---\n#foo";
         let note = Note::parse("/vault/note.md", content);
-        assert_eq!(note.inline_tags.len(), 1);
-        let loc = &note.inline_tags[0].location;
+        let inline_tag = note
+            .tags
+            .iter()
+            .find(|t| matches!(t.location, Location::Inline(_)))
+            .expect("inline tag");
+        let Location::Inline(ref loc) = inline_tag.location else {
+            unreachable!()
+        };
         assert_eq!(loc.line, 4);
         assert_eq!(loc.col_start, 0);
         assert_eq!(loc.col_end, 4);

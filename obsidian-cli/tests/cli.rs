@@ -834,12 +834,13 @@ fn tags_search_json_format() {
     assert_eq!(arr.len(), 1);
     let item = &arr[0];
     assert!(item["path"].as_str().unwrap().contains("note.md"));
-    assert_eq!(item["frontmatter_tags"].as_array().unwrap().len(), 1);
-    assert_eq!(item["frontmatter_tags"][0].as_str().unwrap(), "rust");
-    assert_eq!(item["inline_occurrences"].as_array().unwrap().len(), 1);
-    let occ = &item["inline_occurrences"][0];
-    assert_eq!(occ["tag"].as_str().unwrap(), "rust");
-    assert!(occ["line"].as_u64().unwrap() > 0);
+    let tags = item["tags"].as_array().unwrap();
+    assert_eq!(tags.len(), 2);
+    let fm_tag = tags.iter().find(|t| t["location"] == "frontmatter").unwrap();
+    assert_eq!(fm_tag["tag"].as_str().unwrap(), "rust");
+    let inline_tag = tags.iter().find(|t| t["location"].is_object()).unwrap();
+    assert_eq!(inline_tag["tag"].as_str().unwrap(), "rust");
+    assert!(inline_tag["location"]["line"].as_u64().unwrap() > 0);
 }
 
 #[test]

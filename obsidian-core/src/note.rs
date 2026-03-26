@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::NoteError;
+use crate::{Location, NoteError};
 
 use gray_matter::{Matter, Pod, engine::YAML};
 use indexmap::IndexMap;
@@ -14,15 +14,15 @@ pub struct Note {
     pub id: String,
     pub title: Option<String>,
     pub aliases: Vec<String>,
-    pub tags: Vec<String>,
+    /// All tags: frontmatter tags have `location: Location::Frontmatter`; inline tags have
+    /// `location: Location::Inline(...)`. Always populated, even when content is not loaded.
+    pub tags: Vec<crate::LocatedTag>,
     /// Body text stripped of frontmatter. `None` when the note was loaded without content
     /// (the default). Use [`Note::from_path_with_content`] or [`Note::load_content`] to
     /// populate this field. Required for [`Note::write`].
     pub content: Option<String>,
     /// Links extracted from the body at load time (always populated).
     pub links: Vec<crate::LocatedLink>,
-    /// Inline tags extracted from the body at load time (always populated).
-    pub inline_tags: Vec<crate::LocatedTag>,
     pub frontmatter: Option<IndexMap<String, Pod>>,
     /// Number of lines occupied by the frontmatter block (including delimiters).
     /// Used to offset link locations so they reflect positions in the original file.
@@ -86,13 +86,17 @@ impl Note {
             }
             v
         };
-        let tags: Vec<String> = frontmatter
+        let fm_tags: Vec<crate::LocatedTag> = frontmatter
             .as_ref()
             .and_then(|fm| fm.get("tags"))
             .and_then(|p| p.as_vec().ok())
             .unwrap_or_default()
             .into_iter()
             .filter_map(|p| p.as_string().ok())
+            .map(|tag| crate::LocatedTag {
+                tag,
+                location: Location::Frontmatter,
+            })
             .collect();
         let offset = frontmatter_line_count;
         let links = crate::link::parse_links(&body)
@@ -105,10 +109,14 @@ impl Note {
         let inline_tags = crate::tag::parse_inline_tags(&body)
             .into_iter()
             .map(|mut lt| {
-                lt.location.line += offset;
+                if let Location::Inline(ref mut loc) = lt.location {
+                    loc.line += offset;
+                }
                 lt
             })
-            .collect();
+            .collect::<Vec<_>>();
+        let mut tags = fm_tags;
+        tags.extend(inline_tags);
 
         Note {
             path: path.to_path_buf(),
@@ -118,7 +126,6 @@ impl Note {
             tags,
             content: if include_content { Some(body) } else { None },
             links,
-            inline_tags,
             frontmatter,
             frontmatter_line_count,
         }
@@ -175,16 +182,24 @@ impl Note {
         }
     }
 
-    /// Add a tag.
+    /// Add a frontmatter tag.
     pub fn add_tag(&mut self, tag: String) {
-        if !self.tags.contains(&tag) {
-            self.tags.push(tag);
+        let already_present = self
+            .tags
+            .iter()
+            .any(|t| t.tag == tag && matches!(t.location, Location::Frontmatter));
+        if !already_present {
+            self.tags.push(crate::LocatedTag {
+                tag,
+                location: Location::Frontmatter,
+            });
         }
     }
 
-    /// Remove a tag.
+    /// Remove a frontmatter tag.
     pub fn remove_tag(&mut self, tag: &str) {
-        self.tags.retain(|t| t != tag);
+        self.tags
+            .retain(|t| !(t.tag == tag && matches!(t.location, Location::Frontmatter)));
     }
 
     /// Set an arbitrary frontmatter field to a value (which can be any YAML type).
@@ -288,13 +303,19 @@ impl Note {
                 Pod::Array(self.aliases.iter().cloned().map(Pod::String).collect()),
             );
         }
-        if self.tags.is_empty() {
+        let fm_tags: Vec<String> = self
+            .tags
+            .iter()
+            .filter(|t| matches!(t.location, Location::Frontmatter))
+            .map(|t| t.tag.clone())
+            .collect();
+        if fm_tags.is_empty() {
             // No tags; remove the field to avoid emitting an empty array.
             fm.shift_remove("tags");
         } else {
             fm.insert(
                 "tags".to_string(),
-                Pod::Array(self.tags.iter().cloned().map(Pod::String).collect()),
+                Pod::Array(fm_tags.into_iter().map(Pod::String).collect()),
             );
         }
         fm
@@ -560,13 +581,24 @@ mod tests {
     fn tags_from_frontmatter() {
         let input = "---\ntags: [rust, obsidian]\n---\n\nContent.";
         let note = Note::parse("/vault/note.md", input);
-        assert_eq!(note.tags, vec!["rust".to_string(), "obsidian".to_string()]);
+        let fm_tags: Vec<&str> = note
+            .tags
+            .iter()
+            .filter(|t| matches!(t.location, crate::Location::Frontmatter))
+            .map(|t| t.tag.as_str())
+            .collect();
+        assert_eq!(fm_tags, vec!["rust", "obsidian"]);
     }
 
     #[test]
     fn tags_empty_when_absent() {
         let note = Note::parse("/vault/note.md", "No frontmatter here.");
-        assert!(note.tags.is_empty());
+        assert!(
+            !note
+                .tags
+                .iter()
+                .any(|t| matches!(t.location, crate::Location::Frontmatter))
+        );
     }
 
     #[test]

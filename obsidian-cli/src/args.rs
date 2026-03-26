@@ -69,10 +69,10 @@ pub struct SearchArgs {
     /// Filter by exact note ID match, case-sensitive by default (OR semantics, repeatable)
     #[arg(long, help_heading = "Metadata filters")]
     pub or_id: Vec<String>,
-    /// Filter by tag, case-sensitive by default (AND semantics, repeatable)
+    /// Filter by tag, case-insensitive by default (AND semantics, repeatable)
     #[arg(long, help_heading = "Metadata filters")]
     pub tag: Vec<String>,
-    /// Filter by tag, case-sensitive by default (OR semantics, repeatable)
+    /// Filter by tag, case-insensitive by default (OR semantics, repeatable)
     #[arg(long, help_heading = "Metadata filters")]
     pub or_tag: Vec<String>,
     /// Filter by title substring, smart case-sensitive by default (AND semantics, repeatable)
@@ -108,7 +108,7 @@ pub struct SearchArgs {
     #[arg(long, help_heading = "Content filters")]
     pub or_content_matches: Vec<String>,
     /// Execute the search case sensitive. By default, title, alias, and content filters are
-    /// smart case-insensitive while ID and tag filters are case-sensitive.
+    /// smart case-sensitive, while ID filters are case-sensitive, and tag filters are case-insensitive.
     /// This flag overrides -i/--ignore-case and -S/--smart-case.
     #[arg(long, short = 's', help_heading = "Filter behavior")]
     pub case_sensitive: bool,

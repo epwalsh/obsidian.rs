@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use gray_matter::Pod;
 use indexmap::IndexMap;
 
-use crate::{Link, LocatedLink, Note, NoteError, VaultError, search};
+use crate::{Link, LocatedLink, LocatedTag, Location, Note, NoteError, VaultError, search};
 use rayon::prelude::*;
 
 pub struct Vault {
@@ -122,8 +122,8 @@ struct MergeOp {
     merged_content: String,
     /// Merged frontmatter for the destination note.
     merged_frontmatter: Option<IndexMap<String, Pod>>,
-    /// Merged tags
-    merged_tags: Vec<String>,
+    /// Merged frontmatter tags
+    merged_tags: Vec<LocatedTag>,
     /// Merged aliases
     merged_aliases: Vec<String>,
     /// External notes (not sources, not dest) with backlinks to rewrite.
@@ -641,9 +641,13 @@ impl Vault {
 
         let mut tag_strings: Vec<String> = dest_fm_tags;
         for source in sources {
-            for tag in &source.tags {
-                if !tag_strings.contains(tag) {
-                    tag_strings.push(tag.clone());
+            for lt in source
+                .tags
+                .iter()
+                .filter(|t| matches!(t.location, Location::Frontmatter))
+            {
+                if !tag_strings.contains(&lt.tag) {
+                    tag_strings.push(lt.tag.clone());
                 }
             }
         }
@@ -697,7 +701,13 @@ impl Vault {
             dest_is_new,
             merged_content,
             merged_frontmatter,
-            merged_tags: tag_strings,
+            merged_tags: tag_strings
+                .into_iter()
+                .map(|tag| LocatedTag {
+                    tag,
+                    location: Location::Frontmatter,
+                })
+                .collect(),
             merged_aliases: alias_strings,
             per_note_replacements,
         })
@@ -726,7 +736,6 @@ impl Vault {
                 tags: op.merged_tags,
                 content: Some(op.merged_content),
                 links: Vec::new(),
-                inline_tags: Vec::new(),
                 frontmatter: op.merged_frontmatter,
                 frontmatter_line_count: 0,
             };
@@ -1613,8 +1622,18 @@ mod tests {
         vault.merge(&[a, b], &dest_path).unwrap();
 
         let combined = Note::from_path(&dest_path).unwrap();
-        assert!(combined.tags.contains(&"rust".to_string()));
-        assert!(combined.tags.contains(&"obsidian".to_string()));
+        assert!(
+            combined
+                .tags
+                .iter()
+                .any(|t| t.tag == "rust" && matches!(t.location, Location::Frontmatter))
+        );
+        assert!(
+            combined
+                .tags
+                .iter()
+                .any(|t| t.tag == "obsidian" && matches!(t.location, Location::Frontmatter))
+        );
     }
 
     #[test]
