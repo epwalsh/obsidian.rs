@@ -4,7 +4,6 @@ mod note;
 mod output;
 mod search;
 mod tags;
-mod utils;
 
 use clap::Parser;
 use color_eyre::eyre;

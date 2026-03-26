@@ -365,6 +365,20 @@ impl Note {
         Ok(yaml.strip_prefix("---\n").unwrap_or(&yaml).to_string())
     }
 
+    /// Get the last modified time of the note's file on disk.
+    pub fn last_modified_time(&self) -> std::time::SystemTime {
+        std::fs::metadata(&self.path)
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+    }
+
+    /// Get the creation time of the note.
+    pub fn creation_time(&self) -> std::time::SystemTime {
+        std::fs::metadata(&self.path)
+            .and_then(|m| m.created())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+    }
+
     fn to_file_content(&self, body: &str) -> Result<String, serde_yaml::Error> {
         let fm = self.frontmatter_string()?;
         Ok(format!("---\n{}---\n\n{}", fm, body))

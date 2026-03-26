@@ -123,8 +123,8 @@ pub struct SearchArgs {
     #[arg(long, help_heading = "Filter behavior")]
     pub inline_tags: bool,
     /// Sort order for results
-    #[arg(long, default_value = "path-asc", help_heading = "Output options")]
-    pub sort: SortOrder,
+    #[arg(long, help_heading = "Output options")]
+    pub sort: Option<SortOrder>,
     /// Output format
     #[arg(long, short = 'f', default_value = "plain", help_heading = "Output options")]
     pub format: OutputFormat,
@@ -135,8 +135,8 @@ pub struct BacklinksArgs {
     /// Path to the note (resolved relative to current directory)
     pub note: PathBuf,
     /// Sort order for results
-    #[arg(long, short = 's', default_value = "path-asc", help_heading = "Output options")]
-    pub sort: SortOrder,
+    #[arg(long, short = 's', help_heading = "Output options")]
+    pub sort: Option<SortOrder>,
     /// Output format
     #[arg(long, short = 'f', default_value = "plain", help_heading = "Output options")]
     pub format: OutputFormat,
@@ -292,13 +292,28 @@ pub enum OutputFormat {
     Json,
 }
 
-#[derive(Clone, ValueEnum, Default)]
+#[derive(Clone, ValueEnum)]
 pub enum SortOrder {
-    #[default]
     PathAsc,
     PathDesc,
     ModifiedAsc,
     ModifiedDesc,
+    CreatedAsc,
+    CreatedDesc,
+}
+
+// Get SortOrder from the corresponding type in obsidian-core.
+impl From<SortOrder> for obsidian_core::SortOrder {
+    fn from(sort_order: SortOrder) -> Self {
+        match sort_order {
+            SortOrder::PathAsc => obsidian_core::SortOrder::PathAsc,
+            SortOrder::PathDesc => obsidian_core::SortOrder::PathDesc,
+            SortOrder::ModifiedAsc => obsidian_core::SortOrder::ModifiedAsc,
+            SortOrder::ModifiedDesc => obsidian_core::SortOrder::ModifiedDesc,
+            SortOrder::CreatedAsc => obsidian_core::SortOrder::CreatedAsc,
+            SortOrder::CreatedDesc => obsidian_core::SortOrder::CreatedDesc,
+        }
+    }
 }
 
 #[derive(clap::Args)]
@@ -321,8 +336,8 @@ pub struct TagsSearchArgs {
     #[arg(required = true)]
     pub tags: Vec<String>,
     /// Sort order for results
-    #[arg(long, short = 's', default_value = "path-asc", help_heading = "Output options")]
-    pub sort: SortOrder,
+    #[arg(long, short = 's', help_heading = "Output options")]
+    pub sort: Option<SortOrder>,
     /// Output format
     #[arg(long, short = 'f', default_value = "plain", help_heading = "Output options")]
     pub format: OutputFormat,

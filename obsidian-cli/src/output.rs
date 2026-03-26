@@ -2,7 +2,7 @@ use std::path::Path;
 
 use color_eyre::eyre;
 use colored::Colorize;
-use obsidian_core::{Link, LocatedLink, Location, MergePreview, Note, NoteTags, RenamePreview};
+use obsidian_core::{Link, LocatedLink, LocatedTag, Location, MergePreview, Note, RenamePreview};
 use serde::Serialize;
 use serde_json::json;
 
@@ -192,12 +192,11 @@ pub fn print_merge_preview_json(preview: &MergePreview, vault_path: &Path) {
     println!("{}", serde_json::to_string(&out).unwrap());
 }
 
-pub fn print_tags_search_plain(results: &[NoteTags], vault_path: &Path) {
-    for nt in results {
-        let rel = get_rel_path(&nt.source_path, vault_path);
+pub fn print_tags_search_plain(results: &[(Note, Vec<LocatedTag>)], vault_path: &Path) {
+    for (n, nt) in results {
+        let rel = get_rel_path(&n.path, vault_path);
         println!("{}", rel.cyan());
         let fm_tags: Vec<String> = nt
-            .tags
             .iter()
             .filter(|t| matches!(t.location, Location::Frontmatter))
             .map(|t| t.tag.yellow().to_string())
@@ -205,7 +204,7 @@ pub fn print_tags_search_plain(results: &[NoteTags], vault_path: &Path) {
         if !fm_tags.is_empty() {
             println!("  {} {}", "[frontmatter]".dimmed(), fm_tags.join(", "));
         }
-        for lt in nt.tags.iter().filter(|t| matches!(t.location, Location::Inline(_))) {
+        for lt in nt.iter().filter(|t| matches!(t.location, Location::Inline(_))) {
             let Location::Inline(ref loc) = lt.location else {
                 unreachable!()
             };
@@ -239,13 +238,12 @@ struct TagsSearchResultJson {
     tags: Vec<TagJson>,
 }
 
-pub fn print_tags_search_json(results: &[NoteTags], vault_path: &Path) {
+pub fn print_tags_search_json(results: &[(Note, Vec<LocatedTag>)], vault_path: &Path) {
     let items: Vec<TagsSearchResultJson> = results
         .iter()
-        .map(|nt| {
-            let rel = get_rel_path(&nt.source_path, vault_path);
+        .map(|(n, nt)| {
+            let rel = get_rel_path(&n.path, vault_path);
             let tags = nt
-                .tags
                 .iter()
                 .map(|lt| TagJson {
                     tag: lt.tag.clone(),
@@ -261,7 +259,7 @@ pub fn print_tags_search_json(results: &[NoteTags], vault_path: &Path) {
                 .collect();
             TagsSearchResultJson {
                 source_path: rel,
-                source_id: nt.source_id.clone(),
+                source_id: n.id.clone(),
                 tags,
             }
         })

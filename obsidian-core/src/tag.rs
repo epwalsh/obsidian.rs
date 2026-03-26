@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -10,13 +9,6 @@ use crate::{InlineLocation, Location};
 pub struct LocatedTag {
     pub tag: String,
     pub location: Location,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct NoteTags {
-    pub source_path: PathBuf,
-    pub source_id: String,
-    pub tags: Vec<crate::LocatedTag>,
 }
 
 pub(crate) fn clean_tag(tag: &str) -> String {

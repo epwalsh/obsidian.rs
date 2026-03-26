@@ -239,7 +239,13 @@ fn search_output_is_sorted() {
     write_note(vault.path(), "a.md", "Note A.");
     write_note(vault.path(), "m.md", "Note M.");
     let output = obsidian()
-        .args(["--vault", vault.path().to_str().unwrap(), "search"])
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "search",
+            "--sort",
+            "path-asc",
+        ])
         .assert()
         .success()
         .get_output()
@@ -791,7 +797,15 @@ fn tags_search_output_sorted() {
     write_note(vault.path(), "a.md", "---\ntags: [rust]\n---\nContent.");
     write_note(vault.path(), "m.md", "---\ntags: [rust]\n---\nContent.");
     let output = obsidian()
-        .args(["--vault", vault.path().to_str().unwrap(), "tags", "search", "rust"])
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "tags",
+            "search",
+            "rust",
+            "--sort",
+            "path-asc",
+        ])
         .assert()
         .success()
         .get_output()

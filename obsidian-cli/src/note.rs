@@ -7,7 +7,6 @@ use crate::args::{
     BacklinksArgs, MergeArgs, OutputFormat, PatchArgs, ReadArgs, RenameArgs, ResolveArgs, UpdateArgs, WriteArgs,
 };
 use crate::output;
-use crate::utils::sort_notes_by;
 
 pub fn cmd_resolve(vault: Vault, args: ResolveArgs) -> eyre::Result<()> {
     let note = vault.resolve_note(&args.note)?;
@@ -164,7 +163,9 @@ pub fn cmd_backlinks(vault: Vault, args: BacklinksArgs) -> eyre::Result<()> {
     let (note_path, _) = vault.resolve_note_path(&args.note, true)?;
     let note = Note::from_path(&note_path)?;
     let mut results = vault.backlinks(&note);
-    sort_notes_by(&mut results, |(n, _)| &n.path, &args.sort);
+    if let Some(sort) = args.sort {
+        obsidian_core::search::sort_notes_by(&mut results, |(n, _)| Some(n), &sort.into());
+    }
 
     match args.format {
         OutputFormat::Plain => output::print_backlinks_plain(&results, &vault.path),

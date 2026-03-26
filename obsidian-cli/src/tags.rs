@@ -3,11 +3,12 @@ use obsidian_core::Vault;
 
 use crate::args::{OutputFormat, TagsListArgs, TagsSearchArgs};
 use crate::output;
-use crate::utils::sort_notes_by;
 
 pub fn cmd_tags_search(vault: Vault, args: TagsSearchArgs) -> eyre::Result<()> {
     let mut results = vault.find_tags(&args.tags)?;
-    sort_notes_by(&mut results, |nt| &nt.source_path, &args.sort);
+    if let Some(sort) = args.sort {
+        obsidian_core::search::sort_notes_by(&mut results, |(n, _)| Some(n), &sort.into());
+    }
     match args.format {
         OutputFormat::Plain => output::print_tags_search_plain(&results, &vault.path),
         OutputFormat::Json => output::print_tags_search_json(&results, &vault.path),

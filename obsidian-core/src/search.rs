@@ -15,6 +15,64 @@ enum CaseSensitivity {
     Smart,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum SortOrder {
+    PathAsc,
+    PathDesc,
+    ModifiedAsc,
+    ModifiedDesc,
+    CreatedAsc,
+    CreatedDesc,
+}
+
+pub fn sort_notes<T>(items: &mut [Note], sort: &SortOrder) {
+    sort_notes_by(items, |n| Some(n), sort);
+}
+
+pub fn sort_notes_by<T>(items: &mut [T], key: impl Fn(&T) -> Option<&Note>, sort: &SortOrder) {
+    let fallback_path = PathBuf::new();
+    match sort {
+        SortOrder::PathAsc => items.sort_by(|a, b| {
+            let a_path = key(a).as_ref().map(|n| &n.path).unwrap_or(&fallback_path);
+            let b_path = key(b).as_ref().map(|n| &n.path).unwrap_or(&fallback_path);
+            a_path.cmp(b_path)
+        }),
+        SortOrder::PathDesc => items.sort_by(|a, b| {
+            let a_path = key(a).as_ref().map(|n| &n.path).unwrap_or(&fallback_path);
+            let b_path = key(b).as_ref().map(|n| &n.path).unwrap_or(&fallback_path);
+            b_path.cmp(a_path)
+        }),
+        SortOrder::ModifiedAsc => items.sort_by_key(|r| {
+            key(r)
+                .as_ref()
+                .map(|n| n.last_modified_time())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+        }),
+        SortOrder::ModifiedDesc => items.sort_by_key(|r| {
+            std::cmp::Reverse(
+                key(r)
+                    .as_ref()
+                    .map(|n| n.last_modified_time())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+            )
+        }),
+        SortOrder::CreatedAsc => items.sort_by_key(|r| {
+            key(r)
+                .as_ref()
+                .map(|n| n.creation_time())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+        }),
+        SortOrder::CreatedDesc => items.sort_by_key(|r| {
+            std::cmp::Reverse(
+                key(r)
+                    .as_ref()
+                    .map(|n| n.creation_time())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+            )
+        }),
+    }
+}
+
 /// A composable query for filtering notes in a vault.
 ///
 /// # Filter semantics
@@ -54,6 +112,7 @@ pub struct SearchQuery {
     or_content_matches: Vec<String>,
     case_sensitivity: Option<CaseSensitivity>,
     include_inline_tags: bool,
+    sort_order: Option<SortOrder>,
 }
 
 impl SearchQuery {
@@ -78,6 +137,7 @@ impl SearchQuery {
             or_content_matches: Vec::new(),
             case_sensitivity: None,
             include_inline_tags: false,
+            sort_order: None,
         }
     }
 
@@ -201,6 +261,11 @@ impl SearchQuery {
         self
     }
 
+    pub fn sort_by(mut self, sort_order: SortOrder) -> Self {
+        self.sort_order = Some(sort_order);
+        self
+    }
+
     /// Execute the query, returning matching notes.
     ///
     /// Returns `Err` if any glob or regex pattern is invalid.
@@ -226,6 +291,7 @@ impl SearchQuery {
             or_content_matches,
             case_sensitivity,
             include_inline_tags,
+            sort_order,
         } = self;
 
         let strings_equal = |s: &str, query: &str, cs: CaseSensitivity| match cs {
@@ -338,7 +404,7 @@ impl SearchQuery {
             || !and_content_contains.is_empty()
             || !and_regexes.is_empty();
 
-        let results = paths
+        let mut results: Vec<Result<Note, NoteError>> = paths
             .into_par_iter()
             .filter_map(|path| -> Option<Result<Note, NoteError>> {
                 let rel = path.strip_prefix(&root).unwrap_or(&path);
@@ -502,6 +568,10 @@ impl SearchQuery {
             })
             .collect();
 
+        if let Some(sort_order) = sort_order {
+            sort_notes_by(&mut results, |r| r.as_ref().ok(), &sort_order);
+        };
+
         Ok(results)
     }
 }
@@ -560,7 +630,7 @@ pub fn find_all_tags(root: impl AsRef<Path>) -> Result<Vec<String>, NoteError> {
 
 /// Find occurrences of specific tags. Returns a list of located tags grouped by the note in which
 /// they were found.
-pub fn find_tags(root: impl AsRef<Path>, tags: &[String]) -> Result<Vec<crate::NoteTags>, SearchError> {
+pub fn find_tags(root: impl AsRef<Path>, tags: &[String]) -> Result<Vec<(Note, Vec<crate::LocatedTag>)>, SearchError> {
     let tags = tags.iter().map(|t| crate::tag::clean_tag(t)).collect::<Vec<String>>();
     let mut search = SearchQuery::new(root).include_inline_tags();
     for tag in &tags {
@@ -575,20 +645,24 @@ pub fn find_tags(root: impl AsRef<Path>, tags: &[String]) -> Result<Vec<crate::N
             .any(|s| tag.eq_ignore_ascii_case(s) || tag.to_lowercase().starts_with(&format!("{}/", s.to_lowercase())))
     };
 
-    let results: Vec<crate::NoteTags> = notes
+    let results: Vec<(Note, Vec<crate::LocatedTag>)> = notes
         .into_iter()
         .filter_map(|note| {
-            let matched: Vec<crate::LocatedTag> =
-                note.tags.into_iter().filter(|lt| tag_matches_search(&lt.tag)).collect();
-
+            let matched: Vec<crate::LocatedTag> = note
+                .tags
+                .iter()
+                .filter_map(|lt| {
+                    if tag_matches_search(&lt.tag) {
+                        Some(lt.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
             if matched.is_empty() {
                 None
             } else {
-                Some(crate::NoteTags {
-                    source_path: note.path.clone(),
-                    source_id: note.id.clone(),
-                    tags: matched,
-                })
+                Some((note, matched))
             }
         })
         .collect();

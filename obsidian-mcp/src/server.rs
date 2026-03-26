@@ -212,13 +212,12 @@ impl VaultServer {
                 query = query.and_has_alias(alias);
             }
 
-            let mut notes: Vec<Note> = query
+            let notes: Vec<Note> = query
                 .execute()
                 .map_err(search_err)?
                 .into_iter()
                 .filter_map(|r| r.ok())
                 .collect();
-            notes.sort_by(|a, b| a.path.cmp(&b.path));
 
             let items: Result<Vec<serde_json::Value>, rmcp::ErrorData> =
                 notes.iter().map(|n| note_to_json(n, &vault.path)).collect();
@@ -287,10 +286,9 @@ impl VaultServer {
         let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, rmcp::ErrorData> {
             let results = vault.find_tags(&p.tags).map_err(vault_err)?;
             let mut items: Vec<serde_json::Value> = Vec::new();
-            for nt in results {
-                if !nt.tags.is_empty() {
+            for (n, nt) in results {
+                if !nt.is_empty() {
                     let tags: Vec<serde_json::Value> = nt
-                        .tags
                         .into_iter()
                         .map(|lt| match lt.location {
                             Location::Frontmatter => json!({ "tag": lt.tag, "location": "frontmatter" }),
@@ -301,18 +299,12 @@ impl VaultServer {
                         })
                         .collect();
                     items.push(json!({
-                        "source_path": vault_rel_path(&nt.source_path, &vault.path),
-                        "source_id": nt.source_id,
+                        "source_path": vault_rel_path(&n.path, &vault.path),
+                        "source_id": n.id,
                         "tags": tags,
                     }));
                 }
             }
-
-            items.sort_by(|a, b| {
-                let pa = a["path"].as_str().unwrap_or("");
-                let pb = b["path"].as_str().unwrap_or("");
-                pa.cmp(pb)
-            });
 
             Ok(json!(items))
         })

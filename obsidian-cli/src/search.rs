@@ -3,7 +3,6 @@ use obsidian_core::{Note, Vault};
 
 use crate::args::{OutputFormat, SearchArgs};
 use crate::output;
-use crate::utils::sort_notes_by;
 
 pub fn cmd_search(vault: Vault, args: SearchArgs) -> eyre::Result<()> {
     let mut query = vault.search();
@@ -67,10 +66,14 @@ pub fn cmd_search(vault: Vault, args: SearchArgs) -> eyre::Result<()> {
     if args.inline_tags {
         query = query.include_inline_tags();
     }
+    let query = if let Some(sort) = args.sort {
+        query.sort_by(sort.into())
+    } else {
+        query
+    };
 
     let results = query.execute()?;
-    let mut notes: Vec<Note> = results.into_iter().filter_map(|r| r.ok()).collect();
-    sort_notes_by(&mut notes, |n| &n.path, &args.sort);
+    let notes: Vec<Note> = results.into_iter().filter_map(|r| r.ok()).collect();
 
     match args.format {
         OutputFormat::Plain => output::print_note_many_plain(&notes, &vault.path),

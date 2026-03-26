@@ -342,7 +342,7 @@ impl Vault {
 
     /// Find all occurrences of specific tags, grouped by the note they appear in. Tags are matched
     /// case-insensitively, and sub-tags are gathered as well.
-    pub fn find_tags(&self, tags: &[String]) -> Result<Vec<crate::NoteTags>, VaultError> {
+    pub fn find_tags(&self, tags: &[String]) -> Result<Vec<(Note, Vec<crate::LocatedTag>)>, VaultError> {
         search::find_tags(&self.path, tags).map_err(VaultError::Search)
     }
 

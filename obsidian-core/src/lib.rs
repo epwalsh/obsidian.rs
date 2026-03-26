@@ -10,6 +10,6 @@ pub use common::{InlineLocation, Location};
 pub use error::{NoteError, SearchError, VaultError};
 pub use link::{Link, LocatedLink};
 pub use note::Note;
-pub use search::SearchQuery;
-pub use tag::{LocatedTag, NoteTags};
+pub use search::{SearchQuery, SortOrder};
+pub use tag::LocatedTag;
 pub use vault::{MergePreview, RenamePreview, Vault};
