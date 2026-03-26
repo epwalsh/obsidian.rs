@@ -833,7 +833,7 @@ fn tags_search_json_format() {
     let arr = v.as_array().unwrap();
     assert_eq!(arr.len(), 1);
     let item = &arr[0];
-    assert!(item["path"].as_str().unwrap().contains("note.md"));
+    assert!(item["source_path"].as_str().unwrap().contains("note.md"));
     let tags = item["tags"].as_array().unwrap();
     assert_eq!(tags.len(), 2);
     let fm_tag = tags.iter().find(|t| t["location"] == "frontmatter").unwrap();

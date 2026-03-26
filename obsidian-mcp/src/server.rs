@@ -301,7 +301,8 @@ impl VaultServer {
                         })
                         .collect();
                     items.push(json!({
-                        "path": vault_rel_path(&nt.path, &vault.path),
+                        "source_path": vault_rel_path(&nt.source_path, &vault.path),
+                        "source_id": nt.source_id,
                         "tags": tags,
                     }));
                 }

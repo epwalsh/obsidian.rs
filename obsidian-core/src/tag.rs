@@ -14,7 +14,8 @@ pub struct LocatedTag {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct NoteTags {
-    pub path: PathBuf,
+    pub source_path: PathBuf,
+    pub source_id: String,
     pub tags: Vec<crate::LocatedTag>,
 }
 

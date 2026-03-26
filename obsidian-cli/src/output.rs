@@ -194,7 +194,7 @@ pub fn print_merge_preview_json(preview: &MergePreview, vault_path: &Path) {
 
 pub fn print_tags_search_plain(results: &[NoteTags], vault_path: &Path) {
     for nt in results {
-        let rel = get_rel_path(&nt.path, vault_path);
+        let rel = get_rel_path(&nt.source_path, vault_path);
         println!("{}", rel.cyan());
         let fm_tags: Vec<String> = nt
             .tags
@@ -234,7 +234,8 @@ struct TagJson {
 
 #[derive(Serialize)]
 struct TagsSearchResultJson {
-    path: String,
+    source_path: String,
+    source_id: String,
     tags: Vec<TagJson>,
 }
 
@@ -242,7 +243,7 @@ pub fn print_tags_search_json(results: &[NoteTags], vault_path: &Path) {
     let items: Vec<TagsSearchResultJson> = results
         .iter()
         .map(|nt| {
-            let rel = get_rel_path(&nt.path, vault_path);
+            let rel = get_rel_path(&nt.source_path, vault_path);
             let tags = nt
                 .tags
                 .iter()
@@ -258,7 +259,11 @@ pub fn print_tags_search_json(results: &[NoteTags], vault_path: &Path) {
                     },
                 })
                 .collect();
-            TagsSearchResultJson { path: rel, tags }
+            TagsSearchResultJson {
+                source_path: rel,
+                source_id: nt.source_id.clone(),
+                tags,
+            }
         })
         .collect();
     println!("{}", serde_json::to_string(&items).unwrap());

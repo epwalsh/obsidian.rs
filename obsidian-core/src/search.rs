@@ -585,7 +585,8 @@ pub fn find_tags(root: impl AsRef<Path>, tags: &[String]) -> Result<Vec<crate::N
                 None
             } else {
                 Some(crate::NoteTags {
-                    path: note.path.clone(),
+                    source_path: note.path.clone(),
+                    source_id: note.id.clone(),
                     tags: matched,
                 })
             }
