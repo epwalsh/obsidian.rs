@@ -48,7 +48,7 @@ jobs:
           node-version: '20'
 
       - name: Build obsidian-mcp
-        run: cargo build -p obsidian-mcp
+        run: cargo build -p obsidian-rs-mcp
 
       - name: Create test vault
         run: |
