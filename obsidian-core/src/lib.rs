@@ -11,5 +11,5 @@ pub use error::{NoteError, SearchError, VaultError};
 pub use link::{Link, LocatedLink};
 pub use note::Note;
 pub use search::SearchQuery;
-pub use tag::LocatedTag;
+pub use tag::{LocatedTag, NoteTags};
 pub use vault::{MergePreview, RenamePreview, Vault};

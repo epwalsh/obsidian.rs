@@ -2,7 +2,7 @@ use std::path::Path;
 
 use color_eyre::eyre;
 use colored::Colorize;
-use obsidian_core::{Link, LocatedLink, Location, MergePreview, Note, RenamePreview, search};
+use obsidian_core::{Link, LocatedLink, Location, MergePreview, Note, NoteTags, RenamePreview};
 use serde::Serialize;
 use serde_json::json;
 
@@ -192,7 +192,7 @@ pub fn print_merge_preview_json(preview: &MergePreview, vault_path: &Path) {
     println!("{}", serde_json::to_string(&out).unwrap());
 }
 
-pub fn print_tags_search_plain(results: &[search::NoteTags], vault_path: &Path) {
+pub fn print_tags_search_plain(results: &[NoteTags], vault_path: &Path) {
     for nt in results {
         let rel = get_rel_path(&nt.path, vault_path);
         println!("{}", rel.cyan());
@@ -238,7 +238,7 @@ struct TagsSearchResultJson {
     tags: Vec<TagJson>,
 }
 
-pub fn print_tags_search_json(results: &[search::NoteTags], vault_path: &Path) {
+pub fn print_tags_search_json(results: &[NoteTags], vault_path: &Path) {
     let items: Vec<TagsSearchResultJson> = results
         .iter()
         .map(|nt| {

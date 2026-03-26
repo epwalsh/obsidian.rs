@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -9,6 +10,12 @@ use crate::{InlineLocation, Location};
 pub struct LocatedTag {
     pub tag: String,
     pub location: Location,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct NoteTags {
+    pub path: PathBuf,
+    pub tags: Vec<crate::LocatedTag>,
 }
 
 // Tags must start with a letter, then may contain letters, digits, hyphens, underscores,

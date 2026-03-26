@@ -558,14 +558,9 @@ pub fn find_all_tags(root: impl AsRef<Path>) -> Result<Vec<String>, NoteError> {
     Ok(tags)
 }
 
-pub struct NoteTags {
-    pub path: PathBuf,
-    pub tags: Vec<crate::LocatedTag>,
-}
-
 /// Find occurrences of specific tags. Returns a list of located tags grouped by the note in which
 /// they were found.
-pub fn find_tags(root: impl AsRef<Path>, tags: &[String]) -> Result<Vec<NoteTags>, SearchError> {
+pub fn find_tags(root: impl AsRef<Path>, tags: &[String]) -> Result<Vec<crate::NoteTags>, SearchError> {
     let mut search = SearchQuery::new(root).include_inline_tags();
     for tag in tags {
         search = search.or_has_tag(tag);
@@ -579,7 +574,7 @@ pub fn find_tags(root: impl AsRef<Path>, tags: &[String]) -> Result<Vec<NoteTags
             .any(|s| tag.eq_ignore_ascii_case(s) || tag.to_lowercase().starts_with(&format!("{}/", s.to_lowercase())))
     };
 
-    let results: Vec<NoteTags> = notes
+    let results: Vec<crate::NoteTags> = notes
         .into_iter()
         .filter_map(|note| {
             let matched: Vec<crate::LocatedTag> =
@@ -588,7 +583,7 @@ pub fn find_tags(root: impl AsRef<Path>, tags: &[String]) -> Result<Vec<NoteTags
             if matched.is_empty() {
                 None
             } else {
-                Some(NoteTags {
+                Some(crate::NoteTags {
                     path: note.path.clone(),
                     tags: matched,
                 })
