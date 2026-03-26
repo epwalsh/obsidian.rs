@@ -2,6 +2,30 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum SortOrder {
+    PathAsc,
+    PathDesc,
+    ModifiedAsc,
+    ModifiedDesc,
+    CreatedAsc,
+    CreatedDesc,
+}
+
+impl From<SortOrder> for obsidian_core::SortOrder {
+    fn from(s: SortOrder) -> Self {
+        match s {
+            SortOrder::PathAsc => obsidian_core::SortOrder::PathAsc,
+            SortOrder::PathDesc => obsidian_core::SortOrder::PathDesc,
+            SortOrder::ModifiedAsc => obsidian_core::SortOrder::ModifiedAsc,
+            SortOrder::ModifiedDesc => obsidian_core::SortOrder::ModifiedDesc,
+            SortOrder::CreatedAsc => obsidian_core::SortOrder::CreatedAsc,
+            SortOrder::CreatedDesc => obsidian_core::SortOrder::CreatedDesc,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReadNoteParams {
     #[schemars(description = "Note identifier: a file path (absolute or vault-relative), note ID, or alias")]
     pub note: String,
@@ -69,6 +93,10 @@ pub struct SearchNotesParams {
     pub id: Option<String>,
     #[schemars(description = "Filter by exact alias")]
     pub alias: Option<String>,
+    #[schemars(
+        description = "Sort order for results. One of: path-asc, path-desc, modified-asc, modified-desc, created-asc, created-desc"
+    )]
+    pub sort: Option<SortOrder>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -86,4 +114,8 @@ pub struct ListTagsParams {}
 pub struct SearchByTagParams {
     #[schemars(description = "Tags to search for. Also matches sub-tags: 'workout' matches 'workout/upper-body'.")]
     pub tags: Vec<String>,
+    #[schemars(
+        description = "Sort order for results by source note. One of: path-asc, path-desc, modified-asc, modified-desc, created-asc, created-desc"
+    )]
+    pub sort: Option<SortOrder>,
 }

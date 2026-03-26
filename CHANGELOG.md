@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- Added `sort` parameter to the `search_notes` and `search_tags` MCP tools, matching the CLI's sort options (`path-asc`, `path-desc`, `modified-asc`, `modified-desc`, `created-asc`, `created-desc`).
+
 ### Changed
 
 - Consolidated sorting functionality into `obsidian_core::search` module.

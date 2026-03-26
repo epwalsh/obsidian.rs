@@ -212,6 +212,12 @@ impl VaultServer {
                 query = query.and_has_alias(alias);
             }
 
+            let query = if let Some(sort) = p.sort {
+                query.sort_by(sort.into())
+            } else {
+                query
+            };
+
             let notes: Vec<Note> = query
                 .execute()
                 .map_err(search_err)?
@@ -284,7 +290,10 @@ impl VaultServer {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let vault = Arc::clone(&self.vault);
         let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, rmcp::ErrorData> {
-            let results = vault.find_tags(&p.tags).map_err(vault_err)?;
+            let mut results = vault.find_tags(&p.tags).map_err(vault_err)?;
+            if let Some(sort) = p.sort {
+                obsidian_core::search::sort_notes_by(&mut results, |(n, _)| Some(n), &sort.into());
+            }
             let mut items: Vec<serde_json::Value> = Vec::new();
             for (n, nt) in results {
                 if !nt.is_empty() {
