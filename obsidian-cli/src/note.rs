@@ -277,7 +277,9 @@ fn update_single_note(
 
     // Remove tags
     if !rm_tags.is_empty() {
-        note.tags.retain(|t| !rm_tags.contains(t));
+        for tag in rm_tags {
+            note.remove_tag(tag);
+        }
         dirty = true;
     }
 

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use obsidian_core::{Note, Vault};
+use obsidian_core::{Location, Note, Vault};
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
 use rmcp::model::{CallToolResult, Content, ServerCapabilities, ServerInfo};
 use rmcp::{ServerHandler, tool, tool_handler, tool_router};
@@ -288,24 +288,22 @@ impl VaultServer {
             let results = vault.find_tags(&p.tags).map_err(vault_err)?;
             let mut items: Vec<serde_json::Value> = Vec::new();
             for nt in results {
-                let inline_occurrences: Vec<serde_json::Value> = nt
-                    .inline_tags
-                    .into_iter()
-                    .map(|lt| {
-                        json!({
-                            "tag": lt.tag,
-                            "line": lt.location.line,
-                            "col_start": lt.location.col_start,
-                            "col_end": lt.location.col_end,
+                if !nt.tags.is_empty() {
+                    let tags: Vec<serde_json::Value> = nt
+                        .tags
+                        .into_iter()
+                        .map(|lt| match lt.location {
+                            Location::Frontmatter => json!({ "tag": lt.tag, "location": "frontmatter" }),
+                            Location::Inline(loc) => json!({
+                                "tag": lt.tag,
+                                "location": { "line": loc.line, "col_start": loc.col_start, "col_end": loc.col_end },
+                            }),
                         })
-                    })
-                    .collect();
-
-                if !nt.frontmatter_tags.is_empty() || !inline_occurrences.is_empty() {
+                        .collect();
                     items.push(json!({
-                        "path": vault_rel_path(&nt.path, &vault.path),
-                        "frontmatter_tags": nt.frontmatter_tags,
-                        "inline_occurrences": inline_occurrences,
+                        "source_path": vault_rel_path(&nt.source_path, &vault.path),
+                        "source_id": nt.source_id,
+                        "tags": tags,
                     }));
                 }
             }

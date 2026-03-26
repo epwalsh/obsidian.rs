@@ -2,7 +2,7 @@ use std::path::Path;
 
 use color_eyre::eyre;
 use colored::Colorize;
-use obsidian_core::{Link, LocatedLink, MergePreview, Note, RenamePreview, search};
+use obsidian_core::{Link, LocatedLink, Location, MergePreview, Note, NoteTags, RenamePreview};
 use serde::Serialize;
 use serde_json::json;
 
@@ -192,54 +192,77 @@ pub fn print_merge_preview_json(preview: &MergePreview, vault_path: &Path) {
     println!("{}", serde_json::to_string(&out).unwrap());
 }
 
-pub fn print_tags_search_plain(results: &[search::NoteTags], vault_path: &Path) {
+pub fn print_tags_search_plain(results: &[NoteTags], vault_path: &Path) {
     for nt in results {
-        let rel = get_rel_path(&nt.path, vault_path);
+        let rel = get_rel_path(&nt.source_path, vault_path);
         println!("{}", rel.cyan());
-        if !nt.frontmatter_tags.is_empty() {
-            let tags_colored: Vec<String> = nt.frontmatter_tags.iter().map(|t| t.yellow().to_string()).collect();
-            println!("  {} {}", "[frontmatter]".dimmed(), tags_colored.join(", "));
+        let fm_tags: Vec<String> = nt
+            .tags
+            .iter()
+            .filter(|t| matches!(t.location, Location::Frontmatter))
+            .map(|t| t.tag.yellow().to_string())
+            .collect();
+        if !fm_tags.is_empty() {
+            println!("  {} {}", "[frontmatter]".dimmed(), fm_tags.join(", "));
         }
-        for lt in &nt.inline_tags {
-            let marker = format!("[{}:{}]", lt.location.line, lt.location.col_start);
+        for lt in nt.tags.iter().filter(|t| matches!(t.location, Location::Inline(_))) {
+            let Location::Inline(ref loc) = lt.location else {
+                unreachable!()
+            };
+            let marker = format!("[{}:{}]", loc.line, loc.col_start);
             println!("  {} #{}", marker.dimmed(), lt.tag.yellow());
         }
     }
 }
 
 #[derive(Serialize)]
-struct InlineTagJson {
+#[serde(untagged)]
+enum LocationJson {
+    Frontmatter(String),
+    Inline {
+        line: usize,
+        col_start: usize,
+        col_end: usize,
+    },
+}
+
+#[derive(Serialize)]
+struct TagJson {
     tag: String,
-    line: usize,
-    col_start: usize,
-    col_end: usize,
+    location: LocationJson,
 }
 
 #[derive(Serialize)]
 struct TagsSearchResultJson {
-    path: String,
-    frontmatter_tags: Vec<String>,
-    inline_occurrences: Vec<InlineTagJson>,
+    source_path: String,
+    source_id: String,
+    tags: Vec<TagJson>,
 }
 
-pub fn print_tags_search_json(results: &[search::NoteTags], vault_path: &Path) {
+pub fn print_tags_search_json(results: &[NoteTags], vault_path: &Path) {
     let items: Vec<TagsSearchResultJson> = results
         .iter()
         .map(|nt| {
-            let rel = get_rel_path(&nt.path, vault_path);
+            let rel = get_rel_path(&nt.source_path, vault_path);
+            let tags = nt
+                .tags
+                .iter()
+                .map(|lt| TagJson {
+                    tag: lt.tag.clone(),
+                    location: match &lt.location {
+                        Location::Frontmatter => LocationJson::Frontmatter("frontmatter".to_string()),
+                        Location::Inline(loc) => LocationJson::Inline {
+                            line: loc.line,
+                            col_start: loc.col_start,
+                            col_end: loc.col_end,
+                        },
+                    },
+                })
+                .collect();
             TagsSearchResultJson {
-                path: rel,
-                frontmatter_tags: nt.frontmatter_tags.clone(),
-                inline_occurrences: nt
-                    .inline_tags
-                    .iter()
-                    .map(|lt| InlineTagJson {
-                        tag: lt.tag.clone(),
-                        line: lt.location.line,
-                        col_start: lt.location.col_start,
-                        col_end: lt.location.col_end,
-                    })
-                    .collect(),
+                source_path: rel,
+                source_id: nt.source_id.clone(),
+                tags,
             }
         })
         .collect();

@@ -6,7 +6,7 @@ use ignore::WalkBuilder;
 use rayon::prelude::*;
 use regex::Regex;
 
-use crate::{Note, NoteError, SearchError};
+use crate::{Location, Note, NoteError, SearchError};
 
 #[derive(Debug, Clone, Copy)]
 enum CaseSensitivity {
@@ -105,15 +105,15 @@ impl SearchQuery {
         self
     }
 
-    /// Note must have this tag (case-sensitive by default).
+    /// Note must have this tag (case-insensitive by default).
     pub fn and_has_tag(mut self, tag: impl Into<String>) -> Self {
-        self.and_tags.push(tag.into());
+        self.and_tags.push(crate::tag::clean_tag(&tag.into()));
         self
     }
 
-    /// Note could have this tag (case-sensitive by default).
+    /// Note could have this tag (case-insensitive by default).
     pub fn or_has_tag(mut self, tag: impl Into<String>) -> Self {
-        self.or_tags.push(tag.into());
+        self.or_tags.push(crate::tag::clean_tag(&tag.into()));
         self
     }
 
@@ -256,7 +256,7 @@ impl SearchQuery {
                 note_tag.eq_ignore_ascii_case(query_tag)
                     || note_tag
                         .to_lowercase()
-                        .starts_with(&format!("{}{}", query_tag.to_lowercase(), "/"))
+                        .starts_with(&format!("{}/", query_tag.to_lowercase()))
             }
             CaseSensitivity::Smart => {
                 if query_tag.chars().any(|c| c.is_ascii_uppercase()) {
@@ -265,7 +265,7 @@ impl SearchQuery {
                     note_tag.eq_ignore_ascii_case(query_tag)
                         || note_tag
                             .to_lowercase()
-                            .starts_with(&format!("{}{}", query_tag.to_lowercase(), "/"))
+                            .starts_with(&format!("{}/", query_tag.to_lowercase()))
                 }
             }
         };
@@ -371,13 +371,10 @@ impl SearchQuery {
 
                 if !and_tags.is_empty()
                     && !and_tags.iter().all(|t| {
-                        note.tags
-                            .iter()
-                            .any(|nt| compare_tag(nt, t, case_sensitivity.unwrap_or(CaseSensitivity::Sensitive)))
-                            || (include_inline_tags
-                                && note.inline_tags.iter().any(|lt| {
-                                    compare_tag(&lt.tag, t, case_sensitivity.unwrap_or(CaseSensitivity::Sensitive))
-                                }))
+                        note.tags.iter().any(|lt| {
+                            (include_inline_tags || matches!(lt.location, Location::Frontmatter))
+                                && compare_tag(&lt.tag, t, case_sensitivity.unwrap_or(CaseSensitivity::Ignore))
+                        })
                     })
                 {
                     return None;
@@ -452,13 +449,10 @@ impl SearchQuery {
                 }
 
                 if or_tags.iter().any(|t| {
-                    note.tags
-                        .iter()
-                        .any(|nt| compare_tag(nt, t, case_sensitivity.unwrap_or(CaseSensitivity::Sensitive)))
-                        || (include_inline_tags
-                            && note.inline_tags.iter().any(|lt| {
-                                compare_tag(&lt.tag, t, case_sensitivity.unwrap_or(CaseSensitivity::Sensitive))
-                            }))
+                    note.tags.iter().any(|lt| {
+                        (include_inline_tags || matches!(lt.location, Location::Frontmatter))
+                            && compare_tag(&lt.tag, t, case_sensitivity.unwrap_or(CaseSensitivity::Ignore))
+                    })
                 }) {
                     return Some(Ok(note));
                 }
@@ -551,13 +545,7 @@ pub fn find_all_tags(root: impl AsRef<Path>) -> Result<Vec<String>, NoteError> {
         .map(Note::from_path)
         .filter_map(|res| match res {
             Ok(note) => {
-                let mut tags = BTreeSet::new();
-                for tag in note.tags {
-                    tags.insert(tag);
-                }
-                for lt in note.inline_tags.iter() {
-                    tags.insert(lt.tag.clone());
-                }
+                let tags: BTreeSet<String> = note.tags.into_iter().map(|lt| lt.tag.to_lowercase()).collect();
                 Some(Ok(tags))
             }
             Err(e) => Some(Err(e)),
@@ -570,43 +558,36 @@ pub fn find_all_tags(root: impl AsRef<Path>) -> Result<Vec<String>, NoteError> {
     Ok(tags)
 }
 
-pub struct NoteTags {
-    pub path: PathBuf,
-    pub frontmatter_tags: Vec<String>,
-    pub inline_tags: Vec<crate::LocatedTag>,
-}
-
-/// Find occurrences of specific tags. Returns a list of matching notes, along with which of the
-/// search tags they contain and where those tags are located (frontmatter vs. inline).
-pub fn find_tags(root: impl AsRef<Path>, tags: &[String]) -> Result<Vec<NoteTags>, SearchError> {
+/// Find occurrences of specific tags. Returns a list of located tags grouped by the note in which
+/// they were found.
+pub fn find_tags(root: impl AsRef<Path>, tags: &[String]) -> Result<Vec<crate::NoteTags>, SearchError> {
+    let tags = tags.iter().map(|t| crate::tag::clean_tag(t)).collect::<Vec<String>>();
     let mut search = SearchQuery::new(root).include_inline_tags();
-    for tag in tags {
+    for tag in &tags {
         search = search.or_has_tag(tag);
     }
     let notes: Vec<Note> = search.execute()?.into_iter().filter_map(|r| r.ok()).collect();
 
     // A note tag matches a search term if it equals the term exactly or is a sub-tag of it
     // (e.g. "workout/upper-body" matches search term "workout").
-    let tag_matches_search = |tag: &str| tags.iter().any(|s| tag == s || tag.starts_with(&format!("{s}/")));
+    let tag_matches_search = |tag: &str| {
+        tags.iter()
+            .any(|s| tag.eq_ignore_ascii_case(s) || tag.to_lowercase().starts_with(&format!("{}/", s.to_lowercase())))
+    };
 
-    let results: Vec<NoteTags> = notes
+    let results: Vec<crate::NoteTags> = notes
         .into_iter()
         .filter_map(|note| {
-            let fm_matches: Vec<String> = note.tags.iter().filter(|t| tag_matches_search(t)).cloned().collect();
-            let inline_matches: Vec<crate::LocatedTag> = note
-                .inline_tags
-                .clone()
-                .into_iter()
-                .filter(|lt| tag_matches_search(&lt.tag))
-                .collect();
+            let matched: Vec<crate::LocatedTag> =
+                note.tags.into_iter().filter(|lt| tag_matches_search(&lt.tag)).collect();
 
-            if fm_matches.is_empty() && inline_matches.is_empty() {
+            if matched.is_empty() {
                 None
             } else {
-                Some(NoteTags {
-                    path: note.path.clone(),
-                    frontmatter_tags: fm_matches.clone(),
-                    inline_tags: inline_matches.clone(),
+                Some(crate::NoteTags {
+                    source_path: note.path.clone(),
+                    source_id: note.id.clone(),
+                    tags: matched,
                 })
             }
         })
