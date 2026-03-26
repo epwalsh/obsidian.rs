@@ -1,5 +1,6 @@
 use std::sync::LazyLock;
 
+use crate::InlineLocation;
 use regex::Regex;
 
 #[derive(Clone)]
@@ -20,21 +21,10 @@ pub enum Link {
     },
 }
 
-/// Position of a link within a text.
-///
-/// Lines are 1-indexed; columns are 0-indexed and character-based (not byte-based).
-/// `col_end` is exclusive (past-the-end).
-#[derive(Clone)]
-pub struct Location {
-    pub line: usize,
-    pub col_start: usize,
-    pub col_end: usize,
-}
-
 #[derive(Clone)]
 pub struct LocatedLink {
     pub link: Link,
-    pub location: Location,
+    pub location: InlineLocation,
 }
 
 pub(crate) static FENCED_CODE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)```[^\n]*\n.*?```").unwrap());
@@ -80,7 +70,7 @@ pub(crate) fn parse_links(content: &str) -> Vec<LocatedLink> {
         let m = caps.get(0).unwrap();
         let (line, col_start) = byte_to_line_col(content, m.start());
         let col_end = col_start + content[m.start()..m.end()].chars().count();
-        let location = Location {
+        let location = InlineLocation {
             line,
             col_start,
             col_end,

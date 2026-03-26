@@ -2,12 +2,13 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::link::{FENCED_CODE_RE, INLINE_CODE_RE, Location, byte_to_line_col};
+use crate::InlineLocation;
+use crate::link::{FENCED_CODE_RE, INLINE_CODE_RE, byte_to_line_col};
 
 #[derive(Clone)]
 pub struct LocatedTag {
     pub tag: String,
-    pub location: Location,
+    pub location: InlineLocation,
 }
 
 // Tags must start with a letter, then may contain letters, digits, hyphens, underscores,
@@ -35,7 +36,7 @@ pub(crate) fn parse_inline_tags(content: &str) -> Vec<LocatedTag> {
         let tag_name = content[tag_match.start() + 1..tag_match.end()].to_string();
         tags.push(LocatedTag {
             tag: tag_name,
-            location: Location {
+            location: InlineLocation {
                 line,
                 col_start,
                 col_end,
