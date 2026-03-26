@@ -120,6 +120,6 @@ jobs:
 
       - name: read_note returns isError for nonexistent note
         run: |
-          out=$(npx --yes @modelcontextprotocol/inspector@"$INSPECTOR_VERSION" --cli ./target/debug/obsidian-mcp --method tools/call --tool-name read_note --tool-arg note=nonexistent.md)
+          out=$(npx --yes @modelcontextprotocol/inspector@"$INSPECTOR_VERSION" --cli ./target/debug/obsidian-mcp --method tools/call --tool-name read_note --tool-arg note=nonexistent.md || true)
           echo "$out"
           echo "$out" | grep -q "note not found"
