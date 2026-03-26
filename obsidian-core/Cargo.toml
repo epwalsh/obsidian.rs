@@ -2,6 +2,8 @@
 name = "obsidian-rs-core"
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
+description = "A library for interacting with Obsidian vaults"
 
 [lib]
 name = "obsidian_core"

@@ -2,6 +2,8 @@
 name = "obsidian-rs-mcp"
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
+description = "An MCP server for interacting with Obsidian vaults"
 
 [[bin]]
 name = "obsidian-mcp"
