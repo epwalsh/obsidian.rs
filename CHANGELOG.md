@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-Streamlined release process.
+Streamlined release process and added LSP workspace crate boilerplate.
 
 ## v0.1.0 - 2026-03-26
 

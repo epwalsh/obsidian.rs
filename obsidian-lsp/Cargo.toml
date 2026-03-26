@@ -1,0 +1,17 @@
+[package]
+name = "obsidian-rs-lsp"
+version = "0.1.1"
+edition = "2024"
+license = "Apache-2.0"
+description = "An LSP server for interacting with Obsidian vaults"
+authors = ["epwalsh <epwalsh10@gmail.com>"]
+repository = "https://github.com/epwalsh/obsidian.rs"
+homepage = "https://github.com/epwalsh/obsidian.rs"
+readme = "../README.md"
+
+[[bin]]
+name = "obsidian-lsp"
+path = "src/main.rs"
+
+[dependencies]
+obsidian-rs-core = { path = "../obsidian-core", version = "0.1.1" }

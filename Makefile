@@ -6,6 +6,7 @@ checks :
 	cargo test
 	cargo install --bin obsidian --path obsidian-cli/
 	cargo install --bin obsidian-mcp --path obsidian-mcp/
+	cargo install --bin obsidian-lsp --path obsidian-lsp/
 
 .PHONY : 
 
@@ -13,6 +14,7 @@ checks :
 install :
 	cargo install --bin obsidian --path obsidian-cli/
 	cargo install --bin obsidian-mcp --path obsidian-mcp/
+	cargo install --bin obsidian-lsp --path obsidian-lsp/
 
 .PHONY : inspect-mcp
 inspect-mcp : install

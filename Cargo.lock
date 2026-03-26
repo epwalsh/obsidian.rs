@@ -832,6 +832,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "obsidian-rs-lsp"
+version = "0.1.1"
+dependencies = [
+ "obsidian-rs-core",
+]
+
+[[package]]
 name = "obsidian-rs-mcp"
 version = "0.1.1"
 dependencies = [

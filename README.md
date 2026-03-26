@@ -12,7 +12,7 @@ A collection of tools for working with Obsidian vaults, written in Rust.
   cargo install obsidian-rs-mcp
   claude mcp add obsidian --scope user obsidian-mcp --vault /path/to/my/vault
   ```
-- 🔡 `obsidian-rs-lsp`: A language server so you can use your favorite IDE to work on your vault
+- 🔡 `obsidian-rs-lsp`: **(WIP)** A language server so you can use your favorite IDE to work on your vault
 
 ## Roadmap
 
