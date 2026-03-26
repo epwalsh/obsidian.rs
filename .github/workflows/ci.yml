@@ -119,7 +119,10 @@ jobs:
           test ! -f /tmp/test-vault/new-note.md
 
       - name: read_note returns isError for nonexistent note
+        shell: bash
         run: |
+          set -x
+
           out=$(npx --yes @modelcontextprotocol/inspector@"$INSPECTOR_VERSION" --cli ./target/debug/obsidian-mcp --method tools/call --tool-name read_note --tool-arg note=nonexistent.md || true)
           echo "$out"
           echo "$out" | grep -q "note not found"
