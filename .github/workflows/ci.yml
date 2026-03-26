@@ -84,9 +84,9 @@ jobs:
           echo "$out" | grep -q note-a-id
           echo "$out" | grep -q rust
 
-      - name: search_notes filters by tag
+      - name: search_notes filters by content
         run: |
-          out=$(npx --yes @modelcontextprotocol/inspector --cli ./target/debug/obsidian-mcp --method tools/call --tool-name search_notes --tool-arg 'tags=["rust"]')
+          out=$(npx --yes @modelcontextprotocol/inspector --cli ./target/debug/obsidian-mcp --method tools/call --tool-name search_notes --tool-arg content_contains=content)
           echo "$out"
           echo "$out" | grep -q note-a.md
 
