@@ -124,6 +124,6 @@ jobs:
           set -x
           set +e
 
-          out=$(npx --yes @modelcontextprotocol/inspector@"$INSPECTOR_VERSION" --cli ./target/debug/obsidian-mcp --method tools/call --tool-name read_note --tool-arg note=nonexistent.md || true)
+          out=$(npx --yes @modelcontextprotocol/inspector@"$INSPECTOR_VERSION" --cli ./target/debug/obsidian-mcp --method tools/call --tool-name read_note --tool-arg note=nonexistent.md 2>&1)
           echo "$out"
           echo "$out" | grep -q "note not found"
