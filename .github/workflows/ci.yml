@@ -57,7 +57,7 @@ jobs:
 
       - name: tools/list returns all 8 tools
         run: |
-          out=$(npx --yes @modelcontextprotocol/inspector --cli ./target/debug/obsidian-mcp --method tools/list)
+          out=$(npx --yes @modelcontextprotocol/inspector@0.21.1 --cli ./target/debug/obsidian-mcp --method tools/list)
           echo "$out"
           for tool in read_note write_note patch_note update_note search_notes rename_note list_tags search_tags; do
             echo "$out" | grep -q "$tool" || { echo "Missing tool: $tool"; exit 1; }
@@ -65,7 +65,7 @@ jobs:
 
       - name: list_tags returns tags from both notes and inline
         run: |
-          out=$(npx --yes @modelcontextprotocol/inspector --cli ./target/debug/obsidian-mcp --method tools/call --tool-name list_tags)
+          out=$(npx --yes @modelcontextprotocol/inspector@0.21.1 --cli ./target/debug/obsidian-mcp --method tools/call --tool-name list_tags)
           echo "$out"
           for tag in rust obsidian python inline-tag; do
             echo "$out" | grep -q "$tag" || { echo "Missing tag: $tag"; exit 1; }
@@ -73,45 +73,45 @@ jobs:
 
       - name: search_tags finds occurrences of a tag
         run: |
-          out=$(npx --yes @modelcontextprotocol/inspector --cli ./target/debug/obsidian-mcp --method tools/call --tool-name search_tags --tool-arg 'tags=["rust"]')
+          out=$(npx --yes @modelcontextprotocol/inspector@0.21.1 --cli ./target/debug/obsidian-mcp --method tools/call --tool-name search_tags --tool-arg 'tags=["rust"]')
           echo "$out"
           echo "$out" | grep -q note-a.md
 
       - name: read_note returns content and frontmatter
         run: |
-          out=$(npx --yes @modelcontextprotocol/inspector --cli ./target/debug/obsidian-mcp --method tools/call --tool-name read_note --tool-arg note=note-a.md)
+          out=$(npx --yes @modelcontextprotocol/inspector@0.21.1 --cli ./target/debug/obsidian-mcp --method tools/call --tool-name read_note --tool-arg note=note-a.md)
           echo "$out"
           echo "$out" | grep -q note-a-id
           echo "$out" | grep -q rust
 
       - name: search_notes filters by content
         run: |
-          out=$(npx --yes @modelcontextprotocol/inspector --cli ./target/debug/obsidian-mcp --method tools/call --tool-name search_notes --tool-arg content_contains=content)
+          out=$(npx --yes @modelcontextprotocol/inspector@0.21.1 --cli ./target/debug/obsidian-mcp --method tools/call --tool-name search_notes --tool-arg content_contains=content)
           echo "$out"
           echo "$out" | grep -q note-a.md
 
       - name: update_note adds tag to frontmatter
         run: |
-          out=$(npx --yes @modelcontextprotocol/inspector --cli ./target/debug/obsidian-mcp --method tools/call --tool-name update_note --tool-arg note=note-a.md --tool-arg 'add_tags=["ci-test"]')
+          out=$(npx --yes @modelcontextprotocol/inspector@0.21.1 --cli ./target/debug/obsidian-mcp --method tools/call --tool-name update_note --tool-arg note=note-a.md --tool-arg 'add_tags=["ci-test"]')
           echo "$out"
           echo "$out" | grep -q ci-test
 
       - name: patch_note replaces string in body
         run: |
-          out=$(npx --yes @modelcontextprotocol/inspector --cli ./target/debug/obsidian-mcp --method tools/call --tool-name patch_note --tool-arg note=note-a.md --tool-arg old_string=content --tool-arg new_string=patched)
+          out=$(npx --yes @modelcontextprotocol/inspector@0.21.1 --cli ./target/debug/obsidian-mcp --method tools/call --tool-name patch_note --tool-arg note=note-a.md --tool-arg old_string=content --tool-arg new_string=patched)
           echo "$out"
           echo "$out" | grep -q note-a.md
 
       - name: write_note creates a new note
         run: |
-          out=$(npx --yes @modelcontextprotocol/inspector --cli ./target/debug/obsidian-mcp --method tools/call --tool-name write_note --tool-arg path=new-note.md --tool-arg content=hello --tool-arg title=New)
+          out=$(npx --yes @modelcontextprotocol/inspector@0.21.1 --cli ./target/debug/obsidian-mcp --method tools/call --tool-name write_note --tool-arg path=new-note.md --tool-arg content=hello --tool-arg title=New)
           echo "$out"
           echo "$out" | grep -q new-note.md
           test -f /tmp/test-vault/new-note.md
 
       - name: rename_note renames note and updates backlinks
         run: |
-          out=$(npx --yes @modelcontextprotocol/inspector --cli ./target/debug/obsidian-mcp --method tools/call --tool-name rename_note --tool-arg note=new-note.md --tool-arg new_path=renamed-note.md)
+          out=$(npx --yes @modelcontextprotocol/inspector@0.21.1 --cli ./target/debug/obsidian-mcp --method tools/call --tool-name rename_note --tool-arg note=new-note.md --tool-arg new_path=renamed-note.md)
           echo "$out"
           echo "$out" | grep -q renamed-note.md
           test -f /tmp/test-vault/renamed-note.md
@@ -119,6 +119,6 @@ jobs:
 
       - name: read_note returns isError for nonexistent note
         run: |
-          out=$(npx --yes @modelcontextprotocol/inspector --cli ./target/debug/obsidian-mcp --method tools/call --tool-name read_note --tool-arg note=nonexistent.md)
+          out=$(npx --yes @modelcontextprotocol/inspector@0.21.1 --cli ./target/debug/obsidian-mcp --method tools/call --tool-name read_note --tool-arg note=nonexistent.md)
           echo "$out"
           echo "$out" | grep -q isError
