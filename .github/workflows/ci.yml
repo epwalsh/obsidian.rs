@@ -52,8 +52,8 @@ jobs:
       - name: Create test vault
         run: |
           mkdir -p /tmp/test-vault
-          printf '---\nid: note-a-id\ntitle: Note A\naliases: [aliasA]\ntags: [rust, obsidian]\n---\nThis is note A content. #inline-tag\n' > /tmp/test-vault/note-a.md
-          printf '---\ntags: [python]\n---\nSee [[note-a]] for details.\n' > /tmp/test-vault/note-b.md
+          printf -- '---\nid: note-a-id\ntitle: Note A\naliases: [aliasA]\ntags: [rust, obsidian]\n---\nThis is note A content. #inline-tag\n' > /tmp/test-vault/note-a.md
+          printf -- '---\ntags: [python]\n---\nSee [[note-a]] for details.\n' > /tmp/test-vault/note-b.md
 
       - name: tools/list returns all 8 tools
         run: |
