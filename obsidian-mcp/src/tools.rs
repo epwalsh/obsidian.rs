@@ -36,6 +36,14 @@ pub struct ReadNoteParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListNotesParams {
+    #[schemars(
+        description = "Sort order for results. One of: path-asc, path-desc, modified-asc, modified-desc, created-asc, created-desc"
+    )]
+    pub sort: Option<SortOrder>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct WriteNoteParams {
     #[schemars(description = "Path for the note, relative to the vault root. Extension .md is added if omitted.")]
     pub path: String,

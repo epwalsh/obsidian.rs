@@ -180,8 +180,10 @@ pub struct NoteArgs {
 
 #[derive(Subcommand)]
 pub enum NoteCommand {
-    /// Resolve a note from a path, ID, or alias.
+    /// Resolve a note from a path, ID, or alias
     Resolve(ResolveArgs),
+    /// List all notes
+    List(ListArgs),
     /// Search for notes (alias for 'obsidian search')
     Search(Box<SearchArgs>),
     /// Read contents/frontmatter of a note
@@ -204,6 +206,16 @@ pub enum NoteCommand {
 pub struct ResolveArgs {
     /// Path, ID, or alias of the note to resolve
     pub note: String,
+    /// Output format
+    #[arg(long, short = 'f', default_value = "plain", help_heading = "Output options")]
+    pub format: OutputFormat,
+}
+
+#[derive(clap::Args)]
+pub struct ListArgs {
+    /// Sort order for results
+    #[arg(long, short = 's', help_heading = "Output options")]
+    pub sort: Option<SortOrder>,
     /// Output format
     #[arg(long, short = 'f', default_value = "plain", help_heading = "Output options")]
     pub format: OutputFormat,

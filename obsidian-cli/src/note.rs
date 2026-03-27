@@ -4,7 +4,8 @@ use color_eyre::eyre;
 use obsidian_core::{Note, Vault};
 
 use crate::args::{
-    BacklinksArgs, MergeArgs, OutputFormat, PatchArgs, ReadArgs, RenameArgs, ResolveArgs, UpdateArgs, WriteArgs,
+    BacklinksArgs, ListArgs, MergeArgs, OutputFormat, PatchArgs, ReadArgs, RenameArgs, ResolveArgs, UpdateArgs,
+    WriteArgs,
 };
 use crate::output;
 
@@ -13,6 +14,20 @@ pub fn cmd_resolve(vault: Vault, args: ResolveArgs) -> eyre::Result<()> {
     match args.format {
         OutputFormat::Plain => output::print_note_plain(&note, &vault.path),
         OutputFormat::Json => output::print_note_json(&note, &vault.path)?,
+    }
+    Ok(())
+}
+
+pub fn cmd_list(vault: Vault, args: ListArgs) -> eyre::Result<()> {
+    let mut query = vault.search();
+    if let Some(sort) = args.sort {
+        query = query.sort_by(sort.into())
+    };
+    let results = query.execute()?;
+    let notes: Vec<Note> = results.into_iter().filter_map(|r| r.ok()).collect();
+    match args.format {
+        OutputFormat::Plain => output::print_note_many_plain(&notes, &vault.path),
+        OutputFormat::Json => output::print_note_many_json(&notes, &vault.path)?,
     }
     Ok(())
 }

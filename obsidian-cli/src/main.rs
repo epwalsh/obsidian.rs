@@ -33,6 +33,7 @@ fn main() -> eyre::Result<()> {
         Command::Search(args) => search::cmd_search(vault, *args),
         Command::Note(note_args) => match note_args.subcommand {
             args::NoteCommand::Resolve(args) => note::cmd_resolve(vault, args),
+            args::NoteCommand::List(args) => note::cmd_list(vault, args),
             args::NoteCommand::Search(args) => search::cmd_search(vault, *args),
             args::NoteCommand::Read(args) => note::cmd_read(vault, args),
             args::NoteCommand::Write(args) => note::cmd_write(vault, args),

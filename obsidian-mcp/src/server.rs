@@ -9,8 +9,8 @@ use serde_json::json;
 
 use crate::error::{note_err, other_err, search_err, vault_err};
 use crate::tools::{
-    ListTagsParams, PatchNoteParams, ReadNoteParams, RenameNoteParams, SearchByTagParams, SearchNotesParams,
-    UpdateNoteParams, WriteNoteParams,
+    ListNotesParams, ListTagsParams, PatchNoteParams, ReadNoteParams, RenameNoteParams, SearchByTagParams,
+    SearchNotesParams, UpdateNoteParams, WriteNoteParams,
 };
 
 pub struct VaultServer {
@@ -62,6 +62,35 @@ impl VaultServer {
                 out["content"] = json!(note.read(false).map_err(note_err)?);
             }
             Ok(out)
+        })
+        .await
+        .map_err(|e| other_err(e.to_string()))??;
+
+        Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+    }
+
+    #[tool(
+        description = "List all notes in the vault",
+        annotations(read_only_hint = true, destructive_hint = false, open_world_hint = false)
+    )]
+    async fn list_notes(&self, Parameters(p): Parameters<ListNotesParams>) -> Result<CallToolResult, rmcp::ErrorData> {
+        let vault = Arc::clone(&self.vault);
+        let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, rmcp::ErrorData> {
+            let mut query = vault.search();
+            if let Some(sort) = p.sort {
+                query = query.sort_by(sort.into())
+            };
+
+            let notes: Vec<Note> = query
+                .execute()
+                .map_err(search_err)?
+                .into_iter()
+                .filter_map(|r| r.ok())
+                .collect();
+
+            let items: Result<Vec<serde_json::Value>, rmcp::ErrorData> =
+                notes.iter().map(|n| note_to_json(n, &vault.path)).collect();
+            Ok(serde_json::Value::Array(items?))
         })
         .await
         .map_err(|e| other_err(e.to_string()))??;
@@ -211,11 +240,8 @@ impl VaultServer {
             if let Some(alias) = p.alias {
                 query = query.and_has_alias(alias);
             }
-
-            let query = if let Some(sort) = p.sort {
-                query.sort_by(sort.into())
-            } else {
-                query
+            if let Some(sort) = p.sort {
+                query = query.sort_by(sort.into())
             };
 
             let notes: Vec<Note> = query

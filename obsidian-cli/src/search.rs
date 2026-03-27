@@ -66,10 +66,8 @@ pub fn cmd_search(vault: Vault, args: SearchArgs) -> eyre::Result<()> {
     if args.inline_tags {
         query = query.include_inline_tags();
     }
-    let query = if let Some(sort) = args.sort {
-        query.sort_by(sort.into())
-    } else {
-        query
+    if let Some(sort) = args.sort {
+        query = query.sort_by(sort.into())
     };
 
     let results = query.execute()?;
