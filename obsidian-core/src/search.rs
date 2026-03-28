@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
@@ -92,7 +92,15 @@ pub fn sort_notes_by<T>(items: &mut [T], key: impl Fn(&T) -> Option<&Note>, sort
 /// - [`or_content_contains`](SearchQuery::or_content_contains): OR — content contains any of these substrings (case-sensitive)
 /// - [`and_content_matches`](SearchQuery::and_content_matches): AND — content matches all of these patterns
 /// - [`or_content_matches`](SearchQuery::or_content_matches): OR — content matches any of these patterns
-pub struct SearchQuery {
+pub struct SearchQuery<'a> {
+    config: SearchQueryConfig,
+    loaded_notes: Option<&'a HashMap<PathBuf, Note>>,
+}
+
+/// All owned, non-reference fields of [`SearchQuery`]. Extracted into its own struct so that
+/// [`SearchQuery::with_loaded_notes`] can change the lifetime parameter without reconstructing
+/// every field individually.
+struct SearchQueryConfig {
     root: PathBuf,
     and_globs: Vec<String>,
     or_globs: Vec<String>,
@@ -115,154 +123,172 @@ pub struct SearchQuery {
     sort_order: Option<SortOrder>,
 }
 
-impl SearchQuery {
+impl SearchQuery<'static> {
     pub fn new(root: impl AsRef<Path>) -> Self {
         SearchQuery {
-            root: root.as_ref().to_path_buf(),
-            and_globs: Vec::new(),
-            or_globs: Vec::new(),
-            and_id: None,
-            or_ids: Vec::new(),
-            and_tags: Vec::new(),
-            or_tags: Vec::new(),
-            and_title_contains: Vec::new(),
-            or_title_contains: Vec::new(),
-            and_aliases: Vec::new(),
-            or_aliases: Vec::new(),
-            and_alias_contains: Vec::new(),
-            or_alias_contains: Vec::new(),
-            and_content_contains: Vec::new(),
-            or_content_contains: Vec::new(),
-            and_content_matches: Vec::new(),
-            or_content_matches: Vec::new(),
-            case_sensitivity: None,
-            include_inline_tags: false,
-            sort_order: None,
+            config: SearchQueryConfig {
+                root: root.as_ref().to_path_buf(),
+                and_globs: Vec::new(),
+                or_globs: Vec::new(),
+                and_id: None,
+                or_ids: Vec::new(),
+                and_tags: Vec::new(),
+                or_tags: Vec::new(),
+                and_title_contains: Vec::new(),
+                or_title_contains: Vec::new(),
+                and_aliases: Vec::new(),
+                or_aliases: Vec::new(),
+                and_alias_contains: Vec::new(),
+                or_alias_contains: Vec::new(),
+                and_content_contains: Vec::new(),
+                or_content_contains: Vec::new(),
+                and_content_matches: Vec::new(),
+                or_content_matches: Vec::new(),
+                case_sensitivity: None,
+                include_inline_tags: false,
+                sort_order: None,
+            },
+            loaded_notes: None,
         }
     }
 
+    /// Provide in-memory notes to use instead of their on-disk counterparts.
+    ///
+    /// Each note's `note.path` is matched against the vault's note paths on disk. Notes whose
+    /// paths exist on disk shadow the disk version; notes with no on-disk counterpart are included
+    /// as additional candidates. In-memory notes are assumed to have `content` populated whenever
+    /// content filters (e.g. [`and_content_contains`](Self::and_content_contains)) are used.
+    pub fn with_loaded_notes<'a>(self, notes: &'a HashMap<PathBuf, Note>) -> SearchQuery<'a> {
+        SearchQuery {
+            config: self.config,
+            loaded_notes: Some(notes),
+        }
+    }
+}
+
+impl<'a> SearchQuery<'a> {
     /// Note path must match this glob pattern (matched against the note's path relative to the vault root).
     pub fn and_glob(mut self, pattern: impl Into<String>) -> Self {
-        self.and_globs.push(pattern.into());
+        self.config.and_globs.push(pattern.into());
         self
     }
 
     /// Note path could match this glob pattern (matched against the note's path relative to the vault root).
     pub fn or_glob(mut self, pattern: impl Into<String>) -> Self {
-        self.or_globs.push(pattern.into());
+        self.config.or_globs.push(pattern.into());
         self
     }
 
     /// Note must have this ID (case-sensitive by default).
     pub fn and_has_id(mut self, id: impl Into<String>) -> Self {
-        self.and_id = Some(id.into());
+        self.config.and_id = Some(id.into());
         self
     }
 
     /// Note could have this ID (case-sensitive by default).
     pub fn or_has_id(mut self, id: impl Into<String>) -> Self {
-        self.or_ids.push(id.into());
+        self.config.or_ids.push(id.into());
         self
     }
 
     /// Note must have this tag (case-insensitive by default).
     pub fn and_has_tag(mut self, tag: impl Into<String>) -> Self {
-        self.and_tags.push(crate::tag::clean_tag(&tag.into()));
+        self.config.and_tags.push(crate::tag::clean_tag(&tag.into()));
         self
     }
 
     /// Note could have this tag (case-insensitive by default).
     pub fn or_has_tag(mut self, tag: impl Into<String>) -> Self {
-        self.or_tags.push(crate::tag::clean_tag(&tag.into()));
+        self.config.or_tags.push(crate::tag::clean_tag(&tag.into()));
         self
     }
 
     /// Must title must contain this substring (smart case-sensitive by default).
     pub fn and_title_contains(mut self, s: impl Into<String>) -> Self {
-        self.and_title_contains.push(s.into());
+        self.config.and_title_contains.push(s.into());
         self
     }
 
     /// Must title could contain this substring (smart case-sensitive by default).
     pub fn or_title_contains(mut self, s: impl Into<String>) -> Self {
-        self.or_title_contains.push(s.into());
+        self.config.or_title_contains.push(s.into());
         self
     }
 
     /// Note must have this alias (smart case-sensitive by default).
     pub fn and_has_alias(mut self, alias: impl Into<String>) -> Self {
-        self.and_aliases.push(alias.into());
+        self.config.and_aliases.push(alias.into());
         self
     }
 
     /// Note could have this alias (smart case-sensitive by default).
     pub fn or_has_alias(mut self, alias: impl Into<String>) -> Self {
-        self.or_aliases.push(alias.into());
+        self.config.or_aliases.push(alias.into());
         self
     }
 
     /// Substring must match against any of the note's aliases (smart case-sensitive by default).
     pub fn and_alias_contains(mut self, s: impl Into<String>) -> Self {
-        self.and_alias_contains.push(s.into());
+        self.config.and_alias_contains.push(s.into());
         self
     }
 
     /// Substring could match against any of the note's aliases (smart case-sensitive by default).
     pub fn or_alias_contains(mut self, s: impl Into<String>) -> Self {
-        self.or_alias_contains.push(s.into());
+        self.config.or_alias_contains.push(s.into());
         self
     }
 
     /// Note body must contain this string (smart case-sensitive by default).
     pub fn and_content_contains(mut self, s: impl Into<String>) -> Self {
-        self.and_content_contains.push(s.into());
+        self.config.and_content_contains.push(s.into());
         self
     }
 
     /// Note body could contain this string (smart case-sensitive by default).
     pub fn or_content_contains(mut self, s: impl Into<String>) -> Self {
-        self.or_content_contains.push(s.into());
+        self.config.or_content_contains.push(s.into());
         self
     }
 
     /// Regex body must match this pattern (smart case-sensitive by default).
     pub fn and_content_matches(mut self, pattern: impl Into<String>) -> Self {
-        self.and_content_matches.push(pattern.into());
+        self.config.and_content_matches.push(pattern.into());
         self
     }
 
     /// Regex body could match this pattern (smart case-sensitive by default).
     pub fn or_content_matches(mut self, pattern: impl Into<String>) -> Self {
-        self.or_content_matches.push(pattern.into());
+        self.config.or_content_matches.push(pattern.into());
         self
     }
 
     /// Execute the search case-sensitively.
     pub fn case_sensitive(mut self) -> Self {
-        self.case_sensitivity = Some(CaseSensitivity::Sensitive);
+        self.config.case_sensitivity = Some(CaseSensitivity::Sensitive);
         self
     }
 
     /// Execute the search case-insensitively.
     pub fn ignore_case(mut self) -> Self {
-        self.case_sensitivity = Some(CaseSensitivity::Ignore);
+        self.config.case_sensitivity = Some(CaseSensitivity::Ignore);
         self
     }
 
     /// Execute the search with smart case sensitivity: case-sensitive if the query contains any uppercase letters,
     /// otherwise case-insensitive.
     pub fn smart_case(mut self) -> Self {
-        self.case_sensitivity = Some(CaseSensitivity::Smart);
+        self.config.case_sensitivity = Some(CaseSensitivity::Smart);
         self
     }
 
     pub fn include_inline_tags(mut self) -> Self {
-        self.include_inline_tags = true;
+        self.config.include_inline_tags = true;
         self
     }
 
     pub fn sort_by(mut self, sort_order: SortOrder) -> Self {
-        self.sort_order = Some(sort_order);
+        self.config.sort_order = Some(sort_order);
         self
     }
 
@@ -271,7 +297,8 @@ impl SearchQuery {
     /// Returns `Err` if any glob or regex pattern is invalid.
     /// Each inner `Err` represents an I/O failure loading a specific note.
     pub fn execute(self) -> Result<Vec<Result<Note, NoteError>>, SearchError> {
-        let SearchQuery {
+        let SearchQuery { config, loaded_notes } = self;
+        let SearchQueryConfig {
             root,
             and_globs,
             or_globs,
@@ -292,7 +319,7 @@ impl SearchQuery {
             case_sensitivity,
             include_inline_tags,
             sort_order,
-        } = self;
+        } = config;
 
         let strings_equal = |s: &str, query: &str, cs: CaseSensitivity| match cs {
             CaseSensitivity::Sensitive => s == query,
@@ -339,7 +366,13 @@ impl SearchQuery {
         let and_glob_set = build_glob_set(&and_globs)?;
         let or_glob_set = build_glob_set(&or_globs)?;
 
+        // Build a set of paths covered by in-memory overrides so they can be excluded from the disk walk.
+        let override_paths: HashSet<&Path> = loaded_notes
+            .map(|m| m.keys().map(|p| p.as_path()).collect())
+            .unwrap_or_default();
+
         let paths: Vec<PathBuf> = find_note_paths(&root)
+            .filter(|path| !override_paths.contains(path.as_path()))
             .filter(|path| {
                 if and_globs.is_empty() {
                     return true;
@@ -404,6 +437,159 @@ impl SearchQuery {
             || !and_content_contains.is_empty()
             || !and_regexes.is_empty();
 
+        // Shared filter closure: apply all AND/OR filters to an already-loaded note.
+        // `rel` is the note's path relative to the vault root (used for or_glob matching).
+        let filter_note = |note: Note, rel: &Path| -> Option<Result<Note, NoteError>> {
+            if !has_filters {
+                return Some(Ok(note));
+            }
+
+            // ---------------------------------------------------------------------
+            // Begin AND filters. Exclude note immediately if it fails any of these.
+            // ---------------------------------------------------------------------
+            if let Some(ref expected_id) = and_id
+                && !strings_equal(
+                    &note.id,
+                    expected_id,
+                    case_sensitivity.unwrap_or(CaseSensitivity::Sensitive),
+                )
+            {
+                return None;
+            }
+
+            if !and_tags.is_empty()
+                && !and_tags.iter().all(|t| {
+                    note.tags.iter().any(|lt| {
+                        (include_inline_tags || matches!(lt.location, Location::Frontmatter))
+                            && compare_tag(&lt.tag, t, case_sensitivity.unwrap_or(CaseSensitivity::Ignore))
+                    })
+                })
+            {
+                return None;
+            }
+
+            if !and_aliases.is_empty()
+                && !and_aliases.iter().all(|a| {
+                    note.aliases
+                        .iter()
+                        .any(|na| strings_equal(na, a, case_sensitivity.unwrap_or(CaseSensitivity::Smart)))
+                })
+            {
+                return None;
+            }
+
+            if !and_title_contains.is_empty()
+                && !and_title_contains.iter().all(|substr| {
+                    note.title
+                        .as_deref()
+                        .is_some_and(|t| string_contains(t, substr, case_sensitivity.unwrap_or(CaseSensitivity::Smart)))
+                })
+            {
+                return None;
+            }
+
+            if !and_alias_contains.is_empty()
+                && !and_alias_contains.iter().all(|substr| {
+                    note.aliases
+                        .iter()
+                        .any(|a| string_contains(a, substr, case_sensitivity.unwrap_or(CaseSensitivity::Smart)))
+                })
+            {
+                return None;
+            }
+
+            if !and_content_contains.is_empty()
+                && !and_content_contains.iter().all(|s| {
+                    string_contains(
+                        note.content.as_deref().unwrap(),
+                        s,
+                        case_sensitivity.unwrap_or(CaseSensitivity::Smart),
+                    )
+                })
+            {
+                return None;
+            }
+
+            if !and_regexes.is_empty()
+                && !and_regexes
+                    .iter()
+                    .all(|re| re.is_match(note.content.as_deref().unwrap()))
+            {
+                return None;
+            }
+
+            // --------------------------------------------------------------------------------------------
+            // Begin OR filters. Include note if it satisfies any of these (or if there are no OR filters).
+            // --------------------------------------------------------------------------------------------
+            if !has_or_filters {
+                return Some(Ok(note));
+            }
+
+            if !or_globs.is_empty() && or_glob_set.is_match(rel) {
+                return Some(Ok(note));
+            }
+
+            if or_ids
+                .iter()
+                .any(|id| strings_equal(&note.id, id, case_sensitivity.unwrap_or(CaseSensitivity::Sensitive)))
+            {
+                return Some(Ok(note));
+            }
+
+            if or_tags.iter().any(|t| {
+                note.tags.iter().any(|lt| {
+                    (include_inline_tags || matches!(lt.location, Location::Frontmatter))
+                        && compare_tag(&lt.tag, t, case_sensitivity.unwrap_or(CaseSensitivity::Ignore))
+                })
+            }) {
+                return Some(Ok(note));
+            }
+
+            if or_title_contains.iter().any(|substr| {
+                note.title
+                    .as_deref()
+                    .is_some_and(|t| string_contains(t, substr, case_sensitivity.unwrap_or(CaseSensitivity::Smart)))
+            }) {
+                return Some(Ok(note));
+            }
+
+            if or_aliases.iter().any(|a| {
+                note.aliases
+                    .iter()
+                    .any(|na| strings_equal(na, a, case_sensitivity.unwrap_or(CaseSensitivity::Smart)))
+            }) {
+                return Some(Ok(note));
+            }
+
+            if or_alias_contains.iter().any(|substr| {
+                note.aliases
+                    .iter()
+                    .any(|a| string_contains(a, substr, case_sensitivity.unwrap_or(CaseSensitivity::Smart)))
+            }) {
+                return Some(Ok(note));
+            }
+
+            if or_content_contains.iter().any(|s| {
+                string_contains(
+                    note.content.as_deref().unwrap(),
+                    s,
+                    case_sensitivity.unwrap_or(CaseSensitivity::Smart),
+                )
+            }) {
+                return Some(Ok(note));
+            }
+
+            if or_regexes
+                .iter()
+                .any(|re| re.is_match(note.content.as_deref().unwrap()))
+            {
+                return Some(Ok(note));
+            }
+
+            None
+        };
+
+        // Process disk notes in parallel.
         let mut results: Vec<Result<Note, NoteError>> = paths
             .into_par_iter()
             .filter_map(|path| -> Option<Result<Note, NoteError>> {
@@ -417,156 +603,32 @@ impl SearchQuery {
                     Ok(n) => n,
                     Err(e) => return Some(Err(e)),
                 };
-
-                if !has_filters {
-                    return Some(Ok(note));
-                }
-
-                // ---------------------------------------------------------------------
-                // Begin AND filters. Exclude note immediately if it fails any of these.
-                // ---------------------------------------------------------------------
-                if let Some(ref expected_id) = and_id
-                    && !strings_equal(
-                        &note.id,
-                        expected_id,
-                        case_sensitivity.unwrap_or(CaseSensitivity::Sensitive),
-                    )
-                {
-                    return None;
-                }
-
-                if !and_tags.is_empty()
-                    && !and_tags.iter().all(|t| {
-                        note.tags.iter().any(|lt| {
-                            (include_inline_tags || matches!(lt.location, Location::Frontmatter))
-                                && compare_tag(&lt.tag, t, case_sensitivity.unwrap_or(CaseSensitivity::Ignore))
-                        })
-                    })
-                {
-                    return None;
-                }
-
-                if !and_aliases.is_empty()
-                    && !and_aliases.iter().all(|a| {
-                        note.aliases
-                            .iter()
-                            .any(|na| strings_equal(na, a, case_sensitivity.unwrap_or(CaseSensitivity::Smart)))
-                    })
-                {
-                    return None;
-                }
-
-                if !and_title_contains.is_empty()
-                    && !and_title_contains.iter().all(|substr| {
-                        note.title.as_deref().is_some_and(|t| {
-                            string_contains(t, substr, case_sensitivity.unwrap_or(CaseSensitivity::Smart))
-                        })
-                    })
-                {
-                    return None;
-                }
-
-                if !and_alias_contains.is_empty()
-                    && !and_alias_contains.iter().all(|substr| {
-                        note.aliases
-                            .iter()
-                            .any(|a| string_contains(a, substr, case_sensitivity.unwrap_or(CaseSensitivity::Smart)))
-                    })
-                {
-                    return None;
-                }
-
-                if !and_content_contains.is_empty()
-                    && !and_content_contains.iter().all(|s| {
-                        string_contains(
-                            note.content.as_deref().unwrap(),
-                            s,
-                            case_sensitivity.unwrap_or(CaseSensitivity::Smart),
-                        )
-                    })
-                {
-                    return None;
-                }
-
-                if !and_regexes.is_empty()
-                    && !and_regexes
-                        .iter()
-                        .all(|re| re.is_match(note.content.as_deref().unwrap()))
-                {
-                    return None;
-                }
-
-                // --------------------------------------------------------------------------------------------
-                // Begin OR filters. Include note if it satisfies any of these (or if there are no OR filters).
-                // --------------------------------------------------------------------------------------------
-                if !has_or_filters {
-                    return Some(Ok(note));
-                }
-
-                if !or_globs.is_empty() && or_glob_set.is_match(rel) {
-                    return Some(Ok(note));
-                }
-
-                if or_ids
-                    .iter()
-                    .any(|id| strings_equal(&note.id, id, case_sensitivity.unwrap_or(CaseSensitivity::Sensitive)))
-                {
-                    return Some(Ok(note));
-                }
-
-                if or_tags.iter().any(|t| {
-                    note.tags.iter().any(|lt| {
-                        (include_inline_tags || matches!(lt.location, Location::Frontmatter))
-                            && compare_tag(&lt.tag, t, case_sensitivity.unwrap_or(CaseSensitivity::Ignore))
-                    })
-                }) {
-                    return Some(Ok(note));
-                }
-
-                if or_title_contains.iter().any(|substr| {
-                    note.title
-                        .as_deref()
-                        .is_some_and(|t| string_contains(t, substr, case_sensitivity.unwrap_or(CaseSensitivity::Smart)))
-                }) {
-                    return Some(Ok(note));
-                }
-
-                if or_aliases.iter().any(|a| {
-                    note.aliases
-                        .iter()
-                        .any(|na| strings_equal(na, a, case_sensitivity.unwrap_or(CaseSensitivity::Smart)))
-                }) {
-                    return Some(Ok(note));
-                }
-
-                if or_alias_contains.iter().any(|substr| {
-                    note.aliases
-                        .iter()
-                        .any(|a| string_contains(a, substr, case_sensitivity.unwrap_or(CaseSensitivity::Smart)))
-                }) {
-                    return Some(Ok(note));
-                }
-
-                if or_content_contains.iter().any(|s| {
-                    string_contains(
-                        note.content.as_deref().unwrap(),
-                        s,
-                        case_sensitivity.unwrap_or(CaseSensitivity::Smart),
-                    )
-                }) {
-                    return Some(Ok(note));
-                }
-
-                if or_regexes
-                    .iter()
-                    .any(|re| re.is_match(note.content.as_deref().unwrap()))
-                {
-                    return Some(Ok(note));
-                }
-
-                None
+                filter_note(note, rel)
             })
             .collect();
+
+        // Process in-memory override notes sequentially (typically a small set).
+        if let Some(notes) = loaded_notes {
+            for note in notes.values() {
+                // Apply and_glob pre-filter.
+                if !and_globs.is_empty() {
+                    let rel = note.path.strip_prefix(&root).unwrap_or(&note.path);
+                    if !and_glob_set.is_match(rel) {
+                        continue;
+                    }
+                }
+                // Guard against missing content when content filters are active.
+                if needs_content && note.content.is_none() {
+                    results.push(Err(NoteError::ContentNotLoaded));
+                    continue;
+                }
+                // Compute rel as owned PathBuf so we can move the cloned note into filter_note.
+                let rel_buf = note.path.strip_prefix(&root).unwrap_or(&note.path).to_path_buf();
+                if let Some(result) = filter_note(note.clone(), &rel_buf) {
+                    results.push(result);
+                }
+            }
+        }
 
         if let Some(sort_order) = sort_order {
             sort_notes_by(&mut results, |r| r.as_ref().ok(), &sort_order);
@@ -607,9 +669,19 @@ pub fn find_notes(root: impl AsRef<Path>) -> Vec<Result<Note, NoteError>> {
         .collect()
 }
 
-/// Find all tags
-pub fn find_all_tags(root: impl AsRef<Path>) -> Result<Vec<String>, NoteError> {
-    let tags = find_note_paths(root)
+/// Find all tags used across the vault. When `loaded_notes` is provided, notes whose paths appear
+/// in the map are excluded from the disk walk and the in-memory versions are used instead.
+pub fn find_all_tags(
+    root: impl AsRef<Path>,
+    loaded_notes: Option<&HashMap<PathBuf, Note>>,
+) -> Result<Vec<String>, NoteError> {
+    let root = root.as_ref();
+    let override_paths: HashSet<&Path> = loaded_notes
+        .map(|m| m.keys().map(|p| p.as_path()).collect())
+        .unwrap_or_default();
+
+    let mut tags: BTreeSet<String> = find_note_paths(root)
+        .filter(|p| !override_paths.contains(p.as_path()))
         .collect::<Vec<_>>()
         .into_par_iter()
         .map(Note::from_path)
@@ -624,19 +696,43 @@ pub fn find_all_tags(root: impl AsRef<Path>) -> Result<Vec<String>, NoteError> {
         .flatten()
         .collect::<BTreeSet<String>>();
 
-    let tags: Vec<String> = tags.into_iter().collect();
-    Ok(tags)
+    // Include tags from in-memory notes.
+    if let Some(notes) = loaded_notes {
+        for note in notes.values() {
+            for lt in &note.tags {
+                tags.insert(lt.tag.to_lowercase());
+            }
+        }
+    }
+
+    Ok(tags.into_iter().collect())
 }
 
 /// Find occurrences of specific tags. Returns a list of located tags grouped by the note in which
-/// they were found.
-pub fn find_tags(root: impl AsRef<Path>, tags: &[String]) -> Result<Vec<(Note, Vec<crate::LocatedTag>)>, SearchError> {
+/// they were found. When `loaded_notes` is provided, notes whose paths appear in the map are
+/// excluded from the disk walk and the in-memory versions are used instead.
+pub fn find_tags(
+    root: impl AsRef<Path>,
+    tags: &[String],
+    loaded_notes: Option<&HashMap<PathBuf, Note>>,
+) -> Result<Vec<(Note, Vec<crate::LocatedTag>)>, SearchError> {
     let tags = tags.iter().map(|t| crate::tag::clean_tag(t)).collect::<Vec<String>>();
-    let mut search = SearchQuery::new(root).include_inline_tags();
-    for tag in &tags {
-        search = search.or_has_tag(tag);
-    }
-    let notes: Vec<Note> = search.execute()?.into_iter().filter_map(|r| r.ok()).collect();
+    let root_ref = root.as_ref();
+    let notes: Vec<Note> = if let Some(loaded) = loaded_notes {
+        let mut q = SearchQuery::new(root_ref)
+            .include_inline_tags()
+            .with_loaded_notes(loaded);
+        for tag in &tags {
+            q = q.or_has_tag(tag);
+        }
+        q.execute()?.into_iter().filter_map(|r| r.ok()).collect()
+    } else {
+        let mut q = SearchQuery::new(root_ref).include_inline_tags();
+        for tag in &tags {
+            q = q.or_has_tag(tag);
+        }
+        q.execute()?.into_iter().filter_map(|r| r.ok()).collect()
+    };
 
     // A note tag matches a search term if it equals the term exactly or is a sub-tag of it
     // (e.g. "workout/upper-body" matches search term "workout").
@@ -681,26 +777,65 @@ pub fn find_notes_with_content(root: impl AsRef<Path>) -> Vec<Result<Note, NoteE
 
 /// Like [`find_notes`], but only loads notes whose path satisfies `filter`.
 /// Filtering happens before any file I/O, so non-matching files are never read.
-pub fn find_notes_filtered(root: impl AsRef<Path>, filter: impl Fn(&Path) -> bool) -> Vec<Result<Note, NoteError>> {
-    find_note_paths(root)
+/// When `loaded_notes` is provided, notes whose paths appear in the map are excluded from the
+/// disk walk and the in-memory versions are used instead (if they also pass `filter`).
+pub fn find_notes_filtered(
+    root: impl AsRef<Path>,
+    filter: impl Fn(&Path) -> bool,
+    loaded_notes: Option<&HashMap<PathBuf, Note>>,
+) -> Vec<Result<Note, NoteError>> {
+    let root = root.as_ref();
+    let override_paths: HashSet<&Path> = loaded_notes
+        .map(|m| m.keys().map(|p| p.as_path()).collect())
+        .unwrap_or_default();
+
+    let mut results: Vec<Result<Note, NoteError>> = find_note_paths(root)
+        .filter(|path| !override_paths.contains(path.as_path()))
         .filter(|path| filter(path))
         .collect::<Vec<_>>()
         .into_par_iter()
         .map(Note::from_path)
-        .collect()
+        .collect();
+
+    if let Some(notes) = loaded_notes {
+        for note in notes.values() {
+            if filter(&note.path) {
+                results.push(Ok(note.clone()));
+            }
+        }
+    }
+
+    results
 }
 
 /// Like [`find_notes_filtered`], but retains body content in each [`Note::content`].
 pub fn find_notes_filtered_with_content(
     root: impl AsRef<Path>,
     filter: impl Fn(&Path) -> bool,
+    loaded_notes: Option<&HashMap<PathBuf, Note>>,
 ) -> Vec<Result<Note, NoteError>> {
-    find_note_paths(root)
+    let root = root.as_ref();
+    let override_paths: HashSet<&Path> = loaded_notes
+        .map(|m| m.keys().map(|p| p.as_path()).collect())
+        .unwrap_or_default();
+
+    let mut results: Vec<Result<Note, NoteError>> = find_note_paths(root)
+        .filter(|path| !override_paths.contains(path.as_path()))
         .filter(|path| filter(path))
         .collect::<Vec<_>>()
         .into_par_iter()
         .map(Note::from_path_with_content)
-        .collect()
+        .collect();
+
+    if let Some(notes) = loaded_notes {
+        for note in notes.values() {
+            if filter(&note.path) {
+                results.push(Ok(note.clone()));
+            }
+        }
+    }
+
+    results
 }
 
 #[cfg(test)]
@@ -1144,5 +1279,230 @@ mod tests {
         let vault = crate::Vault::open(dir.path()).unwrap();
         let ids = sorted_ids(unwrap_notes(vault.search().and_has_tag("my-tag").execute().unwrap()));
         assert_eq!(ids, vec!["tagged"]);
+    }
+
+    // --- with_loaded_notes tests ---
+
+    #[test]
+    fn with_loaded_notes_replaces_disk_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note.md");
+        write_note(&path, "disk content");
+
+        // Override with in-memory version that has different content.
+        let mut in_memory = Note::from_path_with_content(&path).unwrap();
+        in_memory.content = Some("in-memory content".to_string());
+        let overrides: HashMap<PathBuf, Note> = [(path.clone(), in_memory)].into_iter().collect();
+
+        let notes = unwrap_notes(
+            SearchQuery::new(dir.path())
+                .and_content_contains("in-memory")
+                .with_loaded_notes(&overrides)
+                .execute()
+                .unwrap(),
+        );
+        assert_eq!(notes.len(), 1);
+
+        // The disk version (with "disk content") should not appear.
+        let disk_match = unwrap_notes(
+            SearchQuery::new(dir.path())
+                .and_content_contains("disk")
+                .execute()
+                .unwrap(),
+        );
+        assert_eq!(disk_match.len(), 1); // baseline: disk has "disk content"
+
+        let overrides2: HashMap<PathBuf, Note> = {
+            let mut m2 = Note::from_path_with_content(&path).unwrap();
+            m2.content = Some("in-memory content".to_string());
+            [(path, m2)].into_iter().collect()
+        };
+        let no_disk_match = unwrap_notes(
+            SearchQuery::new(dir.path())
+                .and_content_contains("disk")
+                .with_loaded_notes(&overrides2)
+                .execute()
+                .unwrap(),
+        );
+        assert!(no_disk_match.is_empty());
+    }
+
+    #[test]
+    fn with_loaded_notes_no_double_counting() {
+        let dir = tempfile::tempdir().unwrap();
+        write_note(&dir.path().join("a.md"), "Note A.");
+        write_note(&dir.path().join("b.md"), "Note B.");
+        write_note(&dir.path().join("c.md"), "Note C.");
+
+        let path_a = dir.path().join("a.md");
+        let override_a = Note::from_path(&path_a).unwrap();
+        let overrides: HashMap<PathBuf, Note> = [(path_a, override_a)].into_iter().collect();
+
+        let notes = unwrap_notes(
+            SearchQuery::new(dir.path())
+                .with_loaded_notes(&overrides)
+                .execute()
+                .unwrap(),
+        );
+        // Should still be exactly 3, not 4.
+        assert_eq!(notes.len(), 3);
+    }
+
+    #[test]
+    fn with_loaded_notes_new_note_not_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        write_note(&dir.path().join("existing.md"), "Existing note.");
+
+        // Create an in-memory note whose path does not exist on disk.
+        let new_path = dir.path().join("new-unsaved.md");
+        let new_note = Note {
+            path: new_path.clone(),
+            id: "new-unsaved".to_string(),
+            title: None,
+            aliases: Vec::new(),
+            tags: Vec::new(),
+            content: Some("Brand new content.".to_string()),
+            links: Vec::new(),
+            frontmatter: None,
+            frontmatter_line_count: 0,
+        };
+        let overrides: HashMap<PathBuf, Note> = [(new_path, new_note)].into_iter().collect();
+
+        let ids = sorted_ids(unwrap_notes(
+            SearchQuery::new(dir.path())
+                .with_loaded_notes(&overrides)
+                .execute()
+                .unwrap(),
+        ));
+        assert_eq!(ids, vec!["existing", "new-unsaved"]);
+    }
+
+    #[test]
+    fn with_loaded_notes_respects_tag_filter() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note.md");
+        write_note(&path, "---\ntags: [old-tag]\n---\nContent.");
+
+        // Override with a note that has a different tag.
+        let mut override_note = Note::from_path(&path).unwrap();
+        override_note.tags = vec![crate::LocatedTag {
+            tag: "new-tag".to_string(),
+            location: crate::Location::Frontmatter,
+        }];
+        let overrides: HashMap<PathBuf, Note> = [(path, override_note)].into_iter().collect();
+
+        // Should find the override note via the new tag.
+        let ids = sorted_ids(unwrap_notes(
+            SearchQuery::new(dir.path())
+                .and_has_tag("new-tag")
+                .with_loaded_notes(&overrides)
+                .execute()
+                .unwrap(),
+        ));
+        assert_eq!(ids, vec!["note"]);
+
+        // Should NOT find via the old tag (disk version is excluded).
+        let ids_old = sorted_ids(unwrap_notes(
+            SearchQuery::new(dir.path())
+                .and_has_tag("old-tag")
+                .with_loaded_notes(&overrides)
+                .execute()
+                .unwrap(),
+        ));
+        assert!(ids_old.is_empty());
+    }
+
+    #[test]
+    fn with_loaded_notes_glob_filter_applied_to_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let subdir = dir.path().join("notes");
+        write_note(&subdir.join("included.md"), "In notes/.");
+
+        // In-memory note at root level — should be excluded by the and_glob("notes/**") filter.
+        let root_path = dir.path().join("outside.md");
+        let outside_note = Note {
+            path: root_path.clone(),
+            id: "outside".to_string(),
+            title: None,
+            aliases: Vec::new(),
+            tags: Vec::new(),
+            content: Some("Outside notes dir.".to_string()),
+            links: Vec::new(),
+            frontmatter: None,
+            frontmatter_line_count: 0,
+        };
+        let overrides: HashMap<PathBuf, Note> = [(root_path, outside_note)].into_iter().collect();
+
+        let ids = sorted_ids(unwrap_notes(
+            SearchQuery::new(dir.path())
+                .and_glob("notes/**")
+                .with_loaded_notes(&overrides)
+                .execute()
+                .unwrap(),
+        ));
+        assert_eq!(ids, vec!["included"]);
+    }
+
+    #[test]
+    fn with_loaded_notes_content_not_loaded_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // In-memory note with no content loaded.
+        let path = dir.path().join("no-content.md");
+        let note = Note {
+            path: path.clone(),
+            id: "no-content".to_string(),
+            title: None,
+            aliases: Vec::new(),
+            tags: Vec::new(),
+            content: None, // content not loaded
+            links: Vec::new(),
+            frontmatter: None,
+            frontmatter_line_count: 0,
+        };
+        let overrides: HashMap<PathBuf, Note> = [(path, note)].into_iter().collect();
+
+        let results = SearchQuery::new(dir.path())
+            .and_content_contains("anything")
+            .with_loaded_notes(&overrides)
+            .execute()
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert!(matches!(results[0], Err(NoteError::ContentNotLoaded)));
+    }
+
+    #[test]
+    fn with_loaded_notes_multiple_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        write_note(&dir.path().join("a.md"), "---\ntags: [old]\n---\nContent A.");
+        write_note(&dir.path().join("b.md"), "---\ntags: [old]\n---\nContent B.");
+        write_note(&dir.path().join("c.md"), "---\ntags: [old]\n---\nContent C.");
+
+        let path_a = dir.path().join("a.md");
+        let path_b = dir.path().join("b.md");
+
+        let mut override_a = Note::from_path(&path_a).unwrap();
+        override_a.tags = vec![crate::LocatedTag {
+            tag: "new".to_string(),
+            location: crate::Location::Frontmatter,
+        }];
+        let mut override_b = Note::from_path(&path_b).unwrap();
+        override_b.tags = vec![crate::LocatedTag {
+            tag: "new".to_string(),
+            location: crate::Location::Frontmatter,
+        }];
+
+        let overrides: HashMap<PathBuf, Note> = [(path_a, override_a), (path_b, override_b)].into_iter().collect();
+
+        // "new" tag should match both overrides but not "c" (which has "old" on disk).
+        let ids = sorted_ids(unwrap_notes(
+            SearchQuery::new(dir.path())
+                .and_has_tag("new")
+                .with_loaded_notes(&overrides)
+                .execute()
+                .unwrap(),
+        ));
+        assert_eq!(ids, vec!["a", "b"]);
     }
 }

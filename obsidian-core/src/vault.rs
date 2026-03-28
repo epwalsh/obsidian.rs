@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env::current_dir;
 use std::path::{Path, PathBuf};
 
@@ -9,6 +10,7 @@ use rayon::prelude::*;
 
 pub struct Vault {
     pub path: PathBuf,
+    loaded_notes: HashMap<PathBuf, Note>,
 }
 
 /// Normalizes a path by resolving `.` and `..` components without touching the filesystem.
@@ -177,7 +179,10 @@ impl Vault {
         if !path.is_dir() {
             return Err(VaultError::NotADirectory(path));
         }
-        Ok(Vault { path })
+        Ok(Vault {
+            path,
+            loaded_notes: HashMap::new(),
+        })
     }
 
     /// Opens the nearest vault by walking up from the current directory, looking for an
@@ -319,31 +324,46 @@ impl Vault {
         search::find_notes_with_content(&self.path)
     }
 
+    /// Inserts or replaces an in-memory note. While present, this note shadows its on-disk
+    /// counterpart (matched by `note.path`) across all vault search operations. Notes with a path
+    /// that does not exist on disk are included as additional candidates.
+    pub fn load_note(&mut self, note: Note) {
+        self.loaded_notes.insert(note.path.clone(), note);
+    }
+
+    /// Removes a previously loaded in-memory note, restoring the on-disk version for searches.
+    /// Does nothing if the path is not currently loaded.
+    pub fn unload_note(&mut self, path: &Path) {
+        self.loaded_notes.remove(path);
+    }
+
     /// Like [`notes`](Self::notes), but skips notes whose path does not satisfy `filter`.
     /// Filtering happens at the filesystem traversal level, before any file is read.
     pub fn notes_filtered(&self, filter: impl Fn(&Path) -> bool) -> Vec<Result<Note, NoteError>> {
-        search::find_notes_filtered(&self.path, filter)
+        search::find_notes_filtered(&self.path, filter, Some(&self.loaded_notes))
     }
 
     /// Like [`notes_filtered`](Self::notes_filtered), but retains body content in each [`Note::content`].
     pub fn notes_filtered_with_content(&self, filter: impl Fn(&Path) -> bool) -> Vec<Result<Note, NoteError>> {
-        search::find_notes_filtered_with_content(&self.path, filter)
+        search::find_notes_filtered_with_content(&self.path, filter, Some(&self.loaded_notes))
     }
 
     /// Returns a [`SearchQuery`](search::SearchQuery) rooted at this vault's path.
-    pub fn search(&self) -> search::SearchQuery {
-        search::SearchQuery::new(&self.path)
+    /// Any notes previously registered via [`load_note`](Self::load_note) are automatically
+    /// included, shadowing their on-disk counterparts.
+    pub fn search(&self) -> search::SearchQuery<'_> {
+        search::SearchQuery::new(&self.path).with_loaded_notes(&self.loaded_notes)
     }
 
     /// Returns all unique tags used in the vault, aggregated from frontmatter and inline tags.
     pub fn list_tags(&self) -> Result<Vec<String>, VaultError> {
-        search::find_all_tags(&self.path).map_err(VaultError::Note)
+        search::find_all_tags(&self.path, Some(&self.loaded_notes)).map_err(VaultError::Note)
     }
 
     /// Find all occurrences of specific tags, grouped by the note they appear in. Tags are matched
     /// case-insensitively, and sub-tags are gathered as well.
     pub fn find_tags(&self, tags: &[String]) -> Result<Vec<(Note, Vec<crate::LocatedTag>)>, VaultError> {
-        search::find_tags(&self.path, tags).map_err(VaultError::Search)
+        search::find_tags(&self.path, tags, Some(&self.loaded_notes)).map_err(VaultError::Search)
     }
 
     /// Returns all notes in the vault that link to `target`, paired with the specific
