@@ -9,6 +9,7 @@ use crate::{Location, NoteError};
 use gray_matter::{Matter, Pod, engine::YAML};
 use indexmap::IndexMap;
 
+#[derive(Clone)]
 pub struct Note {
     pub path: PathBuf,
     pub id: String,

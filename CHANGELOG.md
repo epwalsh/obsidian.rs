@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Added `sort` parameter to the `search_notes` and `search_tags` MCP tools, matching the CLI's sort options (`path-asc`, `path-desc`, `modified-asc`, `modified-desc`, `created-asc`, `created-desc`).
 - Added `note list` command to `obsidian-rs-cli` and `list_notes` tool to `obsidian-rs-mcp`.
+- Added `SearchQuery::with_loaded_notes(&HashMap<PathBuf, Note>)` builder method: in-memory notes shadow their on-disk counterparts and are processed through all filters; notes with no on-disk counterpart are included as additional candidates. `SearchQuery` now carries a lifetime parameter (`SearchQuery<'a>`) reflecting the borrow.
+- Added `loaded_notes: Option<&HashMap<PathBuf, Note>>` parameter to `find_all_tags`, `find_tags`, `find_notes_filtered`, and `find_notes_filtered_with_content` in `obsidian_core::search`.
+- Added `Vault::load_note(note: Note)` and `Vault::unload_note(path: &Path)` to manage in-memory note overrides. Loaded notes are automatically included in `search()`, `list_tags()`, `find_tags()`, `notes_filtered()`, and `notes_filtered_with_content()`.
+- `Note` now derives `Clone`.
 
 ### Changed
 
