@@ -91,7 +91,7 @@ impl VaultServer {
                 .collect();
 
             let items: Result<Vec<serde_json::Value>, rmcp::ErrorData> =
-                notes.iter().map(|n| note_to_json(n, &vault.path)).collect();
+                notes.iter().map(|n| note_to_json(n, vault.path())).collect();
             Ok(serde_json::Value::Array(items?))
         })
         .await
@@ -143,7 +143,7 @@ impl VaultServer {
             }
 
             note.write().map_err(note_err)?;
-            note_to_json(&note, &vault.path)
+            note_to_json(&note, vault.path())
         })
         .await
         .map_err(|e| other_err(e.to_string()))??;
@@ -163,7 +163,7 @@ impl VaultServer {
             let patched = vault
                 .patch_note(&note, &p.old_string, &p.new_string)
                 .map_err(vault_err)?;
-            note_to_json(&patched, &vault.path)
+            note_to_json(&patched, vault.path())
         })
         .await
         .map_err(|e| other_err(e.to_string()))??;
@@ -207,7 +207,7 @@ impl VaultServer {
                 note.write_frontmatter().map_err(note_err)?;
             }
 
-            note_to_json(&note, &vault.path)
+            note_to_json(&note, vault.path())
         })
         .await
         .map_err(|e| other_err(e.to_string()))??;
@@ -258,7 +258,7 @@ impl VaultServer {
                 .collect();
 
             let items: Result<Vec<serde_json::Value>, rmcp::ErrorData> =
-                notes.iter().map(|n| note_to_json(n, &vault.path)).collect();
+                notes.iter().map(|n| note_to_json(n, vault.path())).collect();
             Ok(serde_json::Value::Array(items?))
         })
         .await
@@ -282,14 +282,14 @@ impl VaultServer {
 
             let mut new_path = PathBuf::from(&p.new_path);
             if !new_path.is_absolute() {
-                new_path = vault.path.join(&new_path);
+                new_path = vault.path().join(&new_path);
             }
             if new_path.extension().is_none() {
                 new_path.set_extension("md");
             }
 
             let renamed = vault.rename(&note, &new_path).map_err(vault_err)?;
-            note_to_json(&renamed, &vault.path)
+            note_to_json(&renamed, vault.path())
         })
         .await
         .map_err(|e| other_err(e.to_string()))??;
@@ -343,7 +343,7 @@ impl VaultServer {
                         })
                         .collect();
                     items.push(json!({
-                        "source_path": vault_rel_path(&n.path, &vault.path),
+                        "source_path": vault_rel_path(&n.path, vault.path()),
                         "source_id": n.id,
                         "tags": tags,
                     }));

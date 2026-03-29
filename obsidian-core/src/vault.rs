@@ -8,94 +8,8 @@ use indexmap::IndexMap;
 use crate::{Link, LocatedLink, LocatedTag, Location, Note, NoteError, VaultError, common, search};
 
 pub struct Vault {
-    pub path: PathBuf,
+    path: PathBuf,
     loaded_notes: HashMap<PathBuf, Note>,
-}
-
-/// Rewrites link spans in `raw_content` according to `replacements`.
-/// Each entry is a `(LocatedLink, new_text)` pair; `new_text` replaces the original span.
-/// Multiple replacements on the same line are applied right-to-left to preserve offsets.
-fn rewrite_links(raw_content: &str, replacements: Vec<(LocatedLink, String)>) -> String {
-    use std::collections::HashMap;
-
-    // Map line number (1-indexed) → indices into `replacements`
-    let mut by_line: HashMap<usize, Vec<usize>> = HashMap::new();
-    for (i, (ll, _)) in replacements.iter().enumerate() {
-        by_line.entry(ll.location.line).or_default().push(i);
-    }
-
-    let trailing_newline = raw_content.ends_with('\n');
-    let mut result_lines: Vec<String> = Vec::new();
-
-    for (line_idx, line) in raw_content.lines().enumerate() {
-        let line_num = line_idx + 1;
-        if let Some(indices) = by_line.get(&line_num) {
-            // Sort right-to-left so each splice doesn't shift earlier column offsets
-            let mut sorted = indices.clone();
-            sorted.sort_by(|&a, &b| {
-                replacements[b]
-                    .0
-                    .location
-                    .col_start
-                    .cmp(&replacements[a].0.location.col_start)
-            });
-
-            let mut chars: Vec<char> = line.chars().collect();
-            for idx in sorted {
-                let (ll, new_text) = &replacements[idx];
-                let new_chars: Vec<char> = new_text.chars().collect();
-                chars.splice(ll.location.col_start..ll.location.col_end, new_chars);
-            }
-            result_lines.push(chars.into_iter().collect());
-        } else {
-            result_lines.push(line.to_string());
-        }
-    }
-
-    let mut result = result_lines.join("\n");
-    if trailing_newline {
-        result.push('\n');
-    }
-    result
-}
-
-struct RenameOp {
-    new_stem: String,
-    frontmatter_id_will_update: bool,
-    /// Only notes with ≥1 replacement included.
-    per_note_replacements: Vec<(Note, Vec<(LocatedLink, String)>)>,
-}
-
-/// Public summary of what a rename would change, without touching the filesystem.
-pub struct RenamePreview {
-    pub new_path: PathBuf,
-    pub id_will_update: bool,
-    /// Notes with backlinks that would be rewritten, sorted by path. Each entry is (path, link_count).
-    pub updated_notes: Vec<(PathBuf, usize)>,
-}
-
-/// Public summary of what a merge would change, without touching the filesystem.
-pub struct MergePreview {
-    pub dest_path: PathBuf,
-    pub dest_is_new: bool,
-    /// Source paths that would be deleted.
-    pub sources: Vec<PathBuf>,
-    /// Notes with backlinks to any source that would be rewritten, sorted by path. Each entry is (path, link_count).
-    pub updated_notes: Vec<(PathBuf, usize)>,
-}
-
-struct MergeOp {
-    dest_is_new: bool,
-    /// Combined body content for the destination note (no leading whitespace).
-    merged_content: String,
-    /// Merged frontmatter for the destination note.
-    merged_frontmatter: Option<IndexMap<String, Pod>>,
-    /// Merged frontmatter tags
-    merged_tags: Vec<LocatedTag>,
-    /// Merged aliases
-    merged_aliases: Vec<String>,
-    /// External notes (not sources, not dest) with backlinks to rewrite.
-    per_note_replacements: Vec<(PathBuf, Vec<(LocatedLink, String)>)>,
 }
 
 impl Vault {
@@ -128,6 +42,10 @@ impl Vault {
             }
         }
         Self::open(&cwd)
+    }
+
+    pub fn path(&self) -> &Path {
+        self.path.as_path()
     }
 
     /// Resolve a note based on a path, filename, ID, title, or alias.
@@ -448,7 +366,7 @@ impl Vault {
 
         for (mut source_note, replacements) in op.per_note_replacements {
             if self.note_is_loaded(&source_note) {
-                source_note.content = Some(rewrite_links(
+                source_note.content = Some(common::rewrite_links(
                     &source_note
                         .content
                         .ok_or(VaultError::Note(NoteError::ContentNotLoaded))?,
@@ -457,7 +375,7 @@ impl Vault {
                 self.load_note(source_note);
             } else {
                 let raw_content = std::fs::read_to_string(&source_note.path)?;
-                let new_content = rewrite_links(&raw_content, replacements);
+                let new_content = common::rewrite_links(&raw_content, replacements);
                 std::fs::write(&source_note.path, new_content)?;
             }
         }
@@ -762,7 +680,7 @@ impl Vault {
         // Rewrite backlinks in external notes.
         for (note_path, replacements) in op.per_note_replacements {
             let raw_content = std::fs::read_to_string(&note_path)?;
-            let new_content = rewrite_links(&raw_content, replacements);
+            let new_content = common::rewrite_links(&raw_content, replacements);
             std::fs::write(&note_path, new_content)?;
         }
 
@@ -794,6 +712,45 @@ impl Vault {
             updated_notes,
         })
     }
+}
+
+struct RenameOp {
+    new_stem: String,
+    frontmatter_id_will_update: bool,
+    /// Only notes with ≥1 replacement included.
+    per_note_replacements: Vec<(Note, Vec<(LocatedLink, String)>)>,
+}
+
+/// Public summary of what a rename would change, without touching the filesystem.
+pub struct RenamePreview {
+    pub new_path: PathBuf,
+    pub id_will_update: bool,
+    /// Notes with backlinks that would be rewritten, sorted by path. Each entry is (path, link_count).
+    pub updated_notes: Vec<(PathBuf, usize)>,
+}
+
+/// Public summary of what a merge would change, without touching the filesystem.
+pub struct MergePreview {
+    pub dest_path: PathBuf,
+    pub dest_is_new: bool,
+    /// Source paths that would be deleted.
+    pub sources: Vec<PathBuf>,
+    /// Notes with backlinks to any source that would be rewritten, sorted by path. Each entry is (path, link_count).
+    pub updated_notes: Vec<(PathBuf, usize)>,
+}
+
+struct MergeOp {
+    dest_is_new: bool,
+    /// Combined body content for the destination note (no leading whitespace).
+    merged_content: String,
+    /// Merged frontmatter for the destination note.
+    merged_frontmatter: Option<IndexMap<String, Pod>>,
+    /// Merged frontmatter tags
+    merged_tags: Vec<LocatedTag>,
+    /// Merged aliases
+    merged_aliases: Vec<String>,
+    /// External notes (not sources, not dest) with backlinks to rewrite.
+    per_note_replacements: Vec<(PathBuf, Vec<(LocatedLink, String)>)>,
 }
 
 #[cfg(test)]

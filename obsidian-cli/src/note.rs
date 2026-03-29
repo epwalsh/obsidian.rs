@@ -12,8 +12,8 @@ use crate::output;
 pub fn cmd_resolve(vault: Vault, args: ResolveArgs) -> eyre::Result<()> {
     let note = vault.resolve_note(&args.note)?;
     match args.format {
-        OutputFormat::Plain => output::print_note_plain(&note, &vault.path),
-        OutputFormat::Json => output::print_note_json(&note, &vault.path)?,
+        OutputFormat::Plain => output::print_note_plain(&note, vault.path()),
+        OutputFormat::Json => output::print_note_json(&note, vault.path())?,
     }
     Ok(())
 }
@@ -26,8 +26,8 @@ pub fn cmd_list(vault: Vault, args: ListArgs) -> eyre::Result<()> {
     let results = query.execute()?;
     let notes: Vec<Note> = results.into_iter().filter_map(|r| r.ok()).collect();
     match args.format {
-        OutputFormat::Plain => output::print_note_many_plain(&notes, &vault.path),
-        OutputFormat::Json => output::print_note_many_json(&notes, &vault.path)?,
+        OutputFormat::Plain => output::print_note_many_plain(&notes, vault.path()),
+        OutputFormat::Json => output::print_note_many_json(&notes, vault.path())?,
     }
     Ok(())
 }
@@ -85,8 +85,8 @@ pub fn cmd_write(vault: Vault, args: WriteArgs) -> eyre::Result<()> {
     note.write()?;
 
     match args.format {
-        OutputFormat::Plain => output::print_note_plain(&note, &vault.path),
-        OutputFormat::Json => output::print_note_json(&note, &vault.path)?,
+        OutputFormat::Plain => output::print_note_plain(&note, vault.path()),
+        OutputFormat::Json => output::print_note_json(&note, vault.path())?,
     }
 
     Ok(())
@@ -108,7 +108,7 @@ pub fn cmd_merge(vault: Vault, args: MergeArgs) -> eyre::Result<()> {
         if candidate.exists() {
             candidate
         } else {
-            vault.path.join(dest_arg)
+            vault.path().join(dest_arg)
         }
     };
     if dest_path.extension().and_then(|e| e.to_str()) != Some("md") {
@@ -125,14 +125,14 @@ pub fn cmd_merge(vault: Vault, args: MergeArgs) -> eyre::Result<()> {
     if args.dry_run {
         let preview = vault.merge_preview(&sources, &dest_path)?;
         match args.format {
-            OutputFormat::Plain => output::print_merge_preview_plain(&preview, &vault.path),
-            OutputFormat::Json => output::print_merge_preview_json(&preview, &vault.path),
+            OutputFormat::Plain => output::print_merge_preview_plain(&preview, vault.path()),
+            OutputFormat::Json => output::print_merge_preview_json(&preview, vault.path()),
         }
     } else {
         let merged = vault.merge(&sources, &dest_path)?;
         match args.format {
-            OutputFormat::Plain => output::print_note_plain(&merged, &vault.path),
-            OutputFormat::Json => output::print_note_json(&merged, &vault.path)?,
+            OutputFormat::Plain => output::print_note_plain(&merged, vault.path()),
+            OutputFormat::Json => output::print_note_json(&merged, vault.path())?,
         }
     }
     Ok(())
@@ -168,8 +168,8 @@ pub fn cmd_patch(mut vault: Vault, args: PatchArgs) -> eyre::Result<()> {
     let new = unescape(&args.new_string);
     let patched = vault.patch_note(&note, &old, &new)?;
     match args.format {
-        OutputFormat::Plain => output::print_note_plain(&patched, &vault.path),
-        OutputFormat::Json => output::print_note_json(&patched, &vault.path)?,
+        OutputFormat::Plain => output::print_note_plain(&patched, vault.path()),
+        OutputFormat::Json => output::print_note_json(&patched, vault.path())?,
     }
     Ok(())
 }
@@ -183,8 +183,8 @@ pub fn cmd_backlinks(vault: Vault, args: BacklinksArgs) -> eyre::Result<()> {
     }
 
     match args.format {
-        OutputFormat::Plain => output::print_backlinks_plain(&results, &vault.path),
-        OutputFormat::Json => output::print_backlinks_json(&results, &vault.path),
+        OutputFormat::Plain => output::print_backlinks_plain(&results, vault.path()),
+        OutputFormat::Json => output::print_backlinks_json(&results, vault.path()),
     }
     Ok(())
 }
@@ -199,7 +199,7 @@ pub fn cmd_rename(mut vault: Vault, args: RenameArgs) -> eyre::Result<()> {
         if let Some(parent) = root {
             parent.join(&args.new_path)
         } else {
-            vault.path.join(&args.new_path)
+            vault.path().join(&args.new_path)
         }
     };
 
@@ -210,14 +210,14 @@ pub fn cmd_rename(mut vault: Vault, args: RenameArgs) -> eyre::Result<()> {
     if args.dry_run {
         let preview = vault.rename_preview(&note, &new_path)?;
         match args.format {
-            OutputFormat::Plain => output::print_rename_preview_plain(&preview, &vault.path),
-            OutputFormat::Json => output::print_rename_preview_json(&preview, &vault.path),
+            OutputFormat::Plain => output::print_rename_preview_plain(&preview, vault.path()),
+            OutputFormat::Json => output::print_rename_preview_json(&preview, vault.path()),
         }
     } else {
         let renamed = vault.rename(&note, &new_path)?;
         match args.format {
-            OutputFormat::Plain => output::print_note_plain(&renamed, &vault.path),
-            OutputFormat::Json => output::print_note_json(&renamed, &vault.path)?,
+            OutputFormat::Plain => output::print_note_plain(&renamed, vault.path()),
+            OutputFormat::Json => output::print_note_json(&renamed, vault.path())?,
         }
     }
     Ok(())
@@ -234,8 +234,8 @@ pub fn cmd_update(vault: Vault, args: UpdateArgs) -> eyre::Result<()> {
             &args.set,
         )?;
         match args.format {
-            OutputFormat::Plain => output::print_note_plain(&note, &vault.path),
-            OutputFormat::Json => output::print_note_json(&note, &vault.path)?,
+            OutputFormat::Plain => output::print_note_plain(&note, vault.path()),
+            OutputFormat::Json => output::print_note_json(&note, vault.path())?,
         }
         return Ok(());
     }
@@ -264,8 +264,8 @@ pub fn cmd_update(vault: Vault, args: UpdateArgs) -> eyre::Result<()> {
     }
 
     match args.format {
-        OutputFormat::Plain => output::print_note_many_plain(&notes, &vault.path),
-        OutputFormat::Json => output::print_note_many_json(&notes, &vault.path)?,
+        OutputFormat::Plain => output::print_note_many_plain(&notes, vault.path()),
+        OutputFormat::Json => output::print_note_many_json(&notes, vault.path())?,
     }
     Ok(())
 }

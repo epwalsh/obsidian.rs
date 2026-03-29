@@ -31,7 +31,8 @@ async fn main() -> color_eyre::Result<()> {
     } else {
         obsidian_core::Vault::open_from_cwd()
             .map_err(|e| color_eyre::eyre::eyre!("could not find vault: {e}"))?
-            .path
+            .path()
+            .to_path_buf()
     };
 
     let vault =

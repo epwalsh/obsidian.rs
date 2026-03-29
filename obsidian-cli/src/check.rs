@@ -22,13 +22,13 @@ fn build_ignore_set(patterns: &[String]) -> eyre::Result<globset::GlobSet> {
 }
 
 pub fn cmd_check(vault: Vault, args: CheckArgs) -> eyre::Result<()> {
-    println!("{} {}", "Vault root:".bold(), vault.path.display());
+    println!("{} {}", "Vault root:".bold(), vault.path().display());
 
     let ignore_set = build_ignore_set(&args.ignore)?;
 
     let notes: Vec<_> = vault
         .notes_filtered(|path| {
-            let rel = path.strip_prefix(&vault.path).unwrap_or(path);
+            let rel = path.strip_prefix(vault.path()).unwrap_or(path);
             !ignore_set.is_match(rel)
         })
         .into_iter()
@@ -59,7 +59,7 @@ pub fn cmd_check(vault: Vault, args: CheckArgs) -> eyre::Result<()> {
             for path in &sorted {
                 let note = notes.iter().find(|n| &n.path == path).unwrap();
                 let backlink_count = vault.backlinks_from(&notes, note).len();
-                let rel = path.strip_prefix(&vault.path).unwrap_or(path);
+                let rel = path.strip_prefix(vault.path()).unwrap_or(path);
                 println!(
                     "    {} ({} backlinks)",
                     rel.display().to_string().cyan(),
@@ -95,7 +95,7 @@ pub fn cmd_check(vault: Vault, args: CheckArgs) -> eyre::Result<()> {
             for path in &sorted {
                 let note = notes.iter().find(|n| &n.path == path).unwrap();
                 let backlink_count = vault.backlinks_from(&notes, note).len();
-                let rel = path.strip_prefix(&vault.path).unwrap_or(path);
+                let rel = path.strip_prefix(vault.path()).unwrap_or(path);
                 println!(
                     "    {} ({} backlinks)",
                     rel.display().to_string().cyan(),
@@ -139,7 +139,7 @@ pub fn cmd_check(vault: Vault, args: CheckArgs) -> eyre::Result<()> {
                     if !url_path.ends_with(".md") {
                         continue;
                     }
-                    let source_dirs = [&vault.path, note.path.parent().unwrap_or(note.path.as_path())];
+                    let source_dirs = [vault.path(), note.path.parent().unwrap_or(note.path.as_path())];
                     if !source_dirs.iter().any(|dir| dir.join(url_path).exists()) {
                         broken.push((note.path.clone(), ll.location.line, format!("[...]({})", url)));
                     }
@@ -160,7 +160,7 @@ pub fn cmd_check(vault: Vault, args: CheckArgs) -> eyre::Result<()> {
         for (path, line, text) in &broken {
             if current_path != Some(path) {
                 current_path = Some(path);
-                let rel = path.strip_prefix(&vault.path).unwrap_or(path);
+                let rel = path.strip_prefix(vault.path()).unwrap_or(path);
                 println!("  {}", rel.display().to_string().cyan());
             }
             println!("    {} {}", format!("line {}:", line).dimmed(), text.yellow());

@@ -10,8 +10,8 @@ pub fn cmd_tags_search(vault: Vault, args: TagsSearchArgs) -> eyre::Result<()> {
         obsidian_core::search::sort_notes_by(&mut results, |(n, _)| Some(n), &sort.into());
     }
     match args.format {
-        OutputFormat::Plain => output::print_tags_search_plain(&results, &vault.path),
-        OutputFormat::Json => output::print_tags_search_json(&results, &vault.path),
+        OutputFormat::Plain => output::print_tags_search_plain(&results, vault.path()),
+        OutputFormat::Json => output::print_tags_search_json(&results, vault.path()),
     }
     Ok(())
 }

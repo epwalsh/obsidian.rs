@@ -74,8 +74,8 @@ pub fn cmd_search(vault: Vault, args: SearchArgs) -> eyre::Result<()> {
     let notes: Vec<Note> = results.into_iter().filter_map(|r| r.ok()).collect();
 
     match args.format {
-        OutputFormat::Plain => output::print_note_many_plain(&notes, &vault.path),
-        OutputFormat::Json => output::print_note_many_json(&notes, &vault.path)?,
+        OutputFormat::Plain => output::print_note_many_plain(&notes, vault.path()),
+        OutputFormat::Json => output::print_note_many_json(&notes, vault.path())?,
     }
     Ok(())
 }
