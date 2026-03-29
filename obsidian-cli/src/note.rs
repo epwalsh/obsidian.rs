@@ -161,7 +161,7 @@ fn unescape(s: &str) -> String {
     result
 }
 
-pub fn cmd_patch(vault: Vault, args: PatchArgs) -> eyre::Result<()> {
+pub fn cmd_patch(mut vault: Vault, args: PatchArgs) -> eyre::Result<()> {
     let (note_path, _) = vault.resolve_note_path(&args.note, true)?;
     let note = Note::from_path(&note_path)?;
     let old = unescape(&args.old_string);
@@ -177,7 +177,7 @@ pub fn cmd_patch(vault: Vault, args: PatchArgs) -> eyre::Result<()> {
 pub fn cmd_backlinks(vault: Vault, args: BacklinksArgs) -> eyre::Result<()> {
     let (note_path, _) = vault.resolve_note_path(&args.note, true)?;
     let note = Note::from_path(&note_path)?;
-    let mut results = vault.backlinks(&note);
+    let mut results = vault.backlinks(&note)?;
     if let Some(sort) = args.sort {
         obsidian_core::search::sort_notes_by(&mut results, |(n, _)| Some(n), &sort.into());
     }
@@ -189,7 +189,7 @@ pub fn cmd_backlinks(vault: Vault, args: BacklinksArgs) -> eyre::Result<()> {
     Ok(())
 }
 
-pub fn cmd_rename(vault: Vault, args: RenameArgs) -> eyre::Result<()> {
+pub fn cmd_rename(mut vault: Vault, args: RenameArgs) -> eyre::Result<()> {
     let (note_path, root) = vault.resolve_note_path(&args.note, true)?;
     let note = Note::from_path(&note_path)?;
 

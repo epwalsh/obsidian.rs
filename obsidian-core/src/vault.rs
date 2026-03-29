@@ -5,45 +5,11 @@ use std::path::{Path, PathBuf};
 use gray_matter::Pod;
 use indexmap::IndexMap;
 
-use crate::{Link, LocatedLink, LocatedTag, Location, Note, NoteError, VaultError, search};
-use rayon::prelude::*;
+use crate::{Link, LocatedLink, LocatedTag, Location, Note, NoteError, VaultError, common, search};
 
 pub struct Vault {
     pub path: PathBuf,
     loaded_notes: HashMap<PathBuf, Note>,
-}
-
-/// Normalizes a path by resolving `.` and `..` components without touching the filesystem.
-fn normalize_path(path: &std::path::Path) -> PathBuf {
-    let mut components: Vec<std::path::Component> = Vec::new();
-    for component in path.components() {
-        match component {
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                if matches!(components.last(), Some(std::path::Component::Normal(_))) {
-                    components.pop();
-                }
-            }
-            c => components.push(c),
-        }
-    }
-    components.iter().collect()
-}
-
-/// Computes a relative path from `from_dir` to `to_file`.
-/// Both arguments must be absolute paths.
-fn relative_path(from_dir: &Path, to_file: &Path) -> PathBuf {
-    let from: Vec<_> = from_dir.components().collect();
-    let to: Vec<_> = to_file.components().collect();
-    let common = from.iter().zip(to.iter()).take_while(|(a, b)| a == b).count();
-    let mut result = PathBuf::new();
-    for _ in 0..(from.len() - common) {
-        result.push("..");
-    }
-    for c in &to[common..] {
-        result.push(c);
-    }
-    result
 }
 
 /// Rewrites link spans in `raw_content` according to `replacements`.
@@ -132,45 +98,6 @@ struct MergeOp {
     per_note_replacements: Vec<(PathBuf, Vec<(LocatedLink, String)>)>,
 }
 
-/// Returns all links in `source` that point to `target`, using the vault root `vault_path`
-/// for resolving relative markdown URLs. Returns an empty vec if `source` is `target`.
-fn find_matching_links(source: &Note, target: &Note, vault_path: &std::path::Path) -> Vec<LocatedLink> {
-    if source.path == target.path {
-        return Vec::new();
-    }
-    let target_stem = target.path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string());
-    source
-        .links
-        .clone()
-        .into_iter()
-        .filter(|ll| match &ll.link {
-            Link::Wiki {
-                target: wiki_target, ..
-            } => {
-                wiki_target == &target.id
-                    || target_stem.as_deref().is_some_and(|s| wiki_target == s)
-                    || target.aliases.iter().any(|a| wiki_target == a)
-            }
-            Link::Markdown { url, .. } => {
-                if url.contains("://") || url.starts_with('/') {
-                    return false;
-                }
-                let url_path = match url.find('#') {
-                    Some(i) => &url[..i],
-                    None => url.as_str(),
-                };
-                if !url_path.ends_with(".md") {
-                    return false;
-                }
-                let source_dir = source.path.parent().unwrap_or(&source.path);
-                (normalize_path(&source_dir.join(url_path)) == target.path)
-                    || (url_path == relative_path(vault_path, &target.path).to_string_lossy())
-            }
-            _ => false,
-        })
-        .collect()
-}
-
 impl Vault {
     /// Opens a vault at the given path, returning an error if the path does not exist or is not a
     /// directory.
@@ -179,8 +106,9 @@ impl Vault {
         if !path.is_dir() {
             return Err(VaultError::NotADirectory(path));
         }
+        let cwd = current_dir().map_err(VaultError::Io)?;
         Ok(Vault {
-            path,
+            path: common::normalize_path(&path, &cwd),
             loaded_notes: HashMap::new(),
         })
     }
@@ -252,28 +180,28 @@ impl Vault {
     ) -> Result<(std::path::PathBuf, Option<std::path::PathBuf>), VaultError> {
         let path = path.as_ref().to_path_buf();
         if path.is_absolute() {
-            if path.exists() || !strict {
+            if path.exists() || self.loaded_notes.contains_key(&path) || !strict {
                 return Ok((path, None));
             } else {
                 return Err(VaultError::NoteNotFound(path.to_string_lossy().to_string()));
             }
         }
 
-        let cwd = current_dir()?.canonicalize()?;
+        let cwd = current_dir()?;
 
         // If the cwd is inside of the vault root, prefer resolving against the cwd to avoid surprising
         // behavior where a note exists in the vault but can't be found because the user is working in
         // a subdirectory.
         let mut vault_resolved = self.path.join(path.clone());
-        if cwd.starts_with(&self.path.canonicalize()?) {
+        if cwd.canonicalize()?.starts_with(&self.path.canonicalize()?) {
             let mut cwd_resolved = cwd.join(path.clone());
 
             // Return right away if it exists, otherwise check if the extension is missing.
-            if cwd_resolved.exists() {
+            if cwd_resolved.exists() || self.loaded_notes.contains_key(&cwd_resolved) {
                 return Ok((cwd_resolved, Some(cwd)));
             } else if cwd_resolved.extension().is_none() {
                 cwd_resolved.set_extension("md");
-                if cwd_resolved.exists() {
+                if cwd_resolved.exists() || self.loaded_notes.contains_key(&cwd_resolved) {
                     return Ok((cwd_resolved, Some(cwd)));
                 }
             }
@@ -282,11 +210,11 @@ impl Vault {
             // Otherwise return the cwd-resolved path even if it doesn't exist, since
             // that's more likely what the user intended than the vault root.
             if strict {
-                if vault_resolved.exists() {
+                if vault_resolved.exists() || self.loaded_notes.contains_key(&vault_resolved) {
                     return Ok((vault_resolved, Some(self.path.clone())));
                 } else if vault_resolved.extension().is_none() {
                     vault_resolved.set_extension("md");
-                    if vault_resolved.exists() {
+                    if vault_resolved.exists() || self.loaded_notes.contains_key(&vault_resolved) {
                         return Ok((vault_resolved, Some(self.path.clone())));
                     }
                 }
@@ -298,7 +226,7 @@ impl Vault {
                 return Ok((vault_resolved, Some(self.path.clone())));
             } else if vault_resolved.extension().is_none() {
                 vault_resolved.set_extension("md");
-                if vault_resolved.exists() {
+                if vault_resolved.exists() || self.loaded_notes.contains_key(&vault_resolved) {
                     return Ok((vault_resolved, Some(self.path.clone())));
                 }
             }
@@ -327,14 +255,27 @@ impl Vault {
     /// Inserts or replaces an in-memory note. While present, this note shadows its on-disk
     /// counterpart (matched by `note.path`) across all vault search operations. Notes with a path
     /// that does not exist on disk are included as additional candidates.
-    pub fn load_note(&mut self, note: Note) {
+    pub fn load_note(&mut self, mut note: Note) {
+        let resolved_path = self
+            .resolve_note_path(&note.path, false)
+            .map(|(n, _)| n)
+            .unwrap_or_else(|_| note.path.clone());
+        note.path = resolved_path;
         self.loaded_notes.insert(note.path.clone(), note);
     }
 
     /// Removes a previously loaded in-memory note, restoring the on-disk version for searches.
     /// Does nothing if the path is not currently loaded.
     pub fn unload_note(&mut self, path: &Path) {
-        self.loaded_notes.remove(path);
+        let resolved_path = self
+            .resolve_note_path(path, false)
+            .map(|(n, _)| n)
+            .unwrap_or_else(|_| path.into());
+        self.loaded_notes.remove(&resolved_path);
+    }
+
+    pub fn note_is_loaded(&self, note: &Note) -> bool {
+        self.loaded_notes.contains_key(&note.path)
     }
 
     /// Like [`notes`](Self::notes), but skips notes whose path does not satisfy `filter`.
@@ -371,20 +312,21 @@ impl Vault {
     ///
     /// Only wiki links (`[[target]]`) and markdown links (`[text](target.md)`) are
     /// considered. Embed links are excluded. Notes that fail to load are silently skipped.
-    pub fn backlinks(&self, target: &Note) -> Vec<(Note, Vec<LocatedLink>)> {
-        let paths: Vec<_> = search::find_note_paths(&self.path).collect();
-        paths
-            .into_par_iter()
-            .filter_map(|path| {
-                let source = Note::from_path(&path).ok()?;
-                let matching = find_matching_links(&source, target, &self.path);
-                if matching.is_empty() {
-                    None
-                } else {
-                    Some((source, matching))
-                }
+    pub fn backlinks(&self, target: &Note) -> Result<Vec<(Note, Vec<LocatedLink>)>, VaultError> {
+        let results = self
+            .search()
+            .and_links_to(target.clone())
+            .execute()
+            .map_err(VaultError::Search)?;
+        let notes: Vec<Note> = results.into_iter().filter_map(|r| r.ok()).collect();
+        let results = notes
+            .into_iter()
+            .map(|source| {
+                let matching = search::find_matching_links(&source, target, &self.path);
+                (source, matching)
             })
-            .collect()
+            .collect();
+        Ok(results)
     }
 
     /// Like [`backlinks`](Self::backlinks), but operates on an already-loaded slice of notes
@@ -393,7 +335,7 @@ impl Vault {
         notes
             .iter()
             .filter_map(|source| {
-                let matching = find_matching_links(source, target, &self.path);
+                let matching = search::find_matching_links(source, target, &self.path);
                 if matching.is_empty() {
                     None
                 } else {
@@ -431,7 +373,7 @@ impl Vault {
         let frontmatter_id_will_update =
             id_needs_update && note.frontmatter.as_ref().is_some_and(|fm| fm.contains_key("id"));
 
-        let backlinks = self.backlinks(note);
+        let backlinks = self.backlinks(note)?;
         let mut per_note_replacements: Vec<(Note, Vec<(LocatedLink, String)>)> = Vec::new();
 
         for (source_note, links) in backlinks {
@@ -455,7 +397,7 @@ impl Vault {
                     Link::Wiki { .. } => None,
                     Link::Markdown { text, url } => {
                         let fragment = url.find('#').map(|i| url[i..].to_string());
-                        let new_url = relative_path(self.path.as_path(), new_path);
+                        let new_url = common::relative_path(self.path.as_path(), new_path);
                         let new_url_str = new_url.to_string_lossy().replace('\\', "/");
                         let full_url = match fragment {
                             Some(f) => format!("{}{}", new_url_str, f),
@@ -490,7 +432,7 @@ impl Vault {
     ///
     /// Returns [`VaultError::DirectoryNotFound`] if the parent directory of `new_path` does not
     /// exist, and [`VaultError::NoteAlreadyExists`] if `new_path` is already occupied.
-    pub fn rename(&self, note: &Note, new_path: &Path) -> Result<Note, VaultError> {
+    pub fn rename(&mut self, note: &Note, new_path: &Path) -> Result<Note, VaultError> {
         let op = self.compute_rename_op(note, new_path)?;
 
         std::fs::rename(&note.path, new_path)?;
@@ -504,10 +446,20 @@ impl Vault {
             renamed = Note::from_path(new_path)?;
         }
 
-        for (source_note, replacements) in op.per_note_replacements {
-            let raw_content = std::fs::read_to_string(&source_note.path)?;
-            let new_content = rewrite_links(&raw_content, replacements);
-            std::fs::write(&source_note.path, new_content)?;
+        for (mut source_note, replacements) in op.per_note_replacements {
+            if self.note_is_loaded(&source_note) {
+                source_note.content = Some(rewrite_links(
+                    &source_note
+                        .content
+                        .ok_or(VaultError::Note(NoteError::ContentNotLoaded))?,
+                    replacements,
+                ));
+                self.load_note(source_note);
+            } else {
+                let raw_content = std::fs::read_to_string(&source_note.path)?;
+                let new_content = rewrite_links(&raw_content, replacements);
+                std::fs::write(&source_note.path, new_content)?;
+            }
         }
 
         Ok(renamed)
@@ -531,6 +483,42 @@ impl Vault {
             id_will_update: op.frontmatter_id_will_update,
             updated_notes,
         })
+    }
+
+    /// Replaces the first (and only) occurrence of `old_string` in the raw file content of `note`
+    /// with `new_string`, writing the result back to disk.
+    ///
+    /// Returns [`VaultError::StringNotFound`] if `old_string` does not appear in the file, and
+    /// [`VaultError::StringFoundMultipleTimes`] if it appears more than once. Both checks operate
+    /// on the raw file bytes (frontmatter included).
+    pub fn patch_note(&mut self, note: &Note, old_string: &str, new_string: &str) -> Result<Note, VaultError> {
+        let raw = if let Some(loaded) = self.loaded_notes.get(&note.path) {
+            loaded
+                .content
+                .clone()
+                .ok_or(VaultError::Note(NoteError::ContentNotLoaded))?
+                .clone()
+        } else {
+            std::fs::read_to_string(&note.path)?
+        };
+
+        let count = raw.matches(old_string).count();
+        if count == 0 {
+            return Err(VaultError::StringNotFound(note.path.clone()));
+        }
+        if count > 1 {
+            return Err(VaultError::StringFoundMultipleTimes(note.path.clone()));
+        }
+
+        let patched = raw.replacen(old_string, new_string, 1);
+
+        if let Some(loaded) = self.loaded_notes.get_mut(&note.path) {
+            loaded.content = Some(patched);
+            Ok(loaded.clone())
+        } else {
+            std::fs::write(&note.path, patched)?;
+            Ok(Note::from_path(&note.path)?)
+        }
     }
 
     /// Computes all changes required to merge `sources` into `dest_path` without performing I/O.
@@ -562,7 +550,7 @@ impl Vault {
         let mut replacements_by_path: HashMap<PathBuf, Vec<(LocatedLink, String)>> = HashMap::new();
 
         for source in sources {
-            let backlinks = self.backlinks(source);
+            let backlinks = self.backlinks(source)?;
             for (linking_note, links) in backlinks {
                 if source_paths.iter().any(|p| *p == linking_note.path) {
                     continue;
@@ -590,7 +578,7 @@ impl Vault {
                         }
                         Link::Markdown { text, url } => {
                             let fragment = url.find('#').map(|i| url[i..].to_string());
-                            let new_url = relative_path(self.path.as_path(), dest_path);
+                            let new_url = common::relative_path(self.path.as_path(), dest_path);
                             let new_url_str = new_url.to_string_lossy().replace('\\', "/");
                             let full_url = match fragment {
                                 Some(f) => format!("{}{}", new_url_str, f),
@@ -786,26 +774,6 @@ impl Vault {
         Ok(dest_note)
     }
 
-    /// Replaces the first (and only) occurrence of `old_string` in the raw file content of `note`
-    /// with `new_string`, writing the result back to disk.
-    ///
-    /// Returns [`VaultError::StringNotFound`] if `old_string` does not appear in the file, and
-    /// [`VaultError::StringFoundMultipleTimes`] if it appears more than once. Both checks operate
-    /// on the raw file bytes (frontmatter included).
-    pub fn patch_note(&self, note: &Note, old_string: &str, new_string: &str) -> Result<Note, VaultError> {
-        let raw = std::fs::read_to_string(&note.path)?;
-        let count = raw.matches(old_string).count();
-        if count == 0 {
-            return Err(VaultError::StringNotFound(note.path.clone()));
-        }
-        if count > 1 {
-            return Err(VaultError::StringFoundMultipleTimes(note.path.clone()));
-        }
-        let patched = raw.replacen(old_string, new_string, 1);
-        std::fs::write(&note.path, patched)?;
-        Ok(Note::from_path(&note.path)?)
-    }
-
     /// Returns a preview of what [`merge`](Self::merge) would change without touching the filesystem.
     ///
     /// Same validation and error variants as `merge`.
@@ -952,29 +920,6 @@ mod tests {
         assert_eq!(notes.len(), 2);
     }
 
-    // --- utils tests ---
-
-    #[test]
-    fn normalize_path_removes_dot() {
-        assert_eq!(normalize_path(&PathBuf::from("/a/./b")), PathBuf::from("/a/b"));
-    }
-
-    #[test]
-    fn normalize_path_resolves_double_dot() {
-        assert_eq!(normalize_path(&PathBuf::from("/a/b/../c")), PathBuf::from("/a/c"));
-    }
-
-    #[test]
-    fn normalize_path_deep_traversal() {
-        assert_eq!(normalize_path(&PathBuf::from("/a/b/c/../../d")), PathBuf::from("/a/d"));
-    }
-
-    #[test]
-    fn normalize_path_traversal_beyond_root_stops_at_root() {
-        // /a/../../b: after processing, ends up as /b (the extra .. can't go above /)
-        assert_eq!(normalize_path(&PathBuf::from("/a/../../b")), PathBuf::from("/b"));
-    }
-
     // --- backlinks tests ---
 
     #[test]
@@ -985,7 +930,7 @@ mod tests {
 
         let vault = Vault::open(dir.path()).unwrap();
         let target = Note::from_path(dir.path().join("target.md")).unwrap();
-        let backlinks = vault.backlinks(&target);
+        let backlinks = vault.backlinks(&target).unwrap();
 
         assert_eq!(backlinks.len(), 1);
         assert!(backlinks[0].0.path.ends_with("source.md"));
@@ -1000,7 +945,7 @@ mod tests {
 
         let vault = Vault::open(dir.path()).unwrap();
         let target = Note::from_path(dir.path().join("my-note.md")).unwrap();
-        let backlinks = vault.backlinks(&target);
+        let backlinks = vault.backlinks(&target).unwrap();
 
         assert_eq!(backlinks.len(), 1);
         assert!(backlinks[0].0.path.ends_with("source.md"));
@@ -1014,7 +959,7 @@ mod tests {
 
         let vault = Vault::open(dir.path()).unwrap();
         let target = Note::from_path(dir.path().join("target.md")).unwrap();
-        let backlinks = vault.backlinks(&target);
+        let backlinks = vault.backlinks(&target).unwrap();
 
         assert_eq!(backlinks.len(), 1);
     }
@@ -1027,7 +972,7 @@ mod tests {
 
         let vault = Vault::open(dir.path()).unwrap();
         let target = Note::from_path(dir.path().join("target.md")).unwrap();
-        let backlinks = vault.backlinks(&target);
+        let backlinks = vault.backlinks(&target).unwrap();
 
         assert_eq!(backlinks.len(), 1);
     }
@@ -1040,7 +985,7 @@ mod tests {
 
         let vault = Vault::open(dir.path()).unwrap();
         let target = Note::from_path(dir.path().join("target.md")).unwrap();
-        let backlinks = vault.backlinks(&target);
+        let backlinks = vault.backlinks(&target).unwrap();
 
         assert_eq!(backlinks.len(), 1);
     }
@@ -1052,7 +997,7 @@ mod tests {
 
         let vault = Vault::open(dir.path()).unwrap();
         let target = Note::from_path(dir.path().join("target.md")).unwrap();
-        let backlinks = vault.backlinks(&target);
+        let backlinks = vault.backlinks(&target).unwrap();
 
         assert!(backlinks.is_empty());
     }
@@ -1065,7 +1010,7 @@ mod tests {
 
         let vault = Vault::open(dir.path()).unwrap();
         let target = Note::from_path(dir.path().join("target.md")).unwrap();
-        let backlinks = vault.backlinks(&target);
+        let backlinks = vault.backlinks(&target).unwrap();
 
         assert!(backlinks.is_empty());
     }
@@ -1078,7 +1023,7 @@ mod tests {
 
         let vault = Vault::open(dir.path()).unwrap();
         let target = Note::from_path(dir.path().join("target.md")).unwrap();
-        let backlinks = vault.backlinks(&target);
+        let backlinks = vault.backlinks(&target).unwrap();
 
         assert_eq!(backlinks.len(), 1);
         assert_eq!(backlinks[0].1.len(), 2);
@@ -1092,7 +1037,7 @@ mod tests {
 
         let vault = Vault::open(dir.path()).unwrap();
         let target = Note::from_path(dir.path().join("target.md")).unwrap();
-        let backlinks = vault.backlinks(&target);
+        let backlinks = vault.backlinks(&target).unwrap();
 
         assert!(backlinks.is_empty());
     }
@@ -1105,7 +1050,7 @@ mod tests {
 
         let vault = Vault::open(dir.path()).unwrap();
         let target = Note::from_path(dir.path().join("target.md")).unwrap();
-        let backlinks = vault.backlinks(&target);
+        let backlinks = vault.backlinks(&target).unwrap();
 
         assert_eq!(backlinks.len(), 1);
         assert!(backlinks[0].0.path.ends_with("source.md"));
@@ -1119,7 +1064,7 @@ mod tests {
 
         let vault = Vault::open(dir.path()).unwrap();
         let target = Note::from_path(dir.path().join("target.md")).unwrap();
-        let backlinks = vault.backlinks(&target);
+        let backlinks = vault.backlinks(&target).unwrap();
 
         assert_eq!(backlinks.len(), 1);
     }
@@ -1134,7 +1079,7 @@ mod tests {
 
         let vault = Vault::open(dir.path()).unwrap();
         let target = Note::from_path(dir.path().join("target.md")).unwrap();
-        let backlinks = vault.backlinks(&target);
+        let backlinks = vault.backlinks(&target).unwrap();
 
         assert_eq!(backlinks.len(), 1);
     }
@@ -1147,7 +1092,7 @@ mod tests {
 
         let vault = Vault::open(dir.path()).unwrap();
         let target = Note::from_path(dir.path().join("target.md")).unwrap();
-        let backlinks = vault.backlinks(&target);
+        let backlinks = vault.backlinks(&target).unwrap();
 
         assert!(backlinks.is_empty());
     }
@@ -1160,7 +1105,7 @@ mod tests {
 
         let vault = Vault::open(dir.path()).unwrap();
         let target = Note::from_path(dir.path().join("target.md")).unwrap();
-        let backlinks = vault.backlinks(&target);
+        let backlinks = vault.backlinks(&target).unwrap();
 
         assert!(backlinks.is_empty());
     }
@@ -1173,7 +1118,7 @@ mod tests {
 
         let vault = Vault::open(dir.path()).unwrap();
         let target = Note::from_path(dir.path().join("target.md")).unwrap();
-        let backlinks = vault.backlinks(&target);
+        let backlinks = vault.backlinks(&target).unwrap();
 
         assert!(backlinks.is_empty());
     }
@@ -1185,7 +1130,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("note.md"), "Hello world.").unwrap();
 
-        let vault = Vault::open(dir.path()).unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
         let note = Note::from_path(dir.path().join("note.md")).unwrap();
         vault.patch_note(&note, "world", "Rust").unwrap();
 
@@ -1198,7 +1143,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("note.md"), "Hello world.").unwrap();
 
-        let vault = Vault::open(dir.path()).unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
         let note = Note::from_path(dir.path().join("note.md")).unwrap();
         let result = vault.patch_note(&note, "missing", "replacement");
 
@@ -1210,7 +1155,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("note.md"), "foo and foo").unwrap();
 
-        let vault = Vault::open(dir.path()).unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
         let note = Note::from_path(dir.path().join("note.md")).unwrap();
         let result = vault.patch_note(&note, "foo", "bar");
 
@@ -1222,7 +1167,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("note.md"), "---\ntitle: Old Title\n---\nBody.").unwrap();
 
-        let vault = Vault::open(dir.path()).unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
         let note = Note::from_path(dir.path().join("note.md")).unwrap();
         vault.patch_note(&note, "Old Title", "New Title").unwrap();
 
@@ -1236,7 +1181,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("note.md"), "---\ntitle: Before\n---\nBody.").unwrap();
 
-        let vault = Vault::open(dir.path()).unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
         let note = Note::from_path(dir.path().join("note.md")).unwrap();
         let patched = vault.patch_note(&note, "Before", "After").unwrap();
 
@@ -1250,7 +1195,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("old.md"), "Content.").unwrap();
 
-        let vault = Vault::open(dir.path()).unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
         let note = Note::from_path(dir.path().join("old.md")).unwrap();
         let renamed = vault.rename(&note, &dir.path().join("new.md")).unwrap();
 
@@ -1265,7 +1210,7 @@ mod tests {
         fs::write(dir.path().join("old-note.md"), "---\nid: old-note\n---\nContent.").unwrap();
         fs::write(dir.path().join("source.md"), "See [[old-note]].").unwrap();
 
-        let vault = Vault::open(dir.path()).unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
         let note = Note::from_path(dir.path().join("old-note.md")).unwrap();
         let renamed = vault.rename(&note, &dir.path().join("new-note.md")).unwrap();
 
@@ -1283,7 +1228,7 @@ mod tests {
         fs::write(dir.path().join("my-note.md"), "---\nid: custom-id\n---\nContent.").unwrap();
         fs::write(dir.path().join("source.md"), "See [[my-note]].").unwrap();
 
-        let vault = Vault::open(dir.path()).unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
         let note = Note::from_path(dir.path().join("my-note.md")).unwrap();
         let renamed = vault.rename(&note, &dir.path().join("renamed-note.md")).unwrap();
 
@@ -1300,7 +1245,7 @@ mod tests {
         fs::write(dir.path().join("old.md"), "Target.").unwrap();
         fs::write(dir.path().join("source.md"), "[link](old.md)").unwrap();
 
-        let vault = Vault::open(dir.path()).unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
         let note = Note::from_path(dir.path().join("old.md")).unwrap();
         vault.rename(&note, &dir.path().join("new.md")).unwrap();
 
@@ -1314,7 +1259,7 @@ mod tests {
         fs::write(dir.path().join("old-stem.md"), "Content.").unwrap();
         fs::write(dir.path().join("source.md"), "See [[old-stem]].").unwrap();
 
-        let vault = Vault::open(dir.path()).unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
         let note = Note::from_path(dir.path().join("old-stem.md")).unwrap();
         vault.rename(&note, &dir.path().join("new-stem.md")).unwrap();
 
@@ -1328,7 +1273,7 @@ mod tests {
         fs::write(dir.path().join("target.md"), "---\naliases: [my-alias]\n---\nContent.").unwrap();
         fs::write(dir.path().join("source.md"), "See [[my-alias]].").unwrap();
 
-        let vault = Vault::open(dir.path()).unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
         let note = Note::from_path(dir.path().join("target.md")).unwrap();
         vault.rename(&note, &dir.path().join("renamed-target.md")).unwrap();
 
@@ -1344,7 +1289,7 @@ mod tests {
         fs::write(dir.path().join("root.md"), "Root.").unwrap();
         fs::write(dir.path().join("source.md"), "[link](root.md)").unwrap();
 
-        let vault = Vault::open(dir.path()).unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
         let note = Note::from_path(dir.path().join("root.md")).unwrap();
         vault.rename(&note, &subdir.join("root.md")).unwrap();
 
@@ -1360,7 +1305,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("old.md"), "Content.").unwrap();
 
-        let vault = Vault::open(dir.path()).unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
         let note = Note::from_path(dir.path().join("old.md")).unwrap();
         let result = vault.rename(&note, &dir.path().join("nonexistent/new.md"));
 
@@ -1373,7 +1318,7 @@ mod tests {
         fs::write(dir.path().join("old.md"), "Old.").unwrap();
         fs::write(dir.path().join("new.md"), "Already exists.").unwrap();
 
-        let vault = Vault::open(dir.path()).unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
         let note = Note::from_path(dir.path().join("old.md")).unwrap();
         let result = vault.rename(&note, &dir.path().join("new.md"));
 
@@ -1532,7 +1477,7 @@ mod tests {
         fs::write(subdir.join("source.md"), "[link](root.md)\n[link](sub/target.md)").unwrap();
         fs::write(subdir.join("target.md"), "Target.").unwrap();
 
-        let vault = Vault::open(dir.path()).unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
 
         {
             let note = Note::from_path(dir.path().join("root.md")).unwrap();
@@ -1557,7 +1502,7 @@ mod tests {
         fs::write(dir.path().join("target.md"), "Target.").unwrap();
         fs::write(dir.path().join("source.md"), "[first](target.md)\n[second](target.md)").unwrap();
 
-        let vault = Vault::open(dir.path()).unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
         let note = Note::from_path(dir.path().join("target.md")).unwrap();
         vault.rename(&note, &dir.path().join("renamed.md")).unwrap();
 
@@ -1571,7 +1516,7 @@ mod tests {
         fs::write(dir.path().join("old.md"), "Old.").unwrap();
         fs::write(dir.path().join("source.md"), "[link](old.md#section)").unwrap();
 
-        let vault = Vault::open(dir.path()).unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
         let note = Note::from_path(dir.path().join("old.md")).unwrap();
         vault.rename(&note, &dir.path().join("new.md")).unwrap();
 
@@ -1585,7 +1530,7 @@ mod tests {
         fs::write(dir.path().join("old-stem.md"), "Content.").unwrap();
         fs::write(dir.path().join("source.md"), "See [[old-stem#h1|display]].").unwrap();
 
-        let vault = Vault::open(dir.path()).unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
         let note = Note::from_path(dir.path().join("old-stem.md")).unwrap();
         vault.rename(&note, &dir.path().join("new-stem.md")).unwrap();
 

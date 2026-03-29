@@ -6,7 +6,7 @@ use ignore::WalkBuilder;
 use rayon::prelude::*;
 use regex::Regex;
 
-use crate::{Location, Note, NoteError, SearchError};
+use crate::{Link, LocatedLink, Location, Note, NoteError, SearchError, common};
 
 #[derive(Debug, Clone, Copy)]
 enum CaseSensitivity {
@@ -118,6 +118,8 @@ struct SearchQueryConfig {
     or_content_contains: Vec<String>,
     and_content_matches: Vec<String>,
     or_content_matches: Vec<String>,
+    and_links_to: Vec<Note>,
+    or_links_to: Vec<Note>,
     case_sensitivity: Option<CaseSensitivity>,
     include_inline_tags: bool,
     sort_order: Option<SortOrder>,
@@ -144,6 +146,8 @@ impl SearchQuery<'static> {
                 or_content_contains: Vec::new(),
                 and_content_matches: Vec::new(),
                 or_content_matches: Vec::new(),
+                and_links_to: Vec::new(),
+                or_links_to: Vec::new(),
                 case_sensitivity: None,
                 include_inline_tags: false,
                 sort_order: None,
@@ -263,6 +267,18 @@ impl<'a> SearchQuery<'a> {
         self
     }
 
+    /// Has a link to this note
+    pub fn and_links_to(mut self, note: Note) -> Self {
+        self.config.and_links_to.push(note);
+        self
+    }
+
+    /// May link to this note
+    pub fn or_links_to(mut self, note: Note) -> Self {
+        self.config.or_links_to.push(note);
+        self
+    }
+
     /// Execute the search case-sensitively.
     pub fn case_sensitive(mut self) -> Self {
         self.config.case_sensitivity = Some(CaseSensitivity::Sensitive);
@@ -316,6 +332,8 @@ impl<'a> SearchQuery<'a> {
             or_content_contains,
             and_content_matches,
             or_content_matches,
+            and_links_to,
+            or_links_to,
             case_sensitivity,
             include_inline_tags,
             sort_order,
@@ -427,7 +445,8 @@ impl<'a> SearchQuery<'a> {
             || !or_aliases.is_empty()
             || !or_alias_contains.is_empty()
             || !or_content_contains.is_empty()
-            || !or_regexes.is_empty();
+            || !or_regexes.is_empty()
+            || !or_links_to.is_empty();
         let has_filters = has_or_filters
             || and_id.is_some()
             || !and_tags.is_empty()
@@ -435,7 +454,8 @@ impl<'a> SearchQuery<'a> {
             || !and_aliases.is_empty()
             || !and_alias_contains.is_empty()
             || !and_content_contains.is_empty()
-            || !and_regexes.is_empty();
+            || !and_regexes.is_empty()
+            || !and_links_to.is_empty();
 
         // Shared filter closure: apply all AND/OR filters to an already-loaded note.
         // `rel` is the note's path relative to the vault root (used for or_glob matching).
@@ -518,6 +538,14 @@ impl<'a> SearchQuery<'a> {
                 return None;
             }
 
+            if !and_links_to.is_empty()
+                && !and_links_to
+                    .iter()
+                    .all(|n| !find_matching_links(&note, n, &root).is_empty())
+            {
+                return None;
+            }
+
             // --------------------------------------------------------------------------------------------
             // Begin OR filters. Include note if it satisfies any of these (or if there are no OR filters).
             // --------------------------------------------------------------------------------------------
@@ -582,6 +610,13 @@ impl<'a> SearchQuery<'a> {
             if or_regexes
                 .iter()
                 .any(|re| re.is_match(note.content.as_deref().unwrap()))
+            {
+                return Some(Ok(note));
+            }
+
+            if or_links_to
+                .iter()
+                .any(|n| !find_matching_links(&note, n, &root).is_empty())
             {
                 return Some(Ok(note));
             }
@@ -836,6 +871,45 @@ pub fn find_notes_filtered_with_content(
     }
 
     results
+}
+
+/// Returns all links in `source` that point to `target`, using the vault root `vault_path`
+/// for resolving relative markdown URLs. Returns an empty vec if `source` is `target`.
+pub fn find_matching_links(source: &Note, target: &Note, vault_path: &std::path::Path) -> Vec<LocatedLink> {
+    if source.path == target.path {
+        return Vec::new();
+    }
+    let target_stem = target.path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string());
+    source
+        .links
+        .clone()
+        .into_iter()
+        .filter(|ll| match &ll.link {
+            Link::Wiki {
+                target: wiki_target, ..
+            } => {
+                wiki_target == &target.id
+                    || target_stem.as_deref().is_some_and(|s| wiki_target == s)
+                    || target.aliases.iter().any(|a| wiki_target == a)
+            }
+            Link::Markdown { url, .. } => {
+                if url.contains("://") || url.starts_with('/') {
+                    return false;
+                }
+                let url_path = match url.find('#') {
+                    Some(i) => &url[..i],
+                    None => url.as_str(),
+                };
+                if !url_path.ends_with(".md") {
+                    return false;
+                }
+                let source_dir = source.path.parent().unwrap_or(&source.path);
+                (common::normalize_path(&source_dir.join(url_path), vault_path) == target.path)
+                    || (url_path == common::relative_path(vault_path, &target.path).to_string_lossy())
+            }
+            _ => false,
+        })
+        .collect()
 }
 
 #[cfg(test)]

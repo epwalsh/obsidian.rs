@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use obsidian_core::{Location, Note, Vault};
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
@@ -14,14 +14,14 @@ use crate::tools::{
 };
 
 pub struct VaultServer {
-    vault: Arc<Vault>,
+    vault: Arc<Mutex<Vault>>,
     tool_router: ToolRouter<Self>,
 }
 
 impl VaultServer {
     pub fn new(vault: Vault) -> Self {
         Self {
-            vault: Arc::new(vault),
+            vault: Arc::new(Mutex::new(vault)),
             tool_router: Self::tool_router(),
         }
     }
@@ -49,6 +49,7 @@ impl VaultServer {
     async fn read_note(&self, Parameters(p): Parameters<ReadNoteParams>) -> Result<CallToolResult, rmcp::ErrorData> {
         let vault = Arc::clone(&self.vault);
         let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, rmcp::ErrorData> {
+            let vault = vault.lock().unwrap();
             let include_frontmatter = p.include_frontmatter.unwrap_or(true);
             let include_content = p.include_content.unwrap_or(true);
             let mut note = vault.resolve_note(&p.note).map_err(vault_err)?;
@@ -76,6 +77,7 @@ impl VaultServer {
     async fn list_notes(&self, Parameters(p): Parameters<ListNotesParams>) -> Result<CallToolResult, rmcp::ErrorData> {
         let vault = Arc::clone(&self.vault);
         let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, rmcp::ErrorData> {
+            let vault = vault.lock().unwrap();
             let mut query = vault.search();
             if let Some(sort) = p.sort {
                 query = query.sort_by(sort.into())
@@ -105,6 +107,7 @@ impl VaultServer {
     async fn write_note(&self, Parameters(p): Parameters<WriteNoteParams>) -> Result<CallToolResult, rmcp::ErrorData> {
         let vault = Arc::clone(&self.vault);
         let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, rmcp::ErrorData> {
+            let vault = vault.lock().unwrap();
             let (note_path, _) = vault.resolve_note_path(&p.path, false).map_err(vault_err)?;
             if !p.force.unwrap_or(false) && note_path.exists() {
                 return Err(other_err(format!(
@@ -155,6 +158,7 @@ impl VaultServer {
     async fn patch_note(&self, Parameters(p): Parameters<PatchNoteParams>) -> Result<CallToolResult, rmcp::ErrorData> {
         let vault = Arc::clone(&self.vault);
         let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, rmcp::ErrorData> {
+            let mut vault = vault.lock().unwrap();
             let note = vault.resolve_note(&p.note).map_err(vault_err)?;
             let patched = vault
                 .patch_note(&note, &p.old_string, &p.new_string)
@@ -177,6 +181,7 @@ impl VaultServer {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let vault = Arc::clone(&self.vault);
         let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, rmcp::ErrorData> {
+            let vault = vault.lock().unwrap();
             let mut note = vault.resolve_note(&p.note).map_err(vault_err)?;
 
             let mut dirty = false;
@@ -220,6 +225,7 @@ impl VaultServer {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let vault = Arc::clone(&self.vault);
         let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, rmcp::ErrorData> {
+            let vault = vault.lock().unwrap();
             let mut query = vault.search();
 
             for tag in p.tags.unwrap_or_default() {
@@ -271,6 +277,7 @@ impl VaultServer {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let vault = Arc::clone(&self.vault);
         let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, rmcp::ErrorData> {
+            let mut vault = vault.lock().unwrap();
             let note = vault.resolve_note(&p.note).map_err(vault_err)?;
 
             let mut new_path = PathBuf::from(&p.new_path);
@@ -297,6 +304,7 @@ impl VaultServer {
     async fn list_tags(&self, Parameters(_p): Parameters<ListTagsParams>) -> Result<CallToolResult, rmcp::ErrorData> {
         let vault = Arc::clone(&self.vault);
         let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, rmcp::ErrorData> {
+            let vault = vault.lock().unwrap();
             let tags = vault.list_tags().map_err(vault_err)?;
             Ok(json!(tags))
         })
@@ -316,6 +324,7 @@ impl VaultServer {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let vault = Arc::clone(&self.vault);
         let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, rmcp::ErrorData> {
+            let vault = vault.lock().unwrap();
             let mut results = vault.find_tags(&p.tags).map_err(vault_err)?;
             if let Some(sort) = p.sort {
                 obsidian_core::search::sort_notes_by(&mut results, |(n, _)| Some(n), &sort.into());
