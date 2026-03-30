@@ -20,9 +20,8 @@ impl Vault {
         if !path.is_dir() {
             return Err(VaultError::NotADirectory(path));
         }
-        let cwd = current_dir().map_err(VaultError::Io)?;
         Ok(Vault {
-            path: common::normalize_path(&path, &cwd),
+            path: common::normalize_path(&path, None),
             loaded_notes: HashMap::new(),
         })
     }
@@ -99,19 +98,19 @@ impl Vault {
         let path = path.as_ref().to_path_buf();
         if path.is_absolute() {
             if path.exists() || self.loaded_notes.contains_key(&path) || !strict {
-                return Ok((path, None));
+                return Ok((common::normalize_path(&path, None), None));
             } else {
                 return Err(VaultError::NoteNotFound(path.to_string_lossy().to_string()));
             }
         }
 
-        let cwd = current_dir()?;
-
         // If the cwd is inside of the vault root, prefer resolving against the cwd to avoid surprising
         // behavior where a note exists in the vault but can't be found because the user is working in
         // a subdirectory.
+        // NOTE: `self.path` is already canonical.
+        let cwd = common::normalize_path(&current_dir()?, None);
         let mut vault_resolved = self.path.join(path.clone());
-        if cwd.canonicalize()?.starts_with(&self.path.canonicalize()?) {
+        if cwd.starts_with(&self.path) {
             let mut cwd_resolved = cwd.join(path.clone());
 
             // Return right away if it exists, otherwise check if the extension is missing.
@@ -316,6 +315,7 @@ impl Vault {
                     Link::Markdown { text, url } => {
                         let fragment = url.find('#').map(|i| url[i..].to_string());
                         let new_url = common::relative_path(self.path.as_path(), new_path);
+                        println!("new url: {}", new_url.to_string_lossy());
                         let new_url_str = new_url.to_string_lossy().replace('\\', "/");
                         let full_url = match fragment {
                             Some(f) => format!("{}{}", new_url_str, f),
@@ -351,11 +351,12 @@ impl Vault {
     /// Returns [`VaultError::DirectoryNotFound`] if the parent directory of `new_path` does not
     /// exist, and [`VaultError::NoteAlreadyExists`] if `new_path` is already occupied.
     pub fn rename(&mut self, note: &Note, new_path: &Path) -> Result<Note, VaultError> {
-        let op = self.compute_rename_op(note, new_path)?;
+        let new_path = common::normalize_path(new_path, Some(&self.path));
+        let op = self.compute_rename_op(note, &new_path)?;
 
-        std::fs::rename(&note.path, new_path)?;
+        std::fs::rename(&note.path, &new_path)?;
 
-        let mut renamed = Note::from_path(new_path)?;
+        let mut renamed = Note::from_path(&new_path)?;
 
         // Update explicit frontmatter `id` when it matched the old stem.
         if op.frontmatter_id_will_update {
@@ -387,7 +388,8 @@ impl Vault {
     ///
     /// Same validation and error variants as `rename`.
     pub fn rename_preview(&self, note: &Note, new_path: &Path) -> Result<RenamePreview, VaultError> {
-        let op = self.compute_rename_op(note, new_path)?;
+        let new_path = common::normalize_path(new_path, Some(&self.path));
+        let op = self.compute_rename_op(note, &new_path)?;
 
         let mut updated_notes: Vec<(PathBuf, usize)> = op
             .per_note_replacements
@@ -443,7 +445,8 @@ impl Vault {
     fn compute_merge_op(&self, sources: &[Note], dest_path: &Path) -> Result<MergeOp, VaultError> {
         use std::collections::HashMap;
 
-        let dest_dir = dest_path.parent().unwrap_or_else(|| Path::new("."));
+        let dest_path = common::normalize_path(dest_path, Some(&self.path));
+        let dest_dir = &dest_path.parent().unwrap_or_else(|| Path::new("."));
         if !dest_dir.is_dir() {
             return Err(VaultError::DirectoryNotFound(dest_dir.to_path_buf()));
         }
@@ -496,7 +499,7 @@ impl Vault {
                         }
                         Link::Markdown { text, url } => {
                             let fragment = url.find('#').map(|i| url[i..].to_string());
-                            let new_url = common::relative_path(self.path.as_path(), dest_path);
+                            let new_url = common::relative_path(self.path.as_path(), &dest_path);
                             let new_url_str = new_url.to_string_lossy().replace('\\', "/");
                             let full_url = match fragment {
                                 Some(f) => format!("{}{}", new_url_str, f),
@@ -790,8 +793,9 @@ mod tests {
     #[test]
     fn open_valid_directory() {
         let dir = tempfile::tempdir().unwrap();
-        let vault = Vault::open(dir.path()).expect("should open valid directory");
-        assert_eq!(vault.path, dir.path());
+        // std::fs::create_dir(&dir).unwrap();
+        let vault = Vault::open(&dir.path()).expect("should open valid directory");
+        assert_eq!(vault.path, common::normalize_path(dir.path(), None));
     }
 
     #[test]
@@ -1293,7 +1297,10 @@ mod tests {
         let note = Note::from_path(dir.path().join("old.md")).unwrap();
         let preview = vault.rename_preview(&note, &dir.path().join("new.md")).unwrap();
 
-        assert_eq!(preview.new_path, dir.path().join("new.md"));
+        assert_eq!(
+            preview.new_path,
+            common::normalize_path(&dir.path().join("new.md"), None)
+        );
         assert!(preview.updated_notes.is_empty());
         assert!(!preview.id_will_update);
     }

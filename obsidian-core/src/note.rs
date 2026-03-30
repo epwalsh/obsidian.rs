@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::{Location, NoteError};
+use crate::{Location, NoteError, common};
 
 use gray_matter::{Matter, Pod, engine::YAML};
 use indexmap::IndexMap;
@@ -139,16 +139,16 @@ impl Note {
     /// [`from_path_with_content`](Self::from_path_with_content) when the body
     /// text is needed (e.g. for content search or writing).
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, NoteError> {
-        let path = path.as_ref();
-        let raw = std::fs::read_to_string(path)?;
-        Ok(Self::parse_impl(path, &raw, false))
+        let path = common::normalize_path(path.as_ref(), None);
+        let raw = std::fs::read_to_string(&path)?;
+        Ok(Self::parse_impl(&path, &raw, false))
     }
 
     /// Loads a note from disk, retaining the full body content in [`Note::content`].
     pub fn from_path_with_content(path: impl AsRef<Path>) -> Result<Self, NoteError> {
-        let path = path.as_ref();
-        let raw = std::fs::read_to_string(path)?;
-        Ok(Self::parse_impl(path, &raw, true))
+        let path = common::normalize_path(path.as_ref(), None);
+        let raw = std::fs::read_to_string(&path)?;
+        Ok(Self::parse_impl(&path, &raw, true))
     }
 
     /// Reloads the note from its path without retaining body content.

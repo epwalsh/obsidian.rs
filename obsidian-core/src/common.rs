@@ -17,28 +17,34 @@ pub struct InlineLocation {
     pub col_end: usize,
 }
 
-/// Normalizes a path by resolving `.` and `..` components and making absolute, potentially
-/// resolving symlinks.
-pub(crate) fn normalize_path(path: &Path, root: &Path) -> PathBuf {
-    let path = if path.is_absolute() { path } else { &root.join(path) };
-    let mut components: Vec<std::path::Component> = Vec::new();
-    for component in path.components() {
-        match component {
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                if matches!(components.last(), Some(std::path::Component::Normal(_))) {
-                    components.pop();
-                }
-            }
-            c => components.push(c),
+/// Normalizes a path by resolving `.`, `..`, and symlink components and making absolute.
+pub(crate) fn normalize_path(path: &Path, root: Option<&Path>) -> PathBuf {
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        if let Some(r) = root {
+            r.to_path_buf().join(path)
+        } else {
+            std::path::absolute(path).unwrap_or(path.to_path_buf())
         }
+    };
+
+    let mut realpath = PathBuf::new();
+    for component in path.components() {
+        realpath.push(component);
+        realpath = realpath.canonicalize().unwrap_or(realpath);
     }
-    components.iter().collect()
+    realpath
 }
 
 /// Computes a relative path from `from_dir` to `to_file`.
 /// Both arguments must be absolute paths.
 pub(crate) fn relative_path(from_dir: &Path, to_file: &Path) -> PathBuf {
+    println!(
+        "from_dir: {}\nto_file: {}",
+        from_dir.to_string_lossy(),
+        to_file.to_string_lossy()
+    );
     let from: Vec<_> = from_dir.components().collect();
     let to: Vec<_> = to_file.components().collect();
     let common = from.iter().zip(to.iter()).take_while(|(a, b)| a == b).count();
@@ -107,32 +113,31 @@ mod tests {
     #[test]
     fn normalize_path_removes_dot() {
         assert_eq!(
-            normalize_path(&PathBuf::from("/a/./b"), &current_dir().unwrap()),
+            normalize_path(&PathBuf::from("/a/./b"), Some(&current_dir().unwrap())),
             PathBuf::from("/a/b")
         );
     }
 
     #[test]
     fn normalize_path_resolves_double_dot() {
-        assert_eq!(
-            normalize_path(&PathBuf::from("/a/b/../c"), &current_dir().unwrap()),
-            PathBuf::from("/a/c")
-        );
+        let cwd = current_dir().unwrap();
+        assert_eq!(normalize_path(&cwd.join("../c"), None), cwd.parent().unwrap().join("c"));
     }
 
     #[test]
     fn normalize_path_deep_traversal() {
+        let cwd = current_dir().unwrap();
         assert_eq!(
-            normalize_path(&PathBuf::from("/a/b/c/../../d"), &current_dir().unwrap(),),
-            PathBuf::from("/a/d")
+            normalize_path(&cwd.join("../../../d"), None),
+            cwd.parent().unwrap().parent().unwrap().parent().unwrap().join("d")
         );
     }
 
     #[test]
     fn normalize_path_traversal_beyond_root_stops_at_root() {
-        // /a/../../b: after processing, ends up as /b (the extra .. can't go above /)
+        let cwd = current_dir().unwrap();
         assert_eq!(
-            normalize_path(&PathBuf::from("/a/../../b"), &current_dir().unwrap()),
+            normalize_path(&cwd.join("../../../../../../b"), None),
             PathBuf::from("/b")
         );
     }
@@ -140,14 +145,14 @@ mod tests {
     #[test]
     fn normalize_path_starting_with_single_dot() {
         let cwd = current_dir().unwrap();
-        assert_eq!(normalize_path(&PathBuf::from("./b"), &cwd), cwd.join("b"));
+        assert_eq!(normalize_path(&PathBuf::from("./b"), Some(&cwd.clone())), cwd.join("b"));
     }
 
     #[test]
     fn normalize_path_starting_with_double_dot() {
         let cwd = current_dir().unwrap();
         assert_eq!(
-            normalize_path(&PathBuf::from("../b"), &cwd),
+            normalize_path(&PathBuf::from("../b"), Some(&cwd.clone())),
             cwd.parent().unwrap().join("b")
         );
     }
