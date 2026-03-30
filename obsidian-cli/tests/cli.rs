@@ -1630,7 +1630,7 @@ fn note_patch_replaces_string() {
         .success()
         .stdout(predicate::str::contains("note.md"));
     let content = fs::read_to_string(&note_path).unwrap();
-    assert_eq!(content, "Hello Rust.");
+    assert_eq!(content, "---\nid: note\n---\n\nHello Rust.");
 }
 
 #[test]
@@ -1653,7 +1653,7 @@ fn note_patch_newline_escape_in_new_string() {
         .assert()
         .success();
     let content = fs::read_to_string(&note_path).unwrap();
-    assert_eq!(content, "Hello world\nfoo.");
+    assert_eq!(content, "---\nid: note\n---\n\nHello world\nfoo.");
 }
 
 #[test]
@@ -1676,7 +1676,7 @@ fn note_patch_newline_escape_in_old_string() {
         .assert()
         .success();
     let content = fs::read_to_string(&note_path).unwrap();
-    assert_eq!(content, "Goodbye.");
+    assert_eq!(content, "---\nid: note\n---\n\nGoodbye.");
 }
 
 #[test]

@@ -92,7 +92,7 @@ pub fn cmd_write(vault: Vault, args: WriteArgs) -> eyre::Result<()> {
     Ok(())
 }
 
-pub fn cmd_merge(vault: Vault, args: MergeArgs) -> eyre::Result<()> {
+pub fn cmd_merge(mut vault: Vault, args: MergeArgs) -> eyre::Result<()> {
     if args.paths.len() < 2 {
         eyre::bail!("at least one source and one destination are required");
     }
@@ -163,7 +163,7 @@ fn unescape(s: &str) -> String {
 
 pub fn cmd_patch(mut vault: Vault, args: PatchArgs) -> eyre::Result<()> {
     let (note_path, _) = vault.resolve_note_path(&args.note, true)?;
-    let note = Note::from_path(&note_path)?;
+    let note = Note::from_path_with_content(&note_path)?;
     let old = unescape(&args.old_string);
     let new = unescape(&args.new_string);
     let patched = vault.patch_note(&note, &old, &new)?;
@@ -191,7 +191,7 @@ pub fn cmd_backlinks(vault: Vault, args: BacklinksArgs) -> eyre::Result<()> {
 
 pub fn cmd_rename(mut vault: Vault, args: RenameArgs) -> eyre::Result<()> {
     let (note_path, root) = vault.resolve_note_path(&args.note, true)?;
-    let note = Note::from_path(&note_path)?;
+    let note = Note::from_path_with_content(&note_path)?;
 
     let mut new_path = if args.new_path.is_absolute() {
         args.new_path.clone()

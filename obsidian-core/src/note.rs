@@ -37,10 +37,29 @@ impl Note {
     /// For file-backed notes prefer [`Note::from_path`] (no content) or
     /// [`Note::from_path_with_content`] (with content).
     pub fn parse(path: impl AsRef<Path>, content: &str) -> Self {
-        Self::parse_impl(path.as_ref(), content, true)
+        Self::parse_impl(path, content, true)
     }
 
-    fn parse_impl(path: &Path, content: &str, include_content: bool) -> Self {
+    /// Loads a note from disk without retaining the body content.
+    ///
+    /// Links and inline tags are still extracted and stored. This is the
+    /// memory-efficient default for bulk operations. Use
+    /// [`from_path_with_content`](Self::from_path_with_content) when the body
+    /// text is needed (e.g. for content search or writing).
+    pub fn from_path(path: impl AsRef<Path>) -> Result<Self, NoteError> {
+        let path = common::normalize_path(path.as_ref(), None);
+        let raw = std::fs::read_to_string(&path)?;
+        Ok(Self::parse_impl(&path, &raw, false))
+    }
+
+    /// Loads a note from disk, retaining the full body content in [`Note::content`].
+    pub fn from_path_with_content(path: impl AsRef<Path>) -> Result<Self, NoteError> {
+        let path = common::normalize_path(path.as_ref(), None);
+        let raw = std::fs::read_to_string(&path)?;
+        Ok(Self::parse_impl(&path, &raw, true))
+    }
+
+    fn parse_impl(path: impl AsRef<Path>, content: &str, include_content: bool) -> Self {
         let matter = Matter::<YAML>::new();
         let (body, frontmatter) = match matter.parse(content) {
             Ok(parsed) => {
@@ -58,7 +77,12 @@ impl Note {
             .as_ref()
             .and_then(|fm| fm.get("id"))
             .and_then(|p| p.as_string().ok())
-            .or_else(|| path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string()))
+            .or_else(|| {
+                path.as_ref()
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_string())
+            })
             .unwrap_or_default();
         let mut title = frontmatter
             .as_ref()
@@ -120,7 +144,7 @@ impl Note {
         tags.extend(inline_tags);
 
         Note {
-            path: path.to_path_buf(),
+            path: path.as_ref().to_path_buf(),
             id,
             title,
             aliases,
@@ -132,23 +156,50 @@ impl Note {
         }
     }
 
-    /// Loads a note from disk without retaining the body content.
-    ///
-    /// Links and inline tags are still extracted and stored. This is the
-    /// memory-efficient default for bulk operations. Use
-    /// [`from_path_with_content`](Self::from_path_with_content) when the body
-    /// text is needed (e.g. for content search or writing).
-    pub fn from_path(path: impl AsRef<Path>) -> Result<Self, NoteError> {
-        let path = common::normalize_path(path.as_ref(), None);
-        let raw = std::fs::read_to_string(&path)?;
-        Ok(Self::parse_impl(&path, &raw, false))
-    }
+    pub fn update_content(
+        &mut self,
+        body: Option<&str>,
+        frontmatter: Option<IndexMap<String, Pod>>,
+    ) -> Result<(), NoteError> {
+        if body.is_none() && frontmatter.is_none() {
+            return Ok(());
+        }
 
-    /// Loads a note from disk, retaining the full body content in [`Note::content`].
-    pub fn from_path_with_content(path: impl AsRef<Path>) -> Result<Self, NoteError> {
-        let path = common::normalize_path(path.as_ref(), None);
-        let raw = std::fs::read_to_string(&path)?;
-        Ok(Self::parse_impl(&path, &raw, true))
+        if let Some(body) = body {
+            if let Some(frontmatter) = frontmatter {
+                self.frontmatter = Some(frontmatter);
+            }
+            let file_content = self.to_file_content(body)?;
+            let parsed = Self::parse_impl(&self.path, &file_content, true);
+            self.content = Some(body.to_string());
+            self.tags = parsed.tags;
+            self.links = parsed.links;
+        } else if let Some(frontmatter) = frontmatter {
+            // Update tags from frontmatter.
+            let mut tags: Vec<crate::LocatedTag> = frontmatter
+                .get("tags")
+                .and_then(|p| p.as_vec().ok())
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|p| p.as_string().ok())
+                .map(|tag| crate::LocatedTag {
+                    tag,
+                    location: Location::Frontmatter,
+                })
+                .collect();
+
+            for tag in &self.tags {
+                match tag.location {
+                    Location::Frontmatter => {}
+                    Location::Inline(_) => tags.push(tag.clone()),
+                }
+            }
+
+            self.frontmatter = Some(frontmatter);
+            self.tags = tags;
+        }
+
+        Ok(())
     }
 
     /// Reloads the note from its path without retaining body content.
