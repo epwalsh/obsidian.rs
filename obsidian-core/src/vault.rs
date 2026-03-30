@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use gray_matter::Pod;
 use indexmap::IndexMap;
 
-use crate::{common, search, common, search, Link, LocatedLink, LocatedTag, Location, Note, NoteE};
+use crate::{Link, LocatedLink, LocatedTag, Location, Note, NoteError, VaultError, common, search};
 
 pub struct Vault {
     path: PathBuf,
@@ -1552,14 +1552,22 @@ mod tests {
 
         let combined = Note::from_path(&dest_path).unwrap();
         assert!(
-            comb.iter()
-            (|t| t.tag == "rust" && matches!(t.location, Location::Frontmatter))
-    );assert
-        comb    .tags    .iter()
-            .any
+            combined
+                .tags
+                .iter()
+                .any(|t| t.tag == "rust" && matches!(t.location, Location::Frontmatter))
+        );
+        assert!(
+            combined
+                .tags
+                .iter()
+                .any(|t| t.tag == "obsidian" && matches!(t.location, Location::Frontmatter))
+        );
+    }
 
     #[test]
-    fn merges_not_inherit_source_id() {let dir = tempfile::tempdir().unwrap();
+    fn merges_not_inherit_source_id() {
+        let dir = tempfile::tempdir().unwrap();
         fs::write(
             dir.path().join("src.md"),
             "---\nid: source-id\nauthor: alice\n---\nBody.",
