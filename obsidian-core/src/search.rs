@@ -521,7 +521,7 @@ impl<'a> SearchQuery<'a> {
             if !and_content_contains.is_empty()
                 && !and_content_contains.iter().all(|s| {
                     string_contains(
-                        note.content.as_deref().unwrap(),
+                        note.body.as_deref().unwrap(),
                         s,
                         case_sensitivity.unwrap_or(CaseSensitivity::Smart),
                     )
@@ -530,11 +530,7 @@ impl<'a> SearchQuery<'a> {
                 return None;
             }
 
-            if !and_regexes.is_empty()
-                && !and_regexes
-                    .iter()
-                    .all(|re| re.is_match(note.content.as_deref().unwrap()))
-            {
+            if !and_regexes.is_empty() && !and_regexes.iter().all(|re| re.is_match(note.body.as_deref().unwrap())) {
                 return None;
             }
 
@@ -599,7 +595,7 @@ impl<'a> SearchQuery<'a> {
 
             if or_content_contains.iter().any(|s| {
                 string_contains(
-                    note.content.as_deref().unwrap(),
+                    note.body.as_deref().unwrap(),
                     s,
                     case_sensitivity.unwrap_or(CaseSensitivity::Smart),
                 )
@@ -607,10 +603,7 @@ impl<'a> SearchQuery<'a> {
                 return Some(Ok(note));
             }
 
-            if or_regexes
-                .iter()
-                .any(|re| re.is_match(note.content.as_deref().unwrap()))
-            {
+            if or_regexes.iter().any(|re| re.is_match(note.body.as_deref().unwrap())) {
                 return Some(Ok(note));
             }
 
@@ -630,7 +623,7 @@ impl<'a> SearchQuery<'a> {
             .filter_map(|path| -> Option<Result<Note, NoteError>> {
                 let rel = path.strip_prefix(&root).unwrap_or(&path);
                 let load = if needs_content {
-                    Note::from_path_with_content(&path)
+                    Note::from_path_with_body(&path)
                 } else {
                     Note::from_path(&path)
                 };
@@ -653,8 +646,8 @@ impl<'a> SearchQuery<'a> {
                     }
                 }
                 // Guard against missing content when content filters are active.
-                if needs_content && note.content.is_none() {
-                    results.push(Err(NoteError::ContentNotLoaded));
+                if needs_content && note.body.is_none() {
+                    results.push(Err(NoteError::BodyNotLoaded));
                     continue;
                 }
                 // Compute rel as owned PathBuf so we can move the cloned note into filter_note.
@@ -806,7 +799,7 @@ pub fn find_notes_with_content(root: impl AsRef<Path>) -> Vec<Result<Note, NoteE
     find_note_paths(root)
         .collect::<Vec<_>>()
         .into_par_iter()
-        .map(Note::from_path_with_content)
+        .map(Note::from_path_with_body)
         .collect()
 }
 
@@ -859,7 +852,7 @@ pub fn find_notes_filtered_with_content(
         .filter(|path| filter(path))
         .collect::<Vec<_>>()
         .into_par_iter()
-        .map(Note::from_path_with_content)
+        .map(Note::from_path_with_body)
         .collect();
 
     if let Some(notes) = loaded_notes {
@@ -1364,8 +1357,8 @@ mod tests {
         write_note(&path, "disk content");
 
         // Override with in-memory version that has different content.
-        let mut in_memory = Note::from_path_with_content(&path).unwrap();
-        in_memory.content = Some("in-memory content".to_string());
+        let mut in_memory = Note::from_path_with_body(&path).unwrap();
+        in_memory.body = Some("in-memory content".to_string());
         let overrides: HashMap<PathBuf, Note> = [(path.clone(), in_memory)].into_iter().collect();
 
         let notes = unwrap_notes(
@@ -1387,8 +1380,8 @@ mod tests {
         assert_eq!(disk_match.len(), 1); // baseline: disk has "disk content"
 
         let overrides2: HashMap<PathBuf, Note> = {
-            let mut m2 = Note::from_path_with_content(&path).unwrap();
-            m2.content = Some("in-memory content".to_string());
+            let mut m2 = Note::from_path_with_body(&path).unwrap();
+            m2.body = Some("in-memory content".to_string());
             [(path, m2)].into_iter().collect()
         };
         let no_disk_match = unwrap_notes(
@@ -1435,7 +1428,7 @@ mod tests {
             title: None,
             aliases: Vec::new(),
             tags: Vec::new(),
-            content: Some("Brand new content.".to_string()),
+            body: Some("Brand new content.".to_string()),
             links: Vec::new(),
             frontmatter: None,
             frontmatter_line_count: 0,
@@ -1500,7 +1493,7 @@ mod tests {
             title: None,
             aliases: Vec::new(),
             tags: Vec::new(),
-            content: Some("Outside notes dir.".to_string()),
+            body: Some("Outside notes dir.".to_string()),
             links: Vec::new(),
             frontmatter: None,
             frontmatter_line_count: 0,
@@ -1529,7 +1522,7 @@ mod tests {
             title: None,
             aliases: Vec::new(),
             tags: Vec::new(),
-            content: None, // content not loaded
+            body: None, // content not loaded
             links: Vec::new(),
             frontmatter: None,
             frontmatter_line_count: 0,
@@ -1543,7 +1536,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(results.len(), 1);
-        assert!(matches!(results[0], Err(NoteError::ContentNotLoaded)));
+        assert!(matches!(results[0], Err(NoteError::BodyNotLoaded)));
     }
 
     #[test]

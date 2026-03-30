@@ -34,8 +34,8 @@ pub enum NoteError {
     Yaml(#[from] serde_yaml::Error),
     #[error("failed to serialize frontmatter: {0}")]
     Json(String),
-    #[error("note content not loaded; use from_path_with_content() or load_content()")]
-    ContentNotLoaded,
+    #[error("note body not loaded; use from_path_with_body() or load_body()")]
+    BodyNotLoaded,
     #[error("'{0}' is not a valid note path")]
     InvalidPath(PathBuf),
     #[error("{0}")]

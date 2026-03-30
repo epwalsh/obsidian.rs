@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Consolidated sorting functionality into `obsidian_core::search` module.
 - Made sorting optional in the CLI.
 - `Vault.path` field is now private. Use accessing method `Vault.path()` instead.
+- Renamed `Note` "content" fields/methods to "body".
 
 ## v0.1.1 - 2026-03-26
 

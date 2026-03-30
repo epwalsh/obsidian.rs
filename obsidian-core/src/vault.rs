@@ -353,7 +353,7 @@ impl Vault {
         let op = self.compute_rename_op(note, &new_path)?;
 
         let mut renamed = note.clone();
-        renamed.load_content()?;
+        renamed.load_body()?;
         renamed.path = new_path;
         if op.frontmatter_id_will_update {
             renamed.id = op.new_stem;
@@ -371,9 +371,9 @@ impl Vault {
             if self.note_is_loaded(&source_note.path) {
                 let new_content = common::rewrite_links(
                     &source_note
-                        .content
+                        .body
                         .clone()
-                        .ok_or(VaultError::Note(NoteError::ContentNotLoaded))?,
+                        .ok_or(VaultError::Note(NoteError::BodyNotLoaded))?,
                     replacements,
                 );
                 source_note.update_content(Some(&new_content), None)?;
@@ -528,7 +528,7 @@ impl Vault {
         let (dest_body, dest_fm_tags, dest_fm_aliases, dest_frontmatter) = if dest_is_new {
             (String::new(), Vec::<String>::new(), Vec::<String>::new(), None)
         } else {
-            let d = Note::from_path_with_content(dest_path)?;
+            let d = Note::from_path_with_body(dest_path)?;
             let tags = d
                 .frontmatter
                 .as_ref()
@@ -547,7 +547,7 @@ impl Vault {
                 .into_iter()
                 .filter_map(|p| p.as_string().ok())
                 .collect::<Vec<_>>();
-            let body = d.content.as_deref().unwrap_or("").trim_start().to_string();
+            let body = d.body.as_deref().unwrap_or("").trim_start().to_string();
             let fm = d.frontmatter;
             (body, tags, aliases, fm)
         };
@@ -559,9 +559,9 @@ impl Vault {
         }
         for source in sources {
             let body = source
-                .content
+                .body
                 .as_deref()
-                .ok_or(crate::NoteError::ContentNotLoaded)?
+                .ok_or(crate::NoteError::BodyNotLoaded)?
                 .trim_start()
                 .to_string();
             if !body.is_empty() {
@@ -670,7 +670,7 @@ impl Vault {
                 title: None,
                 aliases: op.merged_aliases,
                 tags: op.merged_tags,
-                content: Some(op.merged_content),
+                body: Some(op.merged_content),
                 links: Vec::new(),
                 frontmatter: op.merged_frontmatter,
                 frontmatter_line_count: 0,
@@ -682,7 +682,7 @@ impl Vault {
             dest.update_content(Some(&op.merged_content), op.merged_frontmatter)?;
             dest.clone()
         } else {
-            let mut dest = Note::from_path_with_content(&dest_path)?;
+            let mut dest = Note::from_path_with_body(&dest_path)?;
             dest.update_content(Some(&op.merged_content), op.merged_frontmatter)?;
             dest.write()?;
             Note::from_path(&dest_path)?
@@ -1104,7 +1104,7 @@ mod tests {
         fs::write(dir.path().join("note.md"), "Hello world.").unwrap();
 
         let mut vault = Vault::open(dir.path()).unwrap();
-        let note = Note::from_path_with_content(dir.path().join("note.md")).unwrap();
+        let note = Note::from_path_with_body(dir.path().join("note.md")).unwrap();
         vault.patch_note(&note, "world", "Rust").unwrap();
 
         let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
@@ -1117,7 +1117,7 @@ mod tests {
         fs::write(dir.path().join("note.md"), "Hello world.").unwrap();
 
         let mut vault = Vault::open(dir.path()).unwrap();
-        let note = Note::from_path_with_content(dir.path().join("note.md")).unwrap();
+        let note = Note::from_path_with_body(dir.path().join("note.md")).unwrap();
         let result = vault.patch_note(&note, "missing", "replacement");
 
         assert!(matches!(result, Err(VaultError::StringNotFound(_))));
@@ -1129,7 +1129,7 @@ mod tests {
         fs::write(dir.path().join("note.md"), "foo and foo").unwrap();
 
         let mut vault = Vault::open(dir.path()).unwrap();
-        let note = Note::from_path_with_content(dir.path().join("note.md")).unwrap();
+        let note = Note::from_path_with_body(dir.path().join("note.md")).unwrap();
         let result = vault.patch_note(&note, "foo", "bar");
 
         assert!(matches!(result, Err(VaultError::StringFoundMultipleTimes(_))));
@@ -1141,7 +1141,7 @@ mod tests {
         fs::write(dir.path().join("note.md"), "---\ntitle: Old Title\n---\nBody.").unwrap();
 
         let mut vault = Vault::open(dir.path()).unwrap();
-        let note = Note::from_path_with_content(dir.path().join("note.md")).unwrap();
+        let note = Note::from_path_with_body(dir.path().join("note.md")).unwrap();
         assert!(vault.patch_note(&note, "Old Title", "New Title").is_err());
     }
 
@@ -1151,10 +1151,10 @@ mod tests {
         fs::write(dir.path().join("note.md"), "---\ntitle: Before\n---\n# Before\nBody.").unwrap();
 
         let mut vault = Vault::open(dir.path()).unwrap();
-        let note = Note::from_path_with_content(dir.path().join("note.md")).unwrap();
+        let note = Note::from_path_with_body(dir.path().join("note.md")).unwrap();
         let patched = vault.patch_note(&note, "Before", "After").unwrap();
 
-        assert_eq!(patched.content, Some("# After\nBody.".to_string()));
+        assert_eq!(patched.body, Some("# After\nBody.".to_string()));
     }
 
     // --- rename tests ---
@@ -1165,7 +1165,7 @@ mod tests {
         fs::write(dir.path().join("old.md"), "Content.").unwrap();
 
         let mut vault = Vault::open(dir.path()).unwrap();
-        let note = Note::from_path_with_content(dir.path().join("old.md")).unwrap();
+        let note = Note::from_path_with_body(dir.path().join("old.md")).unwrap();
         let renamed = vault.rename(&note, &dir.path().join("new.md")).unwrap();
 
         assert!(!dir.path().join("old.md").exists());
@@ -1302,7 +1302,7 @@ mod tests {
         fs::write(dir.path().join("old.md"), "Content.").unwrap();
 
         let vault = Vault::open(dir.path()).unwrap();
-        let note = Note::from_path_with_content(dir.path().join("old.md")).unwrap();
+        let note = Note::from_path_with_body(dir.path().join("old.md")).unwrap();
         let preview = vault.rename_preview(&note, &dir.path().join("new.md")).unwrap();
 
         assert_eq!(
@@ -1519,8 +1519,8 @@ mod tests {
         fs::write(dir.path().join("b.md"), "Body B.").unwrap();
 
         let mut vault = Vault::open(dir.path()).unwrap();
-        let a = Note::from_path_with_content(dir.path().join("a.md")).unwrap();
-        let b = Note::from_path_with_content(dir.path().join("b.md")).unwrap();
+        let a = Note::from_path_with_body(dir.path().join("a.md")).unwrap();
+        let b = Note::from_path_with_body(dir.path().join("b.md")).unwrap();
         let dest_path = dir.path().join("combined.md");
         vault.merge(&[a, b], &dest_path).unwrap();
 
@@ -1539,7 +1539,7 @@ mod tests {
         fs::write(dir.path().join("dest.md"), "Existing body.").unwrap();
 
         let mut vault = Vault::open(dir.path()).unwrap();
-        let src = Note::from_path_with_content(dir.path().join("src.md")).unwrap();
+        let src = Note::from_path_with_body(dir.path().join("src.md")).unwrap();
         vault.merge(&[src], &dir.path().join("dest.md")).unwrap();
 
         assert!(!dir.path().join("src.md").exists());
@@ -1555,8 +1555,8 @@ mod tests {
         fs::write(dir.path().join("b.md"), "---\ntags: [obsidian]\n---\nBody B.").unwrap();
 
         let mut vault = Vault::open(dir.path()).unwrap();
-        let a = Note::from_path_with_content(dir.path().join("a.md")).unwrap();
-        let b = Note::from_path_with_content(dir.path().join("b.md")).unwrap();
+        let a = Note::from_path_with_body(dir.path().join("a.md")).unwrap();
+        let b = Note::from_path_with_body(dir.path().join("b.md")).unwrap();
         let dest_path = dir.path().join("combined.md");
         vault.merge(&[a, b], &dest_path).unwrap();
 
@@ -1585,7 +1585,7 @@ mod tests {
         .unwrap();
 
         let mut vault = Vault::open(dir.path()).unwrap();
-        let src = Note::from_path_with_content(dir.path().join("src.md")).unwrap();
+        let src = Note::from_path_with_body(dir.path().join("src.md")).unwrap();
         let dest_path = dir.path().join("dest.md");
         vault.merge(&[src], &dest_path).unwrap();
 
@@ -1608,7 +1608,7 @@ mod tests {
         .unwrap();
 
         let mut vault = Vault::open(dir.path()).unwrap();
-        let src = Note::from_path_with_content(dir.path().join("src.md")).unwrap();
+        let src = Note::from_path_with_body(dir.path().join("src.md")).unwrap();
         let dest_path = dir.path().join("dest.md");
         vault.merge(&[src], &dest_path).unwrap();
 
@@ -1625,7 +1625,7 @@ mod tests {
         fs::write(dir.path().join("dest.md"), "---\nauthor: bob\n---\nDest.").unwrap();
 
         let mut vault = Vault::open(dir.path()).unwrap();
-        let src = Note::from_path_with_content(dir.path().join("src.md")).unwrap();
+        let src = Note::from_path_with_body(dir.path().join("src.md")).unwrap();
         vault.merge(&[src], &dir.path().join("dest.md")).unwrap();
 
         let dest = Note::from_path(dir.path().join("dest.md")).unwrap();
@@ -1640,7 +1640,7 @@ mod tests {
         fs::write(dir.path().join("linker.md"), "See [[src]].").unwrap();
 
         let mut vault = Vault::open(dir.path()).unwrap();
-        let src = Note::from_path_with_content(dir.path().join("src.md")).unwrap();
+        let src = Note::from_path_with_body(dir.path().join("src.md")).unwrap();
         vault.merge(&[src], &dir.path().join("dest.md")).unwrap();
 
         let linker = fs::read_to_string(dir.path().join("linker.md")).unwrap();
@@ -1666,7 +1666,7 @@ mod tests {
         fs::write(dir.path().join("linker.md"), "See [[src]].").unwrap();
 
         let vault = Vault::open(dir.path()).unwrap();
-        let src = Note::from_path_with_content(dir.path().join("src.md")).unwrap();
+        let src = Note::from_path_with_body(dir.path().join("src.md")).unwrap();
         vault.merge_preview(&[src], &dir.path().join("dest.md")).unwrap();
 
         assert!(dir.path().join("src.md").exists());

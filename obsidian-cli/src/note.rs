@@ -37,7 +37,7 @@ pub fn cmd_read(vault: Vault, args: ReadArgs) -> eyre::Result<()> {
     let note = if args.no_content {
         Note::from_path(&note_path)?
     } else {
-        Note::from_path_with_content(&note_path)?
+        Note::from_path_with_body(&note_path)?
     };
 
     match args.format {
@@ -119,7 +119,7 @@ pub fn cmd_merge(mut vault: Vault, args: MergeArgs) -> eyre::Result<()> {
     let mut sources: Vec<Note> = Vec::new();
     for src_arg in source_args {
         let (note_path, _) = vault.resolve_note_path(src_arg, true)?;
-        sources.push(Note::from_path_with_content(&note_path)?);
+        sources.push(Note::from_path_with_body(&note_path)?);
     }
 
     if args.dry_run {
@@ -163,7 +163,7 @@ fn unescape(s: &str) -> String {
 
 pub fn cmd_patch(mut vault: Vault, args: PatchArgs) -> eyre::Result<()> {
     let (note_path, _) = vault.resolve_note_path(&args.note, true)?;
-    let note = Note::from_path_with_content(&note_path)?;
+    let note = Note::from_path_with_body(&note_path)?;
     let old = unescape(&args.old_string);
     let new = unescape(&args.new_string);
     let patched = vault.patch_note(&note, &old, &new)?;
@@ -191,7 +191,7 @@ pub fn cmd_backlinks(vault: Vault, args: BacklinksArgs) -> eyre::Result<()> {
 
 pub fn cmd_rename(mut vault: Vault, args: RenameArgs) -> eyre::Result<()> {
     let (note_path, root) = vault.resolve_note_path(&args.note, true)?;
-    let note = Note::from_path_with_content(&note_path)?;
+    let note = Note::from_path_with_body(&note_path)?;
 
     let mut new_path = if args.new_path.is_absolute() {
         args.new_path.clone()

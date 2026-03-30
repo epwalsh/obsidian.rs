@@ -59,7 +59,7 @@ impl VaultServer {
                 out["frontmatter"] = serde_json::Value::Object(note.frontmatter_json().map_err(note_err)?);
             }
             if include_content {
-                note.load_content().map_err(note_err)?; // Ensure content is loaded before reading.
+                note.load_body().map_err(note_err)?; // Ensure content is loaded before reading.
                 out["content"] = json!(note.read(false).map_err(note_err)?);
             }
             Ok(out)
