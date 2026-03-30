@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::{Location, NoteError, common};
+use crate::{LocatedTag, Location, NoteError, common};
 
 use gray_matter::{Matter, Pod, engine::YAML};
 use indexmap::IndexMap;
@@ -17,7 +17,7 @@ pub struct Note {
     pub aliases: Vec<String>,
     /// All tags: frontmatter tags have `location: Location::Frontmatter`; inline tags have
     /// `location: Location::Inline(...)`. Always populated, even when content is not loaded.
-    pub tags: Vec<crate::LocatedTag>,
+    pub tags: Vec<LocatedTag>,
     /// Body text stripped of frontmatter. `None` when the note was loaded without body
     /// (the default). Use [`Note::from_path_with_body`] or [`Note::load_body`] to
     /// populate this field. Required for [`Note::write`].
@@ -30,7 +30,118 @@ pub struct Note {
     pub frontmatter_line_count: usize,
 }
 
+#[derive(Clone)]
+pub struct NoteBuilder {
+    pub path: PathBuf,
+    pub id: String,
+    pub title: Option<String>,
+    pub aliases: Vec<String>,
+    pub tags: Vec<LocatedTag>,
+    pub body: Option<String>,
+}
+
+impl NoteBuilder {
+    pub fn new(path: impl AsRef<Path>) -> Result<Self, NoteError> {
+        Ok(Self {
+            path: path.as_ref().to_path_buf(),
+            id: path
+                .as_ref()
+                .file_stem()
+                .ok_or(NoteError::InvalidPath(path.as_ref().to_path_buf()))?
+                .to_string_lossy()
+                .to_string(),
+            title: None,
+            aliases: Vec::new(),
+            tags: Vec::new(),
+            body: None,
+        })
+    }
+
+    pub fn id(mut self, id: &str) -> Self {
+        self.id = id.to_string();
+        self
+    }
+
+    pub fn title(mut self, title: &str) -> Self {
+        self.title = Some(title.to_string());
+        self
+    }
+
+    pub fn alias(mut self, alias: &str) -> Self {
+        self.aliases.push(alias.to_string());
+        self
+    }
+
+    pub fn aliases(mut self, aliases: &[String]) -> Self {
+        for alias in aliases {
+            self = self.alias(alias);
+        }
+        self
+    }
+
+    pub fn tag(mut self, tag: &str) -> Self {
+        self.tags.push(LocatedTag {
+            tag: tag.to_string(),
+            location: Location::Frontmatter,
+        });
+        self
+    }
+
+    pub fn tags(mut self, tags: &[&str]) -> Self {
+        for tag in tags {
+            self = self.tag(tag);
+        }
+        self
+    }
+
+    pub fn located_tag(mut self, tag: &LocatedTag) -> Self {
+        self.tags.push(tag.clone());
+        self
+    }
+
+    pub fn located_tags(mut self, tags: &[LocatedTag]) -> Self {
+        for tag in tags {
+            self = self.located_tag(tag);
+        }
+        self
+    }
+
+    pub fn body(mut self, body: &str) -> Self {
+        self.body = Some(body.to_string());
+        self
+    }
+
+    pub fn build(self) -> Result<Note, NoteError> {
+        let Self {
+            path,
+            id,
+            title,
+            aliases,
+            tags,
+            body,
+        } = self;
+
+        let mut note = Note {
+            path,
+            id,
+            title,
+            aliases,
+            tags,
+            body: None,
+            links: Vec::new(),
+            frontmatter: None,
+            frontmatter_line_count: 0,
+        };
+        note.update_content(body.as_deref(), None)?;
+        Ok(note)
+    }
+}
+
 impl Note {
+    pub fn builder(path: impl AsRef<Path>) -> Result<NoteBuilder, NoteError> {
+        NoteBuilder::new(path)
+    }
+
     /// Parses a note from a raw file string, always retaining the body content.
     ///
     /// Useful for constructing notes from in-memory strings (e.g. in tests).
@@ -111,14 +222,14 @@ impl Note {
             }
             v
         };
-        let fm_tags: Vec<crate::LocatedTag> = frontmatter
+        let fm_tags: Vec<LocatedTag> = frontmatter
             .as_ref()
             .and_then(|fm| fm.get("tags"))
             .and_then(|p| p.as_vec().ok())
             .unwrap_or_default()
             .into_iter()
             .filter_map(|p| p.as_string().ok())
-            .map(|tag| crate::LocatedTag {
+            .map(|tag| LocatedTag {
                 tag,
                 location: Location::Frontmatter,
             })
@@ -176,13 +287,13 @@ impl Note {
             self.links = parsed.links;
         } else if let Some(frontmatter) = frontmatter {
             // Update tags from frontmatter.
-            let mut tags: Vec<crate::LocatedTag> = frontmatter
+            let mut tags: Vec<LocatedTag> = frontmatter
                 .get("tags")
                 .and_then(|p| p.as_vec().ok())
                 .unwrap_or_default()
                 .into_iter()
                 .filter_map(|p| p.as_string().ok())
-                .map(|tag| crate::LocatedTag {
+                .map(|tag| LocatedTag {
                     tag,
                     location: Location::Frontmatter,
                 })
@@ -242,7 +353,7 @@ impl Note {
             .iter()
             .any(|t| t.tag.eq_ignore_ascii_case(&tag) && matches!(t.location, Location::Frontmatter));
         if !already_present {
-            self.tags.push(crate::LocatedTag {
+            self.tags.push(LocatedTag {
                 tag,
                 location: Location::Frontmatter,
             });

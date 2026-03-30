@@ -660,21 +660,11 @@ impl Vault {
 
         // Build and write destination note.
         let dest_note = if op.dest_is_new {
-            let dest = Note {
-                path: dest_path.to_path_buf(),
-                id: dest_path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                title: None,
-                aliases: op.merged_aliases,
-                tags: op.merged_tags,
-                body: Some(op.merged_content),
-                links: Vec::new(),
-                frontmatter: op.merged_frontmatter,
-                frontmatter_line_count: 0,
-            };
+            let mut dest = Note::builder(dest_path)?
+                .aliases(&op.merged_aliases)
+                .located_tags(&op.merged_tags)
+                .build()?;
+            dest.update_content(Some(&op.merged_content), op.merged_frontmatter)?;
             dest.write()?;
             dest
         } else if op.dest_is_loaded {

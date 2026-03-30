@@ -1422,17 +1422,11 @@ mod tests {
 
         // Create an in-memory note whose path does not exist on disk.
         let new_path = dir.path().join("new-unsaved.md");
-        let new_note = Note {
-            path: new_path.clone(),
-            id: "new-unsaved".to_string(),
-            title: None,
-            aliases: Vec::new(),
-            tags: Vec::new(),
-            body: Some("Brand new content.".to_string()),
-            links: Vec::new(),
-            frontmatter: None,
-            frontmatter_line_count: 0,
-        };
+        let new_note = Note::builder(&new_path)
+            .unwrap()
+            .body("Brand new content.")
+            .build()
+            .unwrap();
         let overrides: HashMap<PathBuf, Note> = [(new_path, new_note)].into_iter().collect();
 
         let ids = sorted_ids(unwrap_notes(
@@ -1487,17 +1481,11 @@ mod tests {
 
         // In-memory note at root level — should be excluded by the and_glob("notes/**") filter.
         let root_path = dir.path().join("outside.md");
-        let outside_note = Note {
-            path: root_path.clone(),
-            id: "outside".to_string(),
-            title: None,
-            aliases: Vec::new(),
-            tags: Vec::new(),
-            body: Some("Outside notes dir.".to_string()),
-            links: Vec::new(),
-            frontmatter: None,
-            frontmatter_line_count: 0,
-        };
+        let outside_note = Note::builder(&root_path)
+            .unwrap()
+            .body("Outside notes dir.")
+            .build()
+            .unwrap();
         let overrides: HashMap<PathBuf, Note> = [(root_path, outside_note)].into_iter().collect();
 
         let ids = sorted_ids(unwrap_notes(
@@ -1516,17 +1504,7 @@ mod tests {
 
         // In-memory note with no content loaded.
         let path = dir.path().join("no-content.md");
-        let note = Note {
-            path: path.clone(),
-            id: "no-content".to_string(),
-            title: None,
-            aliases: Vec::new(),
-            tags: Vec::new(),
-            body: None, // content not loaded
-            links: Vec::new(),
-            frontmatter: None,
-            frontmatter_line_count: 0,
-        };
+        let note = Note::builder(&path).unwrap().build().unwrap();
         let overrides: HashMap<PathBuf, Note> = [(path, note)].into_iter().collect();
 
         let results = SearchQuery::new(dir.path())
