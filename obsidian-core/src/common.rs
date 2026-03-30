@@ -18,14 +18,14 @@ pub struct InlineLocation {
 }
 
 /// Normalizes a path by resolving `.`, `..`, and symlink components and making absolute.
-pub(crate) fn normalize_path(path: &Path, root: Option<&Path>) -> PathBuf {
-    let path = if path.is_absolute() {
-        path.to_path_buf()
+pub(crate) fn normalize_path(path: impl AsRef<Path>, root: Option<&Path>) -> PathBuf {
+    let path = if path.as_ref().is_absolute() {
+        path.as_ref().to_path_buf()
     } else {
         if let Some(r) = root {
             r.to_path_buf().join(path)
         } else {
-            std::path::absolute(path).unwrap_or(path.to_path_buf())
+            std::path::absolute(&path).unwrap_or(path.as_ref().to_path_buf())
         }
     };
 
@@ -39,14 +39,9 @@ pub(crate) fn normalize_path(path: &Path, root: Option<&Path>) -> PathBuf {
 
 /// Computes a relative path from `from_dir` to `to_file`.
 /// Both arguments must be absolute paths.
-pub(crate) fn relative_path(from_dir: &Path, to_file: &Path) -> PathBuf {
-    println!(
-        "from_dir: {}\nto_file: {}",
-        from_dir.to_string_lossy(),
-        to_file.to_string_lossy()
-    );
-    let from: Vec<_> = from_dir.components().collect();
-    let to: Vec<_> = to_file.components().collect();
+pub(crate) fn relative_path(from_dir: impl AsRef<Path>, to_file: impl AsRef<Path>) -> PathBuf {
+    let from: Vec<_> = from_dir.as_ref().components().collect();
+    let to: Vec<_> = to_file.as_ref().components().collect();
     let common = from.iter().zip(to.iter()).take_while(|(a, b)| a == b).count();
     let mut result = PathBuf::new();
     for _ in 0..(from.len() - common) {

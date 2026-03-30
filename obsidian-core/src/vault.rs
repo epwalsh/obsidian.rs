@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use gray_matter::Pod;
 use indexmap::IndexMap;
 
-use crate::{Link, LocatedLink, LocatedTag, Location, Note, NoteError, VaultError, common, search};
+use crate::{common, search, common, search, Link, LocatedLink, LocatedTag, Location, Note, NoteE};
 
 pub struct Vault {
     path: PathBuf,
@@ -16,12 +16,12 @@ impl Vault {
     /// Opens a vault at the given path, returning an error if the path does not exist or is not a
     /// directory.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, VaultError> {
-        let path = path.as_ref().to_path_buf();
+        let path = common::normalize_path(path, None);
         if !path.is_dir() {
             return Err(VaultError::NotADirectory(path));
         }
         Ok(Vault {
-            path: common::normalize_path(&path, None),
+            path,
             loaded_notes: HashMap::new(),
         })
     }
@@ -107,12 +107,9 @@ impl Vault {
         // If the cwd is inside of the vault root, prefer resolving against the cwd to avoid surprising
         // behavior where a note exists in the vault but can't be found because the user is working in
         // a subdirectory.
-        // NOTE: `self.path` is already canonical.
-        let cwd = common::normalize_path(&current_dir()?, None);
-        let mut vault_resolved = self.path.join(path.clone());
-        if cwd.starts_with(&self.path) {
-            let mut cwd_resolved = cwd.join(path.clone());
-
+        let cwd = current_dir()?;
+        let mut cwd_resolved = common::normalize_path(&path, Some(&cwd));
+        if cwd_resolved.starts_with(&self.path) {
             // Return right away if it exists, otherwise check if the extension is missing.
             if cwd_resolved.exists() || self.loaded_notes.contains_key(&cwd_resolved) {
                 return Ok((cwd_resolved, Some(cwd)));
@@ -126,6 +123,7 @@ impl Vault {
             // In strict mode, if we still haven't found an existing path, try the same thing against the vault root.
             // Otherwise return the cwd-resolved path even if it doesn't exist, since
             // that's more likely what the user intended than the vault root.
+            let mut vault_resolved = common::normalize_path(&path, Some(&self.path));
             if strict {
                 if vault_resolved.exists() || self.loaded_notes.contains_key(&vault_resolved) {
                     return Ok((vault_resolved, Some(self.path.clone())));
@@ -139,6 +137,7 @@ impl Vault {
                 return Ok((cwd_resolved, Some(cwd)));
             }
         } else {
+            let mut vault_resolved = common::normalize_path(&path, Some(&self.path));
             if vault_resolved.exists() {
                 return Ok((vault_resolved, Some(self.path.clone())));
             } else if vault_resolved.extension().is_none() {
@@ -314,8 +313,7 @@ impl Vault {
                     Link::Wiki { .. } => None,
                     Link::Markdown { text, url } => {
                         let fragment = url.find('#').map(|i| url[i..].to_string());
-                        let new_url = common::relative_path(self.path.as_path(), new_path);
-                        println!("new url: {}", new_url.to_string_lossy());
+                        let new_url = common::relative_path(&self.path, new_path);
                         let new_url_str = new_url.to_string_lossy().replace('\\', "/");
                         let full_url = match fragment {
                             Some(f) => format!("{}{}", new_url_str, f),
@@ -499,7 +497,7 @@ impl Vault {
                         }
                         Link::Markdown { text, url } => {
                             let fragment = url.find('#').map(|i| url[i..].to_string());
-                            let new_url = common::relative_path(self.path.as_path(), &dest_path);
+                            let new_url = common::relative_path(&self.path, &dest_path);
                             let new_url_str = new_url.to_string_lossy().replace('\\', "/");
                             let full_url = match fragment {
                                 Some(f) => format!("{}{}", new_url_str, f),
@@ -1554,22 +1552,14 @@ mod tests {
 
         let combined = Note::from_path(&dest_path).unwrap();
         assert!(
-            combined
-                .tags
-                .iter()
-                .any(|t| t.tag == "rust" && matches!(t.location, Location::Frontmatter))
-        );
-        assert!(
-            combined
-                .tags
-                .iter()
-                .any(|t| t.tag == "obsidian" && matches!(t.location, Location::Frontmatter))
-        );
-    }
+            comb.iter()
+            (|t| t.tag == "rust" && matches!(t.location, Location::Frontmatter))
+    );assert
+        comb    .tags    .iter()
+            .any
 
     #[test]
-    fn merge_does_not_inherit_source_id() {
-        let dir = tempfile::tempdir().unwrap();
+    fn merges_not_inherit_source_id() {let dir = tempfile::tempdir().unwrap();
         fs::write(
             dir.path().join("src.md"),
             "---\nid: source-id\nauthor: alice\n---\nBody.",

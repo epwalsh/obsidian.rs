@@ -904,7 +904,7 @@ pub fn find_matching_links(source: &Note, target: &Note, vault_path: &std::path:
                     return false;
                 }
                 let source_dir = source.path.parent().unwrap_or(&source.path);
-                (common::normalize_path(&source_dir.join(url_path), Some(vault_path)) == target.path)
+                (common::normalize_path(source_dir.join(url_path), Some(vault_path)) == target.path)
                     || (url_path == common::relative_path(vault_path, &target.path).to_string_lossy())
             }
             _ => false,
