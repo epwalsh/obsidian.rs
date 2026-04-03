@@ -19,8 +19,10 @@ A collection of tools for working with Obsidian vaults, written in Rust.
 - [x] Implement basics of core library
 - [x] Basic CLI tool for querying and managing vaults
 - [x] Implement an MCP server
-- [ ] Implement an LSP server
-- [ ] Integrate into Obsidian.nvim
+- [ ] More core features with corresponding CLI/MCP methods
+  - [ ] Rename tag
+- [ ] Add capabilities to the LSP server
+  - [ ] Go-to definition
 
 ## On the use of AI
 

@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `loaded_notes: Option<&HashMap<PathBuf, Note>>` parameter to `find_all_tags`, `find_tags`, `find_notes_filtered`, and `find_notes_filtered_with_content` in `obsidian_core::search`.
 - Added `Vault::load_note(note: Note)` and `Vault::unload_note(path: &Path)` to manage in-memory note overrides. Loaded notes are automatically included in `search()`, `list_tags()`, `find_tags()`, `notes_filtered()`, and `notes_filtered_with_content()`.
 - `Note` now derives `Clone`.
+- Added `Vault.rename_tag()` method.
 
 ### Changed
 

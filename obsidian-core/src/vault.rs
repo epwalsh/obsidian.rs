@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use gray_matter::Pod;
 use indexmap::IndexMap;
 
-use crate::{Link, LocatedLink, LocatedTag, Location, Note, NoteError, VaultError, common, search};
+use crate::{InlineLocation, Link, LocatedLink, LocatedTag, Location, Note, NoteError, VaultError, common, search};
 
 pub struct Vault {
     path: PathBuf,
@@ -219,8 +219,69 @@ impl Vault {
 
     /// Find all occurrences of specific tags, grouped by the note they appear in. Tags are matched
     /// case-insensitively, and sub-tags are gathered as well.
-    pub fn find_tags(&self, tags: &[String]) -> Result<Vec<(Note, Vec<crate::LocatedTag>)>, VaultError> {
+    pub fn find_tags(&self, tags: &[String]) -> Result<Vec<(Note, Vec<LocatedTag>)>, VaultError> {
         search::find_tags(&self.path, tags, Some(&self.loaded_notes)).map_err(VaultError::Search)
+    }
+
+    /// Find and replaces all occurrences of `old_tag` with the new `new_tag` and return
+    /// the occurrences and location of the new tag.
+    pub fn rename_tag(&mut self, old_tag: &str, new_tag: &str) -> Result<Vec<(Note, Vec<LocatedTag>)>, VaultError> {
+        let mut results: Vec<(Note, Vec<LocatedTag>)> = Vec::new();
+        for (mut note, tags) in self.find_tags(&[old_tag.into()])? {
+            let mut tags_by_line: HashMap<usize, Vec<InlineLocation>> = HashMap::new();
+            for lt in tags {
+                match lt.location {
+                    // Replace frontmatter tags immediately.
+                    Location::Frontmatter => {
+                        note.remove_tag(&lt.tag);
+                        note.add_tag(new_tag);
+                    }
+                    // And gather tags in the body by their line number (1-indexed).
+                    Location::Inline(loc) => {
+                        tags_by_line.entry(loc.line).or_default();
+                        tags_by_line.get_mut(&loc.line).unwrap().push(loc);
+                    }
+                };
+            }
+
+            if !tags_by_line.is_empty() {
+                // Replace all occurrences of the old tag in the body with the new one.
+                note.load_body()?;
+                let mut lines: Vec<String> = note.body.as_ref().unwrap().lines().map(|s| s.to_string()).collect();
+                for (lnum, locs) in tags_by_line.drain() {
+                    let line = lines.get_mut(lnum - 1 - note.frontmatter_line_count).unwrap();
+                    let mut offset = 0;
+                    for loc in locs {
+                        line.replace_range(
+                            (offset + loc.col_start)..(offset + loc.col_end),
+                            &format!("#{}", new_tag),
+                        );
+                        offset += new_tag.len() - old_tag.len();
+                    }
+                }
+
+                let body = lines.join("\n");
+                note.update_content(Some(&body), None)?;
+            }
+
+            // Re-collect the located tags.
+            let tags = note
+                .tags
+                .iter()
+                .filter_map(|lt| if lt.tag == new_tag { Some(lt.clone()) } else { None })
+                .collect();
+
+            // If note is loaded, need to update it. Otherwise write to disk.
+            if self.note_is_loaded(&note.path) {
+                self.load_note(note.clone());
+            } else {
+                note.write()?;
+            }
+
+            results.push((note, tags));
+        }
+
+        Ok(results)
     }
 
     /// Returns all notes in the vault that link to `target`, paired with the specific
@@ -1084,6 +1145,27 @@ mod tests {
         let backlinks = vault.backlinks(&target).unwrap();
 
         assert!(backlinks.is_empty());
+    }
+
+    // --- rename tag tests ---
+
+    #[test]
+    fn rename_tag_basic() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("note.md"),
+            "---\nid: note\ntags:\n- foo\n- old-tag\n---\n\nHello world #old-tag here and #old-tag there.",
+        )
+        .unwrap();
+
+        let mut vault = Vault::open(dir.path()).unwrap();
+        vault.rename_tag("old-tag", "new-tag").unwrap();
+
+        let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
+        assert_eq!(
+            content,
+            "---\nid: note\ntags:\n- foo\n- new-tag\n---\n\nHello world #new-tag here and #new-tag there."
+        );
     }
 
     // --- patch_note tests ---
