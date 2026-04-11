@@ -228,16 +228,19 @@ impl VaultServer {
         let vault = Arc::clone(&self.vault);
         let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, rmcp::ErrorData> {
             let vault = vault.lock().unwrap();
-            let mut query = vault.search();
+            let mut query = vault.search().include_inline_tags();
 
             for tag in p.tags.unwrap_or_default() {
-                query = query.and_has_tag(tag);
+                query = query.or_has_tag(tag);
             }
             if let Some(title) = p.title_contains {
                 query = query.and_title_contains(title);
             }
             if let Some(content) = p.content_contains {
-                query = query.and_content_contains(content);
+                query = query.or_content_contains(content);
+            }
+            if let Some(pattern) = p.content_matches {
+                query = query.or_content_matches(pattern);
             }
             if let Some(glob) = p.glob {
                 query = query.and_glob(glob);

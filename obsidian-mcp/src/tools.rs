@@ -87,14 +87,14 @@ pub struct UpdateNoteParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SearchNotesParams {
-    #[schemars(
-        description = "Filter by tags. All listed tags must be present on a note (AND semantics). Uses exact match."
-    )]
+    #[schemars(description = "Filter by tags (case-insensitive)")]
     pub tags: Option<Vec<String>>,
-    #[schemars(description = "Filter notes whose title contains this substring (case-insensitive)")]
+    #[schemars(description = "Filter notes whose title contains this substring (smart case-sensitive)")]
     pub title_contains: Option<String>,
-    #[schemars(description = "Filter notes whose body content contains this substring (case-insensitive)")]
+    #[schemars(description = "Filter notes whose body content contains this substring (smart case-sensitive)")]
     pub content_contains: Option<String>,
+    #[schemars(description = "Filter notes whose body content matches this regex (smart case-sensitive)")]
+    pub content_matches: Option<String>,
     #[schemars(description = "Filter by glob pattern matched against vault-relative path (e.g. 'notes/**')")]
     pub glob: Option<String>,
     #[schemars(description = "Filter by exact note ID")]
