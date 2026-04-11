@@ -1,9 +1,9 @@
 # obsidian.rs
 
-[![CI](https://github.com/epwalsh/obsidian.rs/actions/workflows/ci.yml/badge.svg)](https://github.com/epwalsh/obsidian.rs/actions/workflows/ci.yml)
 [![crates.io (core)](https://img.shields.io/crates/v/obsidian-rs-core?label=obsidian-rs-core)](https://crates.io/crates/obsidian-rs-core)
 [![crates.io (cli)](https://img.shields.io/crates/v/obsidian-rs-cli?label=obsidian-rs-cli)](https://crates.io/crates/obsidian-rs-cli)
 [![crates.io (mcp)](https://img.shields.io/crates/v/obsidian-rs-mcp?label=obsidian-rs-mcp)](https://crates.io/crates/obsidian-rs-mcp)
+[![crates.io (lsp)](https://img.shields.io/crates/v/obsidian-rs-lsp?label=obsidian-rs-lsp)](https://crates.io/crates/obsidian-rs-lsp)
 [![docs.rs](https://img.shields.io/docsrs/obsidian-rs-core)](https://docs.rs/obsidian-rs-core)
 [![License](https://img.shields.io/crates/l/obsidian-rs-core)](LICENSE)
 
