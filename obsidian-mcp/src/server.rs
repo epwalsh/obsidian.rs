@@ -15,6 +15,7 @@ use crate::tools::{
 
 pub struct VaultServer {
     vault: Arc<Mutex<Vault>>,
+    #[allow(dead_code)] // Used by the macro expansion.
     tool_router: ToolRouter<Self>,
 }
 
@@ -159,7 +160,8 @@ impl VaultServer {
         let vault = Arc::clone(&self.vault);
         let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, rmcp::ErrorData> {
             let mut vault = vault.lock().unwrap();
-            let note = vault.resolve_note(&p.note).map_err(vault_err)?;
+            let mut note = vault.resolve_note(&p.note).map_err(vault_err)?;
+            note.load_body().map_err(note_err)?; // Ensure content is loaded before patching.
             let patched = vault
                 .patch_note(&note, &p.old_string, &p.new_string)
                 .map_err(vault_err)?;

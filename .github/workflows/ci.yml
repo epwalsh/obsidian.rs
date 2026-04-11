@@ -56,7 +56,7 @@ jobs:
           printf -- '---\nid: note-a-id\ntitle: Note A\naliases: [aliasA]\ntags: [rust, obsidian]\n---\nThis is note A content. #inline-tag\n' > /tmp/test-vault/note-a.md
           printf -- '---\ntags: [python]\n---\nSee [[note-a]] for details.\n' > /tmp/test-vault/note-b.md
 
-      - name: tools/list returns all 8 tools
+      - name: tools/list returns all tools
         run: |
           out=$(npx --yes @modelcontextprotocol/inspector@"$INSPECTOR_VERSION" --cli ./target/debug/obsidian-mcp --method tools/list)
           echo "$out"
