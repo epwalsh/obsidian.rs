@@ -1,10 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env::current_dir;
 use std::path::{Path, PathBuf};
 
 use gray_matter::Pod;
 use indexmap::IndexMap;
 
+use crate::health::{BrokenLink, DuplicateAlias, DuplicateId, NoteRef, VaultHealthReport};
 use crate::{InlineLocation, Link, LocatedLink, LocatedTag, Location, Note, NoteError, VaultError, common, search};
 
 pub struct Vault {
@@ -203,6 +204,136 @@ impl Vault {
     /// Like [`notes_filtered`](Self::notes_filtered), but retains body content in each [`Note::content`].
     pub fn notes_filtered_with_content(&self, filter: impl Fn(&Path) -> bool) -> Vec<Result<Note, NoteError>> {
         search::find_notes_filtered_with_content(&self.path, filter, Some(&self.loaded_notes))
+    }
+
+    /// Scans the vault for health issues: duplicate IDs, duplicate aliases, and broken links.
+    ///
+    /// Only notes whose path satisfies `filter` are included. Pass `|_| true` to scan
+    /// everything, or use a glob-based closure (see [`notes_filtered`](Self::notes_filtered))
+    /// to exclude specific paths.
+    ///
+    /// Note-load failures are silently skipped (consistent with other vault scan methods).
+    pub fn check(&self, filter: impl Fn(&Path) -> bool) -> VaultHealthReport {
+        let notes: Vec<Note> = self.notes_filtered(filter).into_iter().filter_map(|r| r.ok()).collect();
+
+        // --- Duplicate IDs ---
+        let mut id_map: HashMap<String, Vec<PathBuf>> = HashMap::new();
+        for note in notes.iter() {
+            id_map.entry(note.id.clone()).or_default().push(note.path.clone());
+        }
+        let mut dup_ids: Vec<DuplicateId> = id_map
+            .into_iter()
+            .filter(|(_, paths)| paths.len() > 1)
+            .map(|(id, mut paths)| {
+                paths.sort();
+                let note_refs = paths
+                    .into_iter()
+                    .map(|path| {
+                        let note = notes.iter().find(|n| n.path == path).unwrap();
+                        NoteRef {
+                            path: path.clone(),
+                            backlink_count: self.backlinks_from(&notes, note).len(),
+                        }
+                    })
+                    .collect();
+                DuplicateId { id, notes: note_refs }
+            })
+            .collect();
+        dup_ids.sort_by(|a, b| a.id.cmp(&b.id));
+
+        // --- Duplicate aliases ---
+        let mut alias_map: HashMap<String, HashSet<PathBuf>> = HashMap::new();
+        for note in notes.iter() {
+            for alias in &note.aliases {
+                alias_map
+                    .entry(alias.to_lowercase())
+                    .or_default()
+                    .insert(note.path.clone());
+            }
+        }
+        let mut dup_aliases: Vec<DuplicateAlias> = alias_map
+            .into_iter()
+            .filter(|(_, paths)| paths.len() > 1)
+            .map(|(alias, paths)| {
+                let mut sorted_paths: Vec<PathBuf> = paths.into_iter().collect();
+                sorted_paths.sort();
+                let note_refs = sorted_paths
+                    .into_iter()
+                    .map(|path| {
+                        let note = notes.iter().find(|n| n.path == path).unwrap();
+                        NoteRef {
+                            path: path.clone(),
+                            backlink_count: self.backlinks_from(&notes, note).len(),
+                        }
+                    })
+                    .collect();
+                DuplicateAlias {
+                    alias,
+                    notes: note_refs,
+                }
+            })
+            .collect();
+        dup_aliases.sort_by(|a, b| a.alias.cmp(&b.alias));
+
+        // --- Broken links ---
+        let mut valid_wiki_targets: HashSet<String> = HashSet::new();
+        for note in notes.iter() {
+            valid_wiki_targets.insert(note.id.clone());
+            if let Some(stem) = note.path.file_stem().and_then(|s| s.to_str()) {
+                valid_wiki_targets.insert(stem.to_string());
+            }
+            for alias in &note.aliases {
+                valid_wiki_targets.insert(alias.clone());
+                valid_wiki_targets.insert(alias.to_lowercase());
+            }
+        }
+
+        let mut broken: Vec<BrokenLink> = Vec::new();
+        for note in notes.iter() {
+            for ll in &note.links {
+                match &ll.link {
+                    Link::Wiki { target, .. } => {
+                        if !target.is_empty() && !valid_wiki_targets.contains(target.as_str()) {
+                            broken.push(BrokenLink {
+                                source_path: note.path.clone(),
+                                line: ll.location.line,
+                                text: format!("[[{}]]", target),
+                            });
+                        }
+                    }
+                    Link::Markdown { url, .. } => {
+                        // Skip external and absolute links; only check local .md links.
+                        if url.contains("://") || url.starts_with('/') {
+                            continue;
+                        }
+                        let url_path = match url.find('#') {
+                            Some(i) => &url[..i],
+                            None => url.as_str(),
+                        };
+                        if !url_path.ends_with(".md") {
+                            continue;
+                        }
+                        let source_dirs = [self.path.as_path(), note.path.parent().unwrap_or(self.path.as_path())];
+                        if !source_dirs.iter().any(|dir| dir.join(url_path).exists()) {
+                            broken.push(BrokenLink {
+                                source_path: note.path.clone(),
+                                line: ll.location.line,
+                                text: format!("[...]({})", url),
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        broken.sort_by(|a, b| a.source_path.cmp(&b.source_path).then(a.line.cmp(&b.line)));
+
+        VaultHealthReport {
+            note_count: notes.len(),
+            duplicate_ids: dup_ids,
+            duplicate_aliases: dup_aliases,
+            broken_links: broken,
+        }
     }
 
     /// Returns a [`SearchQuery`](search::SearchQuery) rooted at this vault's path.

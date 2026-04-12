@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- Added `check_vault` MCP tool: reports duplicate IDs, duplicate aliases, and broken links — equivalent to the CLI's `check` command. Accepts an optional `ignore` parameter (list of vault-relative glob patterns to exclude).
+- Added `Vault::check(filter: impl Fn(&Path) -> bool) -> VaultHealthReport` to `obsidian-rs-core`. Returns a `VaultHealthReport` with `duplicate_ids`, `duplicate_aliases`, and `broken_links` fields. Health report types (`VaultHealthReport`, `DuplicateId`, `DuplicateAlias`, `BrokenLink`, `NoteRef`) are exported from the `health` module.
+
 ## v0.2.0 - 2026-04-11
 
 ### Added
