@@ -9,9 +9,21 @@ use serde_json::json;
 
 use crate::error::{note_err, other_err, search_err, vault_err};
 use crate::tools::{
-    ListNotesParams, ListTagsParams, PatchNoteParams, ReadNoteParams, RenameNoteParams, SearchByTagParams,
-    SearchNotesParams, UpdateNoteParams, WriteNoteParams,
+    CheckVaultParams, ListNotesParams, ListTagsParams, PatchNoteParams, ReadNoteParams, RenameNoteParams,
+    SearchByTagParams, SearchNotesParams, UpdateNoteParams, WriteNoteParams,
 };
+
+fn build_ignore_set(patterns: &[String]) -> Result<globset::GlobSet, rmcp::ErrorData> {
+    let mut builder = globset::GlobSetBuilder::new();
+    for pattern in patterns {
+        let glob = globset::GlobBuilder::new(pattern)
+            .literal_separator(true)
+            .build()
+            .map_err(|e| other_err(format!("invalid ignore pattern '{}': {}", pattern, e)))?;
+        builder.add(glob);
+    }
+    builder.build().map_err(|e| other_err(e.to_string()))
+}
 
 pub struct VaultServer {
     vault: Arc<Mutex<Vault>>,
@@ -312,6 +324,84 @@ impl VaultServer {
             let vault = vault.lock().unwrap();
             let tags = vault.list_tags().map_err(vault_err)?;
             Ok(json!(tags))
+        })
+        .await
+        .map_err(|e| other_err(e.to_string()))??;
+
+        Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+    }
+
+    #[tool(
+        description = "Check vault health: report duplicate IDs, duplicate aliases, and broken links",
+        annotations(read_only_hint = true, destructive_hint = false, open_world_hint = false)
+    )]
+    async fn check_vault(
+        &self,
+        Parameters(p): Parameters<CheckVaultParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let vault = Arc::clone(&self.vault);
+        let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, rmcp::ErrorData> {
+            let vault = vault.lock().unwrap();
+
+            let empty: Vec<String> = Vec::new();
+            let ignore_patterns = p.ignore.as_deref().unwrap_or(&empty);
+            let ignore_set = build_ignore_set(ignore_patterns)?;
+            let vault_path = vault.path().to_path_buf();
+
+            let report = vault.check(move |path| {
+                let rel = path.strip_prefix(&vault_path).unwrap_or(path);
+                !ignore_set.is_match(rel)
+            });
+
+            let vault_path = vault.path();
+
+            let dup_ids: Vec<serde_json::Value> = report
+                .duplicate_ids
+                .iter()
+                .map(|d| {
+                    json!({
+                        "id": d.id,
+                        "notes": d.notes.iter().map(|n| json!({
+                            "path": vault_rel_path(&n.path, vault_path),
+                            "backlink_count": n.backlink_count,
+                        })).collect::<Vec<_>>(),
+                    })
+                })
+                .collect();
+
+            let dup_aliases: Vec<serde_json::Value> = report
+                .duplicate_aliases
+                .iter()
+                .map(|d| {
+                    json!({
+                        "alias": d.alias,
+                        "notes": d.notes.iter().map(|n| json!({
+                            "path": vault_rel_path(&n.path, vault_path),
+                            "backlink_count": n.backlink_count,
+                        })).collect::<Vec<_>>(),
+                    })
+                })
+                .collect();
+
+            let broken_links: Vec<serde_json::Value> = report
+                .broken_links
+                .iter()
+                .map(|b| {
+                    json!({
+                        "source_path": vault_rel_path(&b.source_path, vault_path),
+                        "line": b.line,
+                        "text": b.text,
+                    })
+                })
+                .collect();
+
+            Ok(json!({
+                "note_count": report.note_count,
+                "has_issues": report.has_issues(),
+                "duplicate_ids": dup_ids,
+                "duplicate_aliases": dup_aliases,
+                "broken_links": broken_links,
+            }))
         })
         .await
         .map_err(|e| other_err(e.to_string()))??;

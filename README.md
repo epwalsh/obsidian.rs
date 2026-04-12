@@ -87,6 +87,7 @@ claude mcp add obsidian --scope project obsidian-mcp --vault .
 
 | Tool | Description |
 |---|---|
+| `check_vault` | Report duplicate IDs, duplicate aliases, and broken links in the vault |
 | `list_notes` | List all notes in the vault |
 | `read_note` | Read the body and frontmatter of a note |
 | `write_note` | Write a new note |

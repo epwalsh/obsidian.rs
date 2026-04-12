@@ -844,6 +844,7 @@ version = "0.2.0"
 dependencies = [
  "clap",
  "color-eyre",
+ "globset",
  "obsidian-rs-core",
  "rmcp",
  "schemars",

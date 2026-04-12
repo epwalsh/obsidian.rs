@@ -119,6 +119,14 @@ pub struct RenameNoteParams {
 pub struct ListTagsParams {}
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct CheckVaultParams {
+    #[schemars(
+        description = "Glob patterns for vault-relative paths to exclude from the check (e.g. 'templates/**'). Repeatable."
+    )]
+    pub ignore: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct SearchByTagParams {
     #[schemars(description = "Tags to search for. Also matches sub-tags: 'workout' matches 'workout/upper-body'.")]
     pub tags: Vec<String>,
