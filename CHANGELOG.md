@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+
+- Markdown links with percent-encoded URLs (e.g. `[text](My%20Note.md)`) are now correctly resolved for backlink detection, health checks, and rename/merge operations.
+
 ### Added
 
 - Added `check_vault` MCP tool: reports duplicate IDs, duplicate aliases, and broken links — equivalent to the CLI's `check` command. Accepts an optional `ignore` parameter (list of vault-relative glob patterns to exclude).

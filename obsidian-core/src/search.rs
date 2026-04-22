@@ -889,10 +889,12 @@ pub fn find_matching_links(source: &Note, target: &Note, vault_path: &std::path:
                 if url.contains("://") || url.starts_with('/') {
                     return false;
                 }
-                let url_path = match url.find('#') {
+                let url_path_raw = match url.find('#') {
                     Some(i) => &url[..i],
                     None => url.as_str(),
                 };
+                let url_path_decoded = common::percent_decode(url_path_raw);
+                let url_path = url_path_decoded.as_str();
                 if !url_path.ends_with(".md") {
                     return false;
                 }
