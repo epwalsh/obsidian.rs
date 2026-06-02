@@ -14,7 +14,7 @@ A collection of tools for working with [Obsidian](https://obsidian.md) vaults, w
 | [`obsidian-rs-core`](https://crates.io/crates/obsidian-rs-core) | Core library — the foundation the other tools build on |
 | [`obsidian-rs-cli`](https://crates.io/crates/obsidian-rs-cli) | Command-line tool for querying and managing vaults |
 | [`obsidian-rs-mcp`](https://crates.io/crates/obsidian-rs-mcp) | MCP server so agents can interact with your vault |
-| `obsidian-rs-lsp` | **(WIP)** Language server for vault editing in your IDE |
+| `obsidian-rs-lsp` | **(WIP)** Language server skeleton for vault editing in your IDE |
 
 ## CLI
 
@@ -97,6 +97,27 @@ claude mcp add obsidian --scope project obsidian-mcp --vault .
 | `rename_note` | Rename a note and update all backlinks |
 | `list_tags` | List all tags used in the vault |
 | `search_tags` | Find all occurrences of given tags |
+
+## LSP Server
+
+Install with Cargo:
+
+```sh
+cargo install obsidian-rs-lsp
+```
+
+The `obsidian-lsp` binary speaks stdio LSP and resolves the vault the same way as `obsidian-mcp`: `--vault <PATH>`, then `OBSIDIAN_VAULT`, then the nearest parent containing `.obsidian/`.
+
+Current functionality:
+
+- clean LSP initialization and shutdown
+- full-document text sync for open buffers
+- in-memory buffer shadowing through `obsidian_core::Vault::load_note()` / `unload_note()`
+- diagnostics for broken links, duplicate IDs, and duplicate aliases across the vault
+- hover on note links with basic target-note metadata
+- diagnostics clearing and refresh on open/change/close events
+
+Advanced editor features such as go-to-definition, rename, and completion are not implemented yet.
 
 ## Roadmap
 

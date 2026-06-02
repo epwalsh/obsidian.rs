@@ -990,7 +990,7 @@ mod tests {
     fn open_valid_directory() {
         let dir = tempfile::tempdir().unwrap();
         // std::fs::create_dir(&dir).unwrap();
-        let vault = Vault::open(&dir.path()).expect("should open valid directory");
+        let vault = Vault::open(dir.path()).expect("should open valid directory");
         assert_eq!(vault.path, common::normalize_path(dir.path(), None));
     }
 
@@ -1512,7 +1512,7 @@ mod tests {
 
         assert_eq!(
             preview.new_path,
-            common::normalize_path(&dir.path().join("new.md"), None)
+            common::normalize_path(dir.path().join("new.md"), None)
         );
         assert!(preview.updated_notes.is_empty());
         assert!(preview.id_will_update);
@@ -1872,7 +1872,7 @@ mod tests {
 
         let vault = Vault::open(dir.path()).unwrap();
         let src = Note::from_path_with_body(dir.path().join("src.md")).unwrap();
-        vault.merge_preview(&[src], &dir.path().join("dest.md")).unwrap();
+        vault.merge_preview(&[src], dir.path().join("dest.md")).unwrap();
 
         assert!(dir.path().join("src.md").exists());
         assert!(!dir.path().join("dest.md").exists());
