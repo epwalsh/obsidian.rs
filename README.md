@@ -119,8 +119,9 @@ Current functionality:
 - references/backlinks for linked notes, or for the current note when the cursor is not on a link
 - go-to definition for linked notes, including heading anchors and nested sub-anchors
 - diagnostics clearing and refresh on open/change/close events
+- completion for wiki links (`[[`) and markdown links (`[`) with per-note variants: bare ID, bare title, alias override, and bare alias forms
 
-Advanced editor features such as rename and completion are not implemented yet.
+Advanced editor features such as rename are not implemented yet.
 
 ## On the use of AI
 

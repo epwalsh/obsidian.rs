@@ -4,16 +4,16 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentLink,
-    DocumentLinkOptions, DocumentLinkParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams,
-    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location, MessageType, OneOf,
-    ReferenceParams, ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind,
-    WorkspaceFoldersServerCapabilities, WorkspaceServerCapabilities,
+    CompletionOptions, CompletionParams, CompletionResponse, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, DocumentLink, DocumentLinkOptions, DocumentLinkParams, GotoDefinitionParams,
+    GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
+    InitializedParams, Location, MessageType, OneOf, ReferenceParams, ServerCapabilities, ServerInfo,
+    TextDocumentSyncCapability, TextDocumentSyncKind, WorkspaceFoldersServerCapabilities, WorkspaceServerCapabilities,
 };
 use tower_lsp::{Client, LanguageServer};
 
 use crate::state::{
-    BackendState, DiagnosticUpdate, DiagnosticsRequest, DocumentLinksRequest, NavigationRequest,
+    BackendState, CompletionRequest, DiagnosticUpdate, DiagnosticsRequest, DocumentLinksRequest, NavigationRequest,
     ResolveDocumentLinkRequest, StateError,
 };
 
@@ -131,6 +131,10 @@ impl LanguageServer for Backend {
                 document_link_provider: Some(DocumentLinkOptions {
                     resolve_provider: Some(true),
                     work_done_progress_options: Default::default(),
+                }),
+                completion_provider: Some(CompletionOptions {
+                    trigger_characters: Some(vec!["[".to_string()]),
+                    ..Default::default()
                 }),
                 references_provider: Some(OneOf::Left(true)),
                 definition_provider: Some(OneOf::Left(true)),
@@ -256,6 +260,22 @@ impl LanguageServer for Backend {
             })
             .await
             .flatten())
+    }
+
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        let request = {
+            let state = self.state.read().await;
+            state.completion_request(
+                params.text_document_position.text_document.uri,
+                params.text_document_position.position,
+            )
+        };
+
+        Ok(self
+            .compute_request(request, "completion", |request: CompletionRequest| request.compute())
+            .await
+            .flatten()
+            .map(CompletionResponse::Array))
     }
 
     async fn goto_definition(&self, params: GotoDefinitionParams) -> Result<Option<GotoDefinitionResponse>> {

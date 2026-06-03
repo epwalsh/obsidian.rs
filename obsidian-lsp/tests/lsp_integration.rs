@@ -908,3 +908,231 @@ fn stdio_session_definition_jumps_to_nested_heading_anchor() {
 
     shutdown_session(&mut harness);
 }
+
+fn create_completion_vault() -> (tempfile::TempDir, Url, Url) {
+    let vault_dir = tempfile::tempdir().expect("should create temp dir");
+    fs::create_dir(vault_dir.path().join(".obsidian")).expect("should create .obsidian directory");
+
+    let target_path = vault_dir.path().join("target.md");
+    fs::write(
+        &target_path,
+        "---\nid: target-id\ntitle: Target Note\naliases: [Target Alias]\n---\n\n# Overview\n\n## Getting Started\n\nBody.\n",
+    )
+    .expect("should write target note");
+    let target_uri = Url::from_file_path(target_path.canonicalize().expect("target path should canonicalize"))
+        .expect("target path should convert to file URI");
+
+    let other_path = vault_dir.path().join("other.md");
+    fs::write(&other_path, "---\nid: other-note\n---\n\nBody.\n").expect("should write other note");
+    let other_uri = Url::from_file_path(other_path.canonicalize().expect("other path should canonicalize"))
+        .expect("other path should convert to file URI");
+
+    (vault_dir, target_uri, other_uri)
+}
+
+fn completion_labels(response: &Value) -> Vec<&str> {
+    response["result"]
+        .as_array()
+        .expect("completion result should be an array")
+        .iter()
+        .filter_map(|item| item["label"].as_str())
+        .collect()
+}
+
+#[test]
+fn stdio_session_handles_completion_for_wiki_and_markdown_links() {
+    let (vault_dir, _target_uri, _other_uri) = create_completion_vault();
+    let vault_path = vault_dir.path().canonicalize().expect("vault path should canonicalize");
+    let vault_uri = Url::from_file_path(&vault_path).expect("vault path should convert to file URI");
+
+    let mut harness = LspHarness::spawn(vault_dir.path());
+    initialize_session(&mut harness, &vault_uri, &vault_path);
+
+    let source_path = vault_dir.path().join("source.md");
+    let wiki_text = "See [[tar";
+    fs::write(&source_path, wiki_text).expect("should write source note");
+    let source_path = source_path.canonicalize().expect("source path should canonicalize");
+    let source_uri = Url::from_file_path(&source_path).expect("source path should convert to file URI");
+
+    // Open document with a partial wiki link "[[tar"
+    harness.send(notification(
+        "textDocument/didOpen",
+        Some(json!({
+            "textDocument": {
+                "uri": source_uri,
+                "languageId": "markdown",
+                "version": 1,
+                "text": wiki_text,
+            }
+        })),
+    ));
+    expect_diagnostics(&mut harness, &source_uri, Some(1));
+
+    // Request completion at the end of "[[tar" (line 0, character 9)
+    harness.send(request(
+        2,
+        "textDocument/completion",
+        Some(json!({
+            "textDocument": { "uri": source_uri },
+            "position": { "line": 0, "character": 9 },
+        })),
+    ));
+
+    let wiki_completion = harness.expect_message("wiki completion response", |message| message["id"] == 2);
+    let labels = completion_labels(&wiki_completion);
+    assert!(labels.contains(&"[[target-id]]"), "missing [[target-id]]");
+    assert!(labels.contains(&"[[Target Note]]"), "missing [[Target Note]]");
+    assert!(
+        labels.contains(&"[[target-id|Target Alias]]"),
+        "missing [[target-id|Target Alias]]"
+    );
+    assert!(labels.contains(&"[[Target Alias]]"), "missing [[Target Alias]]");
+    assert!(!labels.contains(&"[[other-note]]"), "other-note should not match 'tar'");
+
+    // Verify text_edit replaces the correct range (from the `[[` at char 4 to cursor at char 9)
+    let first_item = &wiki_completion["result"][0];
+    assert_eq!(first_item["textEdit"]["range"]["start"]["character"], 4);
+    assert_eq!(first_item["textEdit"]["range"]["end"]["character"], 9);
+
+    // Change document to a partial markdown link "[tar"
+    let markdown_text = "See [tar";
+    harness.send(notification(
+        "textDocument/didChange",
+        Some(json!({
+            "textDocument": { "uri": source_uri, "version": 2 },
+            "contentChanges": [{ "text": markdown_text }],
+        })),
+    ));
+    expect_diagnostics(&mut harness, &source_uri, Some(2));
+
+    // Request completion at the end of "[tar" (line 0, character 8)
+    harness.send(request(
+        3,
+        "textDocument/completion",
+        Some(json!({
+            "textDocument": { "uri": source_uri },
+            "position": { "line": 0, "character": 8 },
+        })),
+    ));
+
+    let md_completion = harness.expect_message("markdown completion response", |message| message["id"] == 3);
+    let labels = completion_labels(&md_completion);
+    assert!(
+        labels.iter().any(|l| l.starts_with("[target-id](") && l.ends_with(')')),
+        "missing [target-id](...)"
+    );
+    assert!(
+        labels
+            .iter()
+            .any(|l| l.starts_with("[Target Note](") && l.ends_with(')')),
+        "missing [Target Note](...)"
+    );
+    assert!(
+        labels
+            .iter()
+            .any(|l| l.starts_with("[Target Alias](") && l.ends_with(')')),
+        "missing [Target Alias](...)"
+    );
+    assert!(
+        !labels.iter().any(|l| l.starts_with("[other-note](")),
+        "other-note should not match 'tar'"
+    );
+
+    // Request completion on plain text — should return null (no link context).
+    harness.send(notification(
+        "textDocument/didChange",
+        Some(json!({
+            "textDocument": { "uri": source_uri, "version": 3 },
+            "contentChanges": [{ "text": "just plain text" }],
+        })),
+    ));
+    expect_diagnostics(&mut harness, &source_uri, Some(3));
+
+    harness.send(request(
+        4,
+        "textDocument/completion",
+        Some(json!({
+            "textDocument": { "uri": source_uri },
+            "position": { "line": 0, "character": 15 },
+        })),
+    ));
+
+    let plain_completion = harness.expect_message("plain text completion response", |message| message["id"] == 4);
+    assert!(
+        plain_completion["result"].is_null(),
+        "plain text should return null, not completions"
+    );
+
+    // Test heading completion: "[[target-id#Get" should produce heading completions.
+    harness.send(notification(
+        "textDocument/didChange",
+        Some(json!({
+            "textDocument": { "uri": source_uri, "version": 4 },
+            "contentChanges": [{ "text": "[[target-id#Get" }],
+        })),
+    ));
+    expect_diagnostics(&mut harness, &source_uri, Some(4));
+
+    harness.send(request(
+        5,
+        "textDocument/completion",
+        Some(json!({
+            "textDocument": { "uri": source_uri },
+            "position": { "line": 0, "character": 15 },
+        })),
+    ));
+
+    let heading_completion = harness.expect_message("heading completion response", |message| message["id"] == 5);
+    let labels = completion_labels(&heading_completion);
+    assert!(
+        labels.contains(&"[[target-id#Getting Started]]"),
+        "missing [[target-id#Getting Started]]"
+    );
+    assert!(
+        labels.contains(&"[[Target Note#Getting Started]]"),
+        "missing [[Target Note#Getting Started]]"
+    );
+    assert!(
+        !labels.iter().any(|l| l.contains("Overview")),
+        "Overview should not match 'Get'"
+    );
+
+    // Test closing-bracket extension: cursor inside "[[tar]]" should replace the whole thing.
+    harness.send(notification(
+        "textDocument/didChange",
+        Some(json!({
+            "textDocument": { "uri": source_uri, "version": 5 },
+            "contentChanges": [{ "text": "[[tar]]" }],
+        })),
+    ));
+    expect_diagnostics(&mut harness, &source_uri, Some(5));
+
+    // position 5: after "[[tar", before "]]"
+    harness.send(request(
+        6,
+        "textDocument/completion",
+        Some(json!({
+            "textDocument": { "uri": source_uri },
+            "position": { "line": 0, "character": 5 },
+        })),
+    ));
+
+    let bracket_completion =
+        harness.expect_message("closing-bracket completion response", |message| message["id"] == 6);
+    let first_item = bracket_completion["result"]
+        .as_array()
+        .expect("result should be an array")
+        .iter()
+        .find(|item| item["label"] == "[[target-id]]")
+        .expect("[[target-id]] should be in the list");
+    assert_eq!(
+        first_item["textEdit"]["range"]["start"]["character"], 0,
+        "range should start at [["
+    );
+    assert_eq!(
+        first_item["textEdit"]["range"]["end"]["character"], 7,
+        "range should extend past ]] to position 7"
+    );
+
+    shutdown_session(&mut harness);
+}

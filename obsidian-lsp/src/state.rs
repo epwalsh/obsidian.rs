@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -8,8 +8,9 @@ use obsidian_core::{
 use serde_json::{Value, json};
 use thiserror::Error;
 use tower_lsp::lsp_types::{
-    Diagnostic, DiagnosticSeverity, DocumentLink, GotoDefinitionResponse, Hover, HoverContents, Location,
-    MarkupContent, MarkupKind, NumberOrString, Position, Range, TextDocumentContentChangeEvent, Url,
+    CompletionItem, CompletionItemKind, CompletionTextEdit, Diagnostic, DiagnosticSeverity, DocumentLink,
+    GotoDefinitionResponse, Hover, HoverContents, Location, MarkupContent, MarkupKind, NumberOrString, Position, Range,
+    TextDocumentContentChangeEvent, TextEdit, Url,
 };
 
 use crate::uri::{UriError, path_to_uri, uri_to_path, vault_relative_path};
@@ -70,6 +71,25 @@ pub struct NavigationRequest {
     snapshot: StateSnapshot,
     path: PathBuf,
     position: Position,
+}
+
+#[derive(Debug)]
+pub struct CompletionRequest {
+    snapshot: StateSnapshot,
+    path: PathBuf,
+    position: Position,
+}
+
+enum LinkContext {
+    Wiki {
+        note_query: String,
+        heading_query: Option<String>,
+        link_start_char: usize,
+    },
+    Markdown {
+        query: String,
+        link_start_char: usize,
+    },
 }
 
 struct NavigationContext {
@@ -203,6 +223,16 @@ impl BackendState {
         let path = self.path_from_uri(&uri)?;
 
         Ok(NavigationRequest {
+            snapshot: self.snapshot(),
+            path,
+            position,
+        })
+    }
+
+    pub fn completion_request(&self, uri: Url, position: Position) -> Result<CompletionRequest, StateError> {
+        let path = self.path_from_uri(&uri)?;
+
+        Ok(CompletionRequest {
             snapshot: self.snapshot(),
             path,
             position,
@@ -469,6 +499,67 @@ impl NavigationContext {
             .as_ref()
             .map(|link| resolve_link_targets(&self.source_note.path, &link.link, &self.notes, self.vault.path()))
             .unwrap_or_default()
+    }
+}
+
+impl CompletionRequest {
+    pub fn compute(self) -> Result<Option<Vec<CompletionItem>>, StateError> {
+        let CompletionRequest {
+            snapshot,
+            path,
+            position,
+        } = self;
+        let text = snapshot.text_for_path(&path)?;
+
+        let line = text.lines().nth(position.line as usize).unwrap_or("");
+        let char_pos = (position.character as usize).min(line.len());
+        let line_prefix = &line[..char_pos];
+        let text_after_cursor = &line[char_pos..];
+
+        let context = match detect_link_context(line_prefix) {
+            Some(ctx) => ctx,
+            None => return Ok(None),
+        };
+
+        let (note_query, heading_query, link_start_char) = match &context {
+            LinkContext::Wiki {
+                note_query,
+                heading_query,
+                link_start_char,
+            } => (note_query.as_str(), heading_query.as_deref(), *link_start_char),
+            LinkContext::Markdown { query, link_start_char } => (query.as_str(), None, *link_start_char),
+        };
+
+        let close_len = closing_bracket_len(text_after_cursor, &context);
+        let prefix_range = Range::new(
+            Position::new(position.line, link_start_char as u32),
+            Position::new(position.line, (char_pos + close_len) as u32),
+        );
+
+        let vault = snapshot.build_vault()?;
+        let notes = snapshot.notes(&vault);
+
+        let items: Vec<CompletionItem> = if let Some(hq) = heading_query {
+            notes
+                .iter()
+                .filter(|note| note_matches_query(note, note_query))
+                .flat_map(|note| match snapshot.text_for_path(&note.path) {
+                    Ok(note_text) => heading_completions_for_note(note, &note_text, hq, prefix_range),
+                    Err(_) => Vec::new(),
+                })
+                .collect()
+        } else {
+            notes
+                .iter()
+                .filter(|note| note_matches_query(note, note_query))
+                .flat_map(|note| match &context {
+                    LinkContext::Wiki { .. } => wiki_completions_for_note(note, prefix_range),
+                    LinkContext::Markdown { .. } => markdown_completions_for_note(note, vault.path(), prefix_range),
+                })
+                .collect()
+        };
+
+        Ok(Some(items))
     }
 }
 
@@ -1251,6 +1342,241 @@ fn range_for_span(line: usize, col_start: usize, width: usize) -> Range {
     )
 }
 
+fn detect_link_context(line_prefix: &str) -> Option<LinkContext> {
+    // Check for open wiki link: last [[ with no ]] or | after it.
+    if let Some(start) = line_prefix.rfind("[[") {
+        let after_open = &line_prefix[start + 2..];
+        if !after_open.contains("]]") && !after_open.contains('|') {
+            let (note_query, heading_query) = match after_open.find('#') {
+                Some(hash) => (&after_open[..hash], Some(after_open[hash + 1..].to_string())),
+                None => (after_open, None),
+            };
+            return Some(LinkContext::Wiki {
+                note_query: note_query.to_string(),
+                heading_query,
+                link_start_char: start,
+            });
+        }
+    }
+
+    // Check for open markdown-link display text: last [ not part of [[ with no ] after it.
+    let bytes = line_prefix.as_bytes();
+    let mut i = line_prefix.len();
+    while i > 0 {
+        i -= 1;
+        if bytes[i] != b'[' {
+            continue;
+        }
+        // Skip if this [ is part of [[.
+        if i > 0 && bytes[i - 1] == b'[' {
+            continue;
+        }
+        if i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+            continue;
+        }
+        let after_open = &line_prefix[i + 1..];
+        if !after_open.contains(']') {
+            return Some(LinkContext::Markdown {
+                query: after_open.to_string(),
+                link_start_char: i,
+            });
+        }
+        break;
+    }
+
+    None
+}
+
+fn note_matches_query(note: &Note, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    let query_lower = query.to_lowercase();
+    if note.id.to_lowercase().contains(&query_lower) {
+        return true;
+    }
+    if note
+        .title
+        .as_deref()
+        .is_some_and(|title| title.to_lowercase().contains(&query_lower))
+    {
+        return true;
+    }
+    note.aliases
+        .iter()
+        .any(|alias| alias.to_lowercase().contains(&query_lower))
+}
+
+fn wiki_completions_for_note(note: &Note, prefix_range: Range) -> Vec<CompletionItem> {
+    let mut items = Vec::new();
+    let mut seen = HashSet::new();
+
+    let mut push = |label: String, sort_prefix: &str| {
+        if seen.insert(label.clone()) {
+            items.push(CompletionItem {
+                label: label.clone(),
+                kind: Some(CompletionItemKind::REFERENCE),
+                sort_text: Some(format!("{sort_prefix} {label}")),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                    range: prefix_range,
+                    new_text: label,
+                })),
+                ..Default::default()
+            });
+        }
+    };
+
+    push(format!("[[{}]]", note.id), "0");
+
+    if let Some(title) = note.title.as_deref()
+        && title != note.id
+    {
+        push(format!("[[{}]]", title), "1");
+    }
+
+    for alias in &note.aliases {
+        push(format!("[[{}|{}]]", note.id, alias), "1");
+        if alias != &note.id && note.title.as_deref() != Some(alias.as_str()) {
+            push(format!("[[{}]]", alias), "1");
+        }
+    }
+
+    items
+}
+
+fn markdown_completions_for_note(note: &Note, vault_path: &Path, prefix_range: Range) -> Vec<CompletionItem> {
+    let rel_path = note.path.strip_prefix(vault_path).unwrap_or(&note.path);
+    let path_str = rel_path.display().to_string();
+
+    let mut items = Vec::new();
+    let mut seen = HashSet::new();
+
+    let mut push = |label: String| {
+        if seen.insert(label.clone()) {
+            items.push(CompletionItem {
+                label: label.clone(),
+                kind: Some(CompletionItemKind::FILE),
+                sort_text: Some(label.clone()),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                    range: prefix_range,
+                    new_text: label,
+                })),
+                ..Default::default()
+            });
+        }
+    };
+
+    push(format!("[{}]({})", note.id, path_str));
+
+    if let Some(title) = note.title.as_deref()
+        && title != note.id
+    {
+        push(format!("[{}]({})", title, path_str));
+    }
+
+    for alias in &note.aliases {
+        push(format!("[{}]({})", alias, path_str));
+    }
+
+    items
+}
+
+fn closing_bracket_len(text_after_cursor: &str, context: &LinkContext) -> usize {
+    match context {
+        LinkContext::Wiki { .. } => {
+            if text_after_cursor.starts_with("]]") {
+                2
+            } else {
+                0
+            }
+        }
+        LinkContext::Markdown { .. } => {
+            if !text_after_cursor.starts_with(']') {
+                return 0;
+            }
+            let rest = &text_after_cursor[1..];
+            if rest.starts_with('(')
+                && let Some(close) = rest.find(')')
+            {
+                return 1 + 1 + close + 1;
+            }
+            1
+        }
+    }
+}
+
+fn parse_headings(text: &str) -> Vec<String> {
+    let mut in_frontmatter = false;
+    let mut headings = Vec::new();
+
+    for (i, line) in text.lines().enumerate() {
+        if i == 0 {
+            in_frontmatter = line == "---";
+            continue;
+        }
+        if in_frontmatter {
+            if line == "---" || line == "..." {
+                in_frontmatter = false;
+            }
+            continue;
+        }
+        if let Some((_, _, heading_text)) = heading_line_parts(line) {
+            headings.push(heading_text.to_string());
+        }
+    }
+
+    headings
+}
+
+fn heading_completions_for_note(
+    note: &Note,
+    text: &str,
+    heading_query: &str,
+    prefix_range: Range,
+) -> Vec<CompletionItem> {
+    let headings = parse_headings(text);
+    let query_lower = heading_query.to_lowercase();
+
+    let mut items = Vec::new();
+    let mut seen = HashSet::new();
+
+    for heading in &headings {
+        if !heading_query.is_empty() && !heading.to_lowercase().contains(&query_lower) {
+            continue;
+        }
+
+        let mut push = |target: &str| {
+            let label = format!("[[{}#{}]]", target, heading);
+            if seen.insert(label.clone()) {
+                items.push(CompletionItem {
+                    label: label.clone(),
+                    kind: Some(CompletionItemKind::REFERENCE),
+                    sort_text: Some(label.clone()),
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                        range: prefix_range,
+                        new_text: label,
+                    })),
+                    ..Default::default()
+                });
+            }
+        };
+
+        push(&note.id);
+        if let Some(title) = note.title.as_deref()
+            && title != note.id
+        {
+            push(title);
+        }
+        for alias in &note.aliases {
+            if alias != &note.id && note.title.as_deref() != Some(alias.as_str()) {
+                push(alias);
+            }
+        }
+    }
+
+    items
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1817,5 +2143,297 @@ mod tests {
         assert_eq!(location.uri.fragment(), Some("heading-a#subheading-b"));
         assert_eq!(location.range.start.line, 11);
         assert_eq!(location.range.start.character, 3);
+    }
+
+    fn completion_state() -> (tempfile::TempDir, BackendState, Url, Url) {
+        let vault_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
+
+        let target_path = vault_dir.path().join("target.md");
+        fs::write(
+            &target_path,
+            "---\nid: target-id\ntitle: Target Note\naliases: [Target Alias]\n---\n\nBody.\n",
+        )
+        .unwrap();
+        let target_uri = path_to_uri(&target_path.canonicalize().unwrap()).unwrap();
+
+        let other_path = vault_dir.path().join("other.md");
+        fs::write(&other_path, "---\nid: other-note\n---\n\nBody.\n").unwrap();
+        let other_uri = path_to_uri(&other_path.canonicalize().unwrap()).unwrap();
+
+        let vault = Vault::open(vault_dir.path()).unwrap();
+        let state = BackendState::new(vault);
+        (vault_dir, state, target_uri, other_uri)
+    }
+
+    fn completion_labels(items: &[CompletionItem]) -> Vec<&str> {
+        items.iter().map(|item| item.label.as_str()).collect()
+    }
+
+    #[test]
+    fn detect_link_context_returns_wiki_for_open_double_bracket() {
+        let ctx = detect_link_context("See [[tar").unwrap();
+        assert!(matches!(ctx, LinkContext::Wiki { note_query, .. } if note_query == "tar"));
+    }
+
+    #[test]
+    fn detect_link_context_returns_none_for_closed_wiki_link() {
+        assert!(detect_link_context("See [[target]]").is_none());
+    }
+
+    #[test]
+    fn detect_link_context_returns_none_for_wiki_link_with_pipe() {
+        assert!(detect_link_context("See [[target|Al").is_none());
+    }
+
+    #[test]
+    fn detect_link_context_returns_markdown_for_open_bracket() {
+        let ctx = detect_link_context("See [tar").unwrap();
+        assert!(matches!(ctx, LinkContext::Markdown { query, .. } if query == "tar"));
+    }
+
+    #[test]
+    fn detect_link_context_prefers_wiki_over_markdown_when_both_open() {
+        let ctx = detect_link_context("See [[tar").unwrap();
+        assert!(matches!(ctx, LinkContext::Wiki { .. }));
+    }
+
+    #[test]
+    fn detect_link_context_returns_none_for_plain_text() {
+        assert!(detect_link_context("just some text").is_none());
+    }
+
+    #[test]
+    fn detect_link_context_returns_wiki_with_empty_query_for_bare_open() {
+        let ctx = detect_link_context("[[").unwrap();
+        assert!(matches!(ctx, LinkContext::Wiki { note_query, .. } if note_query.is_empty()));
+    }
+
+    #[test]
+    fn completion_request_returns_wiki_completions_for_partial_wiki_link() {
+        let (_vault_dir, mut state, target_uri, _other_uri) = completion_state();
+        let source_path = _vault_dir.path().join("source.md");
+        fs::write(&source_path, "See [[tar").unwrap();
+        let source_path = source_path.canonicalize().unwrap();
+        let source_uri = path_to_uri(&source_path).unwrap();
+        state
+            .open_document(source_uri.clone(), 1, "See [[tar".to_string())
+            .unwrap();
+
+        let items = state
+            .completion_request(source_uri, Position::new(0, 9))
+            .unwrap()
+            .compute()
+            .unwrap()
+            .unwrap();
+
+        let labels = completion_labels(&items);
+        assert!(labels.contains(&"[[target-id]]"), "missing [[target-id]]");
+        assert!(labels.contains(&"[[Target Note]]"), "missing [[Target Note]]");
+        assert!(
+            labels.contains(&"[[target-id|Target Alias]]"),
+            "missing [[target-id|Target Alias]]"
+        );
+        assert!(labels.contains(&"[[Target Alias]]"), "missing [[Target Alias]]");
+        assert!(!labels.contains(&"[[other-note]]"), "other-note should not match 'tar'");
+        let _ = target_uri;
+    }
+
+    #[test]
+    fn completion_request_returns_markdown_completions_for_partial_markdown_link() {
+        let (_vault_dir, mut state, _target_uri, _other_uri) = completion_state();
+        let source_path = _vault_dir.path().join("source.md");
+        fs::write(&source_path, "See [tar").unwrap();
+        let source_path = source_path.canonicalize().unwrap();
+        let source_uri = path_to_uri(&source_path).unwrap();
+        state
+            .open_document(source_uri.clone(), 1, "See [tar".to_string())
+            .unwrap();
+
+        let items = state
+            .completion_request(source_uri, Position::new(0, 8))
+            .unwrap()
+            .compute()
+            .unwrap()
+            .unwrap();
+
+        let labels = completion_labels(&items);
+        assert!(labels.iter().any(|l| l.starts_with("[target-id](") && l.ends_with(')')));
+        assert!(
+            labels
+                .iter()
+                .any(|l| l.starts_with("[Target Note](") && l.ends_with(')'))
+        );
+        assert!(
+            labels
+                .iter()
+                .any(|l| l.starts_with("[Target Alias](") && l.ends_with(')'))
+        );
+        assert!(!labels.iter().any(|l| l.starts_with("[other-note](")));
+    }
+
+    #[test]
+    fn completion_request_returns_none_outside_link_context() {
+        let (_vault_dir, mut state, _target_uri, _other_uri) = completion_state();
+        let source_path = _vault_dir.path().join("source.md");
+        fs::write(&source_path, "just plain text").unwrap();
+        let source_path = source_path.canonicalize().unwrap();
+        let source_uri = path_to_uri(&source_path).unwrap();
+        state
+            .open_document(source_uri.clone(), 1, "just plain text".to_string())
+            .unwrap();
+
+        let result = state
+            .completion_request(source_uri, Position::new(0, 15))
+            .unwrap()
+            .compute()
+            .unwrap();
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn completion_request_returns_all_notes_for_empty_query() {
+        let (_vault_dir, mut state, _target_uri, _other_uri) = completion_state();
+        let source_path = _vault_dir.path().join("source.md");
+        fs::write(&source_path, "[[").unwrap();
+        let source_path = source_path.canonicalize().unwrap();
+        let source_uri = path_to_uri(&source_path).unwrap();
+        state.open_document(source_uri.clone(), 1, "[[".to_string()).unwrap();
+
+        let items = state
+            .completion_request(source_uri, Position::new(0, 2))
+            .unwrap()
+            .compute()
+            .unwrap()
+            .unwrap();
+
+        let labels = completion_labels(&items);
+        assert!(labels.contains(&"[[target-id]]"));
+        assert!(labels.contains(&"[[other-note]]"));
+    }
+
+    #[test]
+    fn detect_link_context_returns_wiki_with_heading_query_after_hash() {
+        let ctx = detect_link_context("See [[target-id#Head").unwrap();
+        assert!(
+            matches!(ctx, LinkContext::Wiki { note_query, heading_query: Some(hq), .. }
+                if note_query == "target-id" && hq == "Head")
+        );
+    }
+
+    #[test]
+    fn detect_link_context_returns_wiki_with_empty_heading_query_at_hash() {
+        let ctx = detect_link_context("See [[target-id#").unwrap();
+        assert!(
+            matches!(ctx, LinkContext::Wiki { note_query, heading_query: Some(hq), .. }
+                if note_query == "target-id" && hq.is_empty())
+        );
+    }
+
+    #[test]
+    fn completion_request_returns_heading_completions_for_partial_heading() {
+        let vault_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
+
+        let target_path = vault_dir.path().join("target.md");
+        fs::write(
+            &target_path,
+            "---\nid: target-id\ntitle: Target Note\n---\n\n# Overview\n\n## Getting Started\n\nBody.\n",
+        )
+        .unwrap();
+        let target_path = target_path.canonicalize().unwrap();
+
+        let source_path = vault_dir.path().join("source.md");
+        fs::write(&source_path, "[[target-id#Get").unwrap();
+        let source_path = source_path.canonicalize().unwrap();
+        let source_uri = path_to_uri(&source_path).unwrap();
+
+        let vault = Vault::open(vault_dir.path()).unwrap();
+        let mut state = BackendState::new(vault);
+        state
+            .open_document(source_uri.clone(), 1, "[[target-id#Get".to_string())
+            .unwrap();
+
+        let items = state
+            .completion_request(source_uri, Position::new(0, 15))
+            .unwrap()
+            .compute()
+            .unwrap()
+            .unwrap();
+
+        let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+        assert!(
+            labels.contains(&"[[target-id#Getting Started]]"),
+            "missing [[target-id#Getting Started]]"
+        );
+        assert!(
+            labels.contains(&"[[Target Note#Getting Started]]"),
+            "missing [[Target Note#Getting Started]]"
+        );
+        assert!(
+            !labels.iter().any(|l| l.contains("Overview")),
+            "Overview heading should not match 'Get'"
+        );
+        let _ = target_path;
+    }
+
+    #[test]
+    fn completion_request_extends_range_past_wiki_closing_brackets() {
+        let (_vault_dir, mut state, _target_uri, _other_uri) = completion_state();
+        let source_path = _vault_dir.path().join("source.md");
+        let text = "[[tar]]";
+        fs::write(&source_path, text).unwrap();
+        let source_path = source_path.canonicalize().unwrap();
+        let source_uri = path_to_uri(&source_path).unwrap();
+        state.open_document(source_uri.clone(), 1, text.to_string()).unwrap();
+
+        // cursor at position 5 (after "[[tar", before "]]")
+        let items = state
+            .completion_request(source_uri, Position::new(0, 5))
+            .unwrap()
+            .compute()
+            .unwrap()
+            .unwrap();
+
+        let first = items.iter().find(|item| item.label == "[[target-id]]").unwrap();
+        let edit = match first.text_edit.as_ref().unwrap() {
+            CompletionTextEdit::Edit(e) => e,
+            _ => panic!("expected a plain TextEdit"),
+        };
+        // range should extend past "]]" (chars 5-7)
+        assert_eq!(edit.range.start.character, 0, "range should start at [[");
+        assert_eq!(edit.range.end.character, 7, "range should extend past ]]");
+    }
+
+    #[test]
+    fn completion_request_extends_range_past_markdown_closing_bracket() {
+        let (_vault_dir, mut state, _target_uri, _other_uri) = completion_state();
+        let source_path = _vault_dir.path().join("source.md");
+        let text = "[tar]";
+        fs::write(&source_path, text).unwrap();
+        let source_path = source_path.canonicalize().unwrap();
+        let source_uri = path_to_uri(&source_path).unwrap();
+        state.open_document(source_uri.clone(), 1, text.to_string()).unwrap();
+
+        // cursor at position 4 (after "[tar", before "]")
+        let items = state
+            .completion_request(source_uri, Position::new(0, 4))
+            .unwrap()
+            .compute()
+            .unwrap()
+            .unwrap();
+
+        let first = items
+            .iter()
+            .find(|item| item.label.starts_with("[target-id]("))
+            .unwrap();
+        let edit = match first.text_edit.as_ref().unwrap() {
+            CompletionTextEdit::Edit(e) => e,
+            _ => panic!("expected a plain TextEdit"),
+        };
+        // range should extend past "]" (char 4)
+        assert_eq!(edit.range.start.character, 0, "range should start at [");
+        assert_eq!(edit.range.end.character, 5, "range should extend past ]");
     }
 }
