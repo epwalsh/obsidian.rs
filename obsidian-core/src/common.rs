@@ -18,7 +18,7 @@ pub struct InlineLocation {
 }
 
 /// Normalizes a path by resolving `.`, `..`, and symlink components and making absolute.
-pub(crate) fn normalize_path(path: impl AsRef<Path>, root: Option<&Path>) -> PathBuf {
+pub fn normalize_path(path: impl AsRef<Path>, root: Option<&Path>) -> PathBuf {
     let path = if path.as_ref().is_absolute() {
         path.as_ref().to_path_buf()
     } else {
@@ -144,7 +144,7 @@ mod tests {
     #[test]
     fn normalize_path_removes_dot() {
         assert_eq!(
-            normalize_path(&PathBuf::from("/a/./b"), Some(&current_dir().unwrap())),
+            normalize_path(PathBuf::from("/a/./b"), Some(&current_dir().unwrap())),
             PathBuf::from("/a/b")
         );
     }
@@ -152,14 +152,14 @@ mod tests {
     #[test]
     fn normalize_path_resolves_double_dot() {
         let cwd = current_dir().unwrap();
-        assert_eq!(normalize_path(&cwd.join("../c"), None), cwd.parent().unwrap().join("c"));
+        assert_eq!(normalize_path(cwd.join("../c"), None), cwd.parent().unwrap().join("c"));
     }
 
     #[test]
     fn normalize_path_deep_traversal() {
         let cwd = current_dir().unwrap();
         assert_eq!(
-            normalize_path(&cwd.join("../../../d"), None),
+            normalize_path(cwd.join("../../../d"), None),
             cwd.parent().unwrap().parent().unwrap().parent().unwrap().join("d")
         );
     }
@@ -168,7 +168,7 @@ mod tests {
     fn normalize_path_traversal_beyond_root_stops_at_root() {
         let cwd = current_dir().unwrap();
         assert_eq!(
-            normalize_path(&cwd.join("../../../../../../b"), None),
+            normalize_path(cwd.join("../../../../../../b"), None),
             PathBuf::from("/b")
         );
     }
@@ -176,14 +176,14 @@ mod tests {
     #[test]
     fn normalize_path_starting_with_single_dot() {
         let cwd = current_dir().unwrap();
-        assert_eq!(normalize_path(&PathBuf::from("./b"), Some(&cwd.clone())), cwd.join("b"));
+        assert_eq!(normalize_path(PathBuf::from("./b"), Some(&cwd)), cwd.join("b"));
     }
 
     #[test]
     fn normalize_path_starting_with_double_dot() {
         let cwd = current_dir().unwrap();
         assert_eq!(
-            normalize_path(&PathBuf::from("../b"), Some(&cwd.clone())),
+            normalize_path(PathBuf::from("../b"), Some(&cwd)),
             cwd.parent().unwrap().join("b")
         );
     }
