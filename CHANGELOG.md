@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## v0.3.0 - 2026-06-03
+
 ### Added
 
 - Added a real `obsidian-rs-lsp` stdio server using `tower-lsp`, including vault resolution via `--vault`, `OBSIDIAN_VAULT`, or `open_from_cwd()`, full-document buffer syncing into `Vault::load_note()` / `unload_note()`, workspace health diagnostics for broken links and duplicate IDs or aliases, link hover metadata, document links with resolve support, backlinks-based references, completion for note links, go-to-definition for note links, heading anchors, and nested sub-anchors, and end-to-end stdio integration coverage.
