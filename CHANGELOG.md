@@ -9,8 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added a real `obsidian-rs-lsp` stdio server using `tower-lsp`, including vault resolution via `--vault`, `OBSIDIAN_VAULT`, or `open_from_cwd()`, full-document buffer syncing into `Vault::load_note()` / `unload_note()`, workspace health diagnostics for broken links and duplicate IDs or aliases, link hover metadata, document links with resolve support, backlinks-based references, completion for note links, go-to-definition for note links, heading anchors, and nested sub-anchors, and end-to-end stdio integration coverage.
 - Added `check_vault` MCP tool: reports duplicate IDs, duplicate aliases, and broken links — equivalent to the CLI's `check` command. Accepts an optional `ignore` parameter (list of vault-relative glob patterns to exclude).
 - Added `Vault::check(filter: impl Fn(&Path) -> bool) -> VaultHealthReport` to `obsidian-rs-core`. Returns a `VaultHealthReport` with `duplicate_ids`, `duplicate_aliases`, and `broken_links` fields. Health report types (`VaultHealthReport`, `DuplicateId`, `DuplicateAlias`, `BrokenLink`, `NoteRef`) are exported from the `health` module.
+
+### Fixed
+
+- Markdown links with percent-encoded URLs (e.g. `[text](My%20Note.md)`) are now correctly resolved for backlink detection, health checks, and rename/merge operations.
 
 ## v0.2.0 - 2026-04-11
 
