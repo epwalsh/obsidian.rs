@@ -1,4 +1,4 @@
-mod common;
+pub mod common;
 mod error;
 pub mod health;
 mod link;

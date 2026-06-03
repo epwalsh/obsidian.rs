@@ -838,7 +838,7 @@ mod tests {
             on_disk,
             format!(
                 "---\nid: {}\n---\n\n{}",
-                tmp.path().file_stem().unwrap().display().to_string(),
+                tmp.path().file_stem().unwrap().display(),
                 original
             )
         );
