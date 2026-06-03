@@ -14,7 +14,7 @@ A collection of tools for working with [Obsidian](https://obsidian.md) vaults, w
 | [`obsidian-rs-core`](https://crates.io/crates/obsidian-rs-core) | Core library — the foundation the other tools build on |
 | [`obsidian-rs-cli`](https://crates.io/crates/obsidian-rs-cli) | Command-line tool for querying and managing vaults |
 | [`obsidian-rs-mcp`](https://crates.io/crates/obsidian-rs-mcp) | MCP server so agents can interact with your vault |
-| `obsidian-rs-lsp` | **(WIP)** Language server skeleton for vault editing in your IDE |
+| [`obsidian-rs-lsp`](https://crates.io/crates/obsidian-rs-lsp) | A language server for vault editing in your IDE |
 
 ## CLI
 
@@ -121,16 +121,6 @@ Current functionality:
 - diagnostics clearing and refresh on open/change/close events
 
 Advanced editor features such as rename and completion are not implemented yet.
-
-## Roadmap
-
-- [x] Core library
-- [x] CLI tool
-- [x] MCP server
-- [ ] More core features
-  - [ ] Additional search/filter capabilities
-- [ ] LSP server
-  - [x] Go-to definition
 
 ## On the use of AI
 
