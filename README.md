@@ -14,7 +14,7 @@ A collection of tools for working with [Obsidian](https://obsidian.md) vaults, w
 | [`obsidian-rs-core`](https://crates.io/crates/obsidian-rs-core) | Core library — the foundation the other tools build on |
 | [`obsidian-rs-cli`](https://crates.io/crates/obsidian-rs-cli) | Command-line tool for querying and managing vaults |
 | [`obsidian-rs-mcp`](https://crates.io/crates/obsidian-rs-mcp) | MCP server so agents can interact with your vault |
-| `obsidian-rs-lsp` | **(WIP)** Language server for vault editing in your IDE |
+| [`obsidian-rs-lsp`](https://crates.io/crates/obsidian-rs-lsp) | A language server for vault editing in your IDE |
 
 ## CLI
 
@@ -98,15 +98,29 @@ claude mcp add obsidian --scope project obsidian-mcp --vault .
 | `list_tags` | List all tags used in the vault |
 | `search_tags` | Find all occurrences of given tags |
 
-## Roadmap
+## LSP Server
 
-- [x] Core library
-- [x] CLI tool
-- [x] MCP server
-- [ ] More core features
-  - [ ] Additional search/filter capabilities
-- [ ] LSP server
-  - [ ] Go-to definition
+Install with Cargo:
+
+```sh
+cargo install obsidian-rs-lsp
+```
+
+The `obsidian-lsp` binary speaks stdio LSP and resolves the vault the same way as `obsidian-mcp`: `--vault <PATH>`, then `OBSIDIAN_VAULT`, then the nearest parent containing `.obsidian/`.
+
+Current functionality:
+
+- clean LSP initialization and shutdown
+- full-document text sync for open buffers
+- in-memory buffer shadowing through `obsidian_core::Vault::load_note()` / `unload_note()`
+- diagnostics for broken links, duplicate IDs, and duplicate aliases across the vault
+- hover on note links with basic target-note metadata
+- document links for wiki and markdown note links, with resolve support
+- references/backlinks for linked notes, or for the current note when the cursor is not on a link
+- go-to definition for linked notes, including heading anchors and nested sub-anchors
+- diagnostics clearing and refresh on open/change/close events
+
+Advanced editor features such as rename and completion are not implemented yet.
 
 ## On the use of AI
 
