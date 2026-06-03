@@ -449,7 +449,24 @@ impl NavigationRequest {
     pub fn compute_definition(self) -> Result<Option<GotoDefinitionResponse>, StateError> {
         let context = self.build_context()?;
         let matching_notes = context.resolve_selected_link_targets();
+
         if matching_notes.is_empty() {
+            // Anchor-only wiki link like [[#Heading]] — navigate within the current document.
+            if let Some(LocatedLink {
+                link:
+                    Link::Wiki {
+                        target,
+                        heading: Some(_),
+                        ..
+                    },
+                ..
+            }) = &context.selected_link
+                && target.is_empty()
+            {
+                let fragment = selected_link_fragment(context.selected_link.as_ref());
+                let location = note_location(&context.snapshot, &context.source_note, fragment)?;
+                return Ok(Some(GotoDefinitionResponse::Scalar(location)));
+            }
             return Ok(None);
         }
 
@@ -2170,6 +2187,41 @@ mod tests {
         assert_eq!(location.uri.path(), target_uri.path());
         assert_eq!(location.uri.fragment(), Some("heading-a#subheading-b"));
         assert_eq!(location.range.start.line, 11);
+        assert_eq!(location.range.start.character, 3);
+    }
+
+    #[test]
+    fn navigation_request_returns_definition_for_anchor_only_wiki_link() {
+        let vault_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
+
+        let source_path = vault_dir.path().join("source.md");
+        fs::write(&source_path, "placeholder").unwrap();
+        let source_path = source_path.canonicalize().unwrap();
+        let source_uri = path_to_uri(&source_path).unwrap();
+        let source_text = "# Overview\n\n## Getting Started\n\nSee [[#Getting Started]].\n";
+
+        let vault = Vault::open(vault_dir.path()).unwrap();
+        let mut state = BackendState::new(vault);
+        state
+            .open_document(source_uri.clone(), 1, source_text.to_string())
+            .unwrap();
+
+        let definition = state
+            .navigation_request(
+                source_uri.clone(),
+                position_for_substring(source_text, "[[#Getting Started]]"),
+            )
+            .unwrap()
+            .compute_definition()
+            .unwrap()
+            .unwrap();
+
+        let GotoDefinitionResponse::Scalar(location) = definition else {
+            panic!("expected a single definition location");
+        };
+        assert_eq!(location.uri.path(), source_uri.path());
+        assert_eq!(location.range.start.line, 2);
         assert_eq!(location.range.start.character, 3);
     }
 
