@@ -2,14 +2,14 @@ use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use obsidian_core::search;
 use obsidian_core::{
-    BrokenLink, DuplicateAlias, DuplicateId, InlineLocation, Link, Note, NoteError, Vault, VaultError,
+    BrokenLink, DuplicateAlias, DuplicateId, InlineLocation, Link, LocatedLink, Note, NoteError, Vault, VaultError,
 };
+use serde_json::{Value, json};
 use thiserror::Error;
 use tower_lsp::lsp_types::{
-    Diagnostic, DiagnosticSeverity, Hover, HoverContents, MarkupContent, MarkupKind, NumberOrString, Position, Range,
-    TextDocumentContentChangeEvent, Url,
+    Diagnostic, DiagnosticSeverity, DocumentLink, GotoDefinitionResponse, Hover, HoverContents, Location,
+    MarkupContent, MarkupKind, NumberOrString, Position, Range, TextDocumentContentChangeEvent, Url,
 };
 
 use crate::uri::{UriError, path_to_uri, uri_to_path, vault_relative_path};
@@ -51,10 +51,33 @@ pub struct DiagnosticsRequest {
 }
 
 #[derive(Debug)]
-pub struct HoverRequest {
+pub struct DocumentLinksRequest {
+    snapshot: StateSnapshot,
+    path: PathBuf,
+    uri: Url,
+}
+
+#[derive(Debug)]
+pub struct ResolveDocumentLinkRequest {
+    snapshot: StateSnapshot,
+    source_path: PathBuf,
+    document_link: DocumentLink,
+    raw_link: String,
+}
+
+#[derive(Debug)]
+pub struct NavigationRequest {
     snapshot: StateSnapshot,
     path: PathBuf,
     position: Position,
+}
+
+struct NavigationContext {
+    snapshot: StateSnapshot,
+    vault: Vault,
+    notes: Vec<Note>,
+    source_note: Note,
+    selected_link: Option<LocatedLink>,
 }
 
 #[derive(Debug)]
@@ -63,6 +86,14 @@ struct PrimaryDocument {
     uri: Url,
     version: Option<i32>,
 }
+
+struct DocumentLinkData {
+    source_uri: String,
+    raw_link: String,
+}
+
+const DOCUMENT_LINK_SOURCE_URI_KEY: &str = "sourceUri";
+const DOCUMENT_LINK_RAW_LINK_KEY: &str = "rawLink";
 
 #[derive(Debug, Error)]
 pub enum StateError {
@@ -76,6 +107,8 @@ pub enum StateError {
     Vault(#[from] VaultError),
     #[error("didChange for '{uri}' did not include full document content")]
     MissingDocumentContent { uri: Url },
+    #[error("invalid document link data: {0}")]
+    InvalidDocumentLinkData(String),
 }
 
 pub struct BackendState {
@@ -133,10 +166,43 @@ impl BackendState {
         Ok(self.prepare_diagnostics_request(path, uri, None))
     }
 
-    pub fn hover_request(&self, uri: Url, position: Position) -> Result<HoverRequest, StateError> {
+    pub fn document_links_request(&self, uri: Url) -> Result<DocumentLinksRequest, StateError> {
         let path = self.path_from_uri(&uri)?;
 
-        Ok(HoverRequest {
+        Ok(DocumentLinksRequest {
+            snapshot: self.snapshot(),
+            path,
+            uri,
+        })
+    }
+
+    pub fn resolve_document_link_request(
+        &self,
+        document_link: DocumentLink,
+    ) -> Result<ResolveDocumentLinkRequest, StateError> {
+        let data = parse_document_link_data(
+            document_link
+                .data
+                .as_ref()
+                .ok_or_else(|| StateError::InvalidDocumentLinkData("missing documentLink.data".to_string()))?,
+        )?;
+        let source_uri = Url::parse(&data.source_uri).map_err(|error| {
+            StateError::InvalidDocumentLinkData(format!("invalid source URI '{}': {error}", data.source_uri))
+        })?;
+        let source_path = self.path_from_uri(&source_uri)?;
+
+        Ok(ResolveDocumentLinkRequest {
+            snapshot: self.snapshot(),
+            source_path,
+            document_link,
+            raw_link: data.raw_link,
+        })
+    }
+
+    pub fn navigation_request(&self, uri: Url, position: Position) -> Result<NavigationRequest, StateError> {
+        let path = self.path_from_uri(&uri)?;
+
+        Ok(NavigationRequest {
             snapshot: self.snapshot(),
             path,
             position,
@@ -231,40 +297,78 @@ impl DiagnosticsRequest {
     }
 }
 
-impl HoverRequest {
-    pub fn compute(self) -> Result<Option<Hover>, StateError> {
-        let vault = self.snapshot.build_vault()?;
+impl DocumentLinksRequest {
+    pub fn compute(self) -> Result<Vec<DocumentLink>, StateError> {
         let source_note = self.snapshot.note_for_path(&self.path)?;
-        let Some(hovered_link) = source_note
+
+        Ok(source_note
             .links
             .iter()
-            .find(|link| position_in_location(self.position, &link.location))
-        else {
+            .filter_map(|link| build_document_link(&self.uri, link))
+            .collect())
+    }
+}
+
+impl ResolveDocumentLinkRequest {
+    pub fn compute(mut self) -> Result<DocumentLink, StateError> {
+        let source_note = synthetic_note_for_raw_link(&self.source_path, &self.raw_link)?;
+        let link = source_note.links.first().ok_or_else(|| {
+            StateError::InvalidDocumentLinkData("raw link did not parse into a supported link".to_string())
+        })?;
+
+        if let Some(target) = direct_document_link_target(&self.source_path, link, self.snapshot.vault_path.as_path())?
+        {
+            self.document_link.target = Some(target);
+            self.document_link.tooltip = Some(render_document_link_tooltip(
+                Some("Resolved external or file link"),
+                None,
+            ));
+            return Ok(self.document_link);
+        }
+
+        let vault = self.snapshot.build_vault()?;
+        let notes = self.snapshot.notes(&vault);
+        let matching_notes = resolve_link_targets(&source_note.path, &link.link, &notes, vault.path());
+
+        match matching_notes.as_slice() {
+            [] => {
+                self.document_link.tooltip = Some(render_document_link_tooltip(Some("Broken note link"), None));
+            }
+            [note] => {
+                self.document_link.target = Some(note_target_uri(note, &link.link)?);
+                self.document_link.tooltip = Some(render_document_link_tooltip(
+                    Some("Resolved note link"),
+                    Some(render_note_link_label(note, self.snapshot.vault_path.as_path())),
+                ));
+            }
+            notes => {
+                self.document_link.tooltip = Some(render_ambiguous_document_link_tooltip(
+                    notes,
+                    self.snapshot.vault_path.as_path(),
+                ));
+            }
+        }
+
+        Ok(self.document_link)
+    }
+}
+
+impl NavigationRequest {
+    pub fn compute_hover(self) -> Result<Option<Hover>, StateError> {
+        let context = self.build_context()?;
+        let Some(selected_link) = context.selected_link.as_ref() else {
             return Ok(None);
         };
-
-        let notes: Vec<Note> = vault
-            .notes_filtered(|_| true)
-            .into_iter()
-            .filter_map(Result::ok)
-            .collect();
-        let matching_notes: Vec<&Note> = notes
-            .iter()
-            .filter(|note| {
-                search::find_matching_links(&source_note, note, vault.path())
-                    .iter()
-                    .any(|candidate| same_location(&candidate.location, &hovered_link.location))
-            })
-            .collect();
+        let matching_notes = context.resolve_selected_link_targets();
 
         if matching_notes.is_empty() {
             return Ok(None);
         }
 
         let contents = if matching_notes.len() == 1 {
-            render_note_hover(matching_notes[0], self.snapshot.vault_path.as_path())
+            render_note_hover(matching_notes[0], context.snapshot.vault_path.as_path())
         } else {
-            render_ambiguous_hover(&matching_notes, self.snapshot.vault_path.as_path())
+            render_ambiguous_hover(&matching_notes, context.snapshot.vault_path.as_path())
         };
 
         Ok(Some(Hover {
@@ -272,8 +376,99 @@ impl HoverRequest {
                 kind: MarkupKind::Markdown,
                 value: contents,
             }),
-            range: Some(location_to_range(&hovered_link.location)),
+            range: Some(location_to_range(&selected_link.location)),
         }))
+    }
+
+    pub fn compute_references(self) -> Result<Option<Vec<Location>>, StateError> {
+        let context = self.build_context()?;
+        let target_notes = if context.selected_link.is_some() {
+            let matching = context.resolve_selected_link_targets();
+            if matching.len() != 1 {
+                return Ok(Some(Vec::new()));
+            }
+            vec![matching[0]]
+        } else {
+            // Obsidian-specific behavior: when the cursor is not on a link, treat
+            // references as backlinks to the current note.
+            vec![&context.source_note]
+        };
+
+        let mut locations = Vec::new();
+        for target in target_notes {
+            for (source_note, links) in context.vault.backlinks_from(&context.notes, target) {
+                let uri = context.snapshot.uri_for_path(&source_note.path)?;
+                locations.extend(links.into_iter().map(|link| Location {
+                    uri: uri.clone(),
+                    range: location_to_range(&link.location),
+                }));
+            }
+        }
+
+        locations.sort_by(|left, right| {
+            left.uri
+                .cmp(&right.uri)
+                .then(left.range.start.line.cmp(&right.range.start.line))
+                .then(left.range.start.character.cmp(&right.range.start.character))
+        });
+        locations.dedup_by(|left, right| left.uri == right.uri && left.range == right.range);
+
+        Ok(Some(locations))
+    }
+
+    pub fn compute_definition(self) -> Result<Option<GotoDefinitionResponse>, StateError> {
+        let context = self.build_context()?;
+        let matching_notes = context.resolve_selected_link_targets();
+        if matching_notes.is_empty() {
+            return Ok(None);
+        }
+
+        let mut locations = matching_notes
+            .into_iter()
+            .map(|note| {
+                note_location(
+                    &context.snapshot,
+                    note,
+                    selected_link_fragment(context.selected_link.as_ref()),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        locations.sort_by(|left, right| {
+            left.uri
+                .cmp(&right.uri)
+                .then(left.range.start.line.cmp(&right.range.start.line))
+                .then(left.range.start.character.cmp(&right.range.start.character))
+        });
+
+        Ok(Some(if locations.len() == 1 {
+            GotoDefinitionResponse::Scalar(locations.remove(0))
+        } else {
+            GotoDefinitionResponse::Array(locations)
+        }))
+    }
+
+    fn build_context(self) -> Result<NavigationContext, StateError> {
+        let vault = self.snapshot.build_vault()?;
+        let notes = self.snapshot.notes(&vault);
+        let source_note = self.snapshot.note_for_path(&self.path)?;
+        let selected_link = find_link_at_position(&source_note, self.position).cloned();
+
+        Ok(NavigationContext {
+            snapshot: self.snapshot,
+            vault,
+            notes,
+            source_note,
+            selected_link,
+        })
+    }
+}
+
+impl NavigationContext {
+    fn resolve_selected_link_targets(&self) -> Vec<&Note> {
+        self.selected_link
+            .as_ref()
+            .map(|link| resolve_link_targets(&self.source_note.path, &link.link, &self.notes, self.vault.path()))
+            .unwrap_or_default()
     }
 }
 
@@ -284,6 +479,14 @@ impl StateSnapshot {
             vault.load_note(Note::parse(&document.path, &document.text));
         }
         Ok(vault)
+    }
+
+    fn notes(&self, vault: &Vault) -> Vec<Note> {
+        vault
+            .notes_filtered(|_| true)
+            .into_iter()
+            .filter_map(Result::ok)
+            .collect()
     }
 
     fn note_for_path(&self, path: &Path) -> Result<Note, StateError> {
@@ -538,6 +741,431 @@ fn make_diagnostic(range: Range, code: &str, message: String) -> Diagnostic {
     }
 }
 
+fn build_document_link(source_uri: &Url, link: &LocatedLink) -> Option<DocumentLink> {
+    Some(DocumentLink {
+        range: location_to_range(&link.location),
+        target: None,
+        tooltip: None,
+        data: Some(json!({
+            DOCUMENT_LINK_SOURCE_URI_KEY: source_uri.as_str(),
+            DOCUMENT_LINK_RAW_LINK_KEY: render_link_text(&link.link)?,
+        })),
+    })
+}
+
+fn parse_document_link_data(value: &Value) -> Result<DocumentLinkData, StateError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| StateError::InvalidDocumentLinkData("documentLink.data was not a JSON object".to_string()))?;
+    let source_uri = object
+        .get(DOCUMENT_LINK_SOURCE_URI_KEY)
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            StateError::InvalidDocumentLinkData(format!(
+                "documentLink.data did not include a string '{DOCUMENT_LINK_SOURCE_URI_KEY}'"
+            ))
+        })?;
+    let raw_link = object
+        .get(DOCUMENT_LINK_RAW_LINK_KEY)
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            StateError::InvalidDocumentLinkData(format!(
+                "documentLink.data did not include a string '{DOCUMENT_LINK_RAW_LINK_KEY}'"
+            ))
+        })?;
+
+    Ok(DocumentLinkData {
+        source_uri: source_uri.to_string(),
+        raw_link: raw_link.to_string(),
+    })
+}
+
+fn synthetic_note_for_raw_link(source_path: &Path, raw_link: &str) -> Result<Note, StateError> {
+    let note = Note::parse(source_path, raw_link);
+    if note.links.is_empty() {
+        return Err(StateError::InvalidDocumentLinkData(
+            "raw link did not parse into a wiki or markdown link".to_string(),
+        ));
+    }
+
+    Ok(note)
+}
+
+fn render_link_text(link: &Link) -> Option<String> {
+    match link {
+        Link::Wiki { target, heading, alias } => {
+            let mut text = format!("[[{target}");
+            if let Some(heading) = heading {
+                text.push('#');
+                text.push_str(heading);
+            }
+            if let Some(alias) = alias {
+                text.push('|');
+                text.push_str(alias);
+            }
+            text.push_str("]]");
+            Some(text)
+        }
+        Link::Markdown { text, url } => Some(format!("[{text}]({url})")),
+        Link::Embed { .. } => None,
+    }
+}
+
+fn direct_document_link_target(
+    source_path: &Path,
+    link: &LocatedLink,
+    vault_path: &Path,
+) -> Result<Option<Url>, StateError> {
+    match &link.link {
+        Link::Markdown { url, .. } => {
+            if url.contains("://") {
+                return Ok(Url::parse(url).ok());
+            }
+
+            let Some(path) = resolve_local_file_target_path(source_path, url, vault_path) else {
+                return Ok(None);
+            };
+
+            Ok(Some(path_to_uri(&path)?))
+        }
+        Link::Wiki { .. } | Link::Embed { .. } => Ok(None),
+    }
+}
+
+fn resolve_local_file_target_path(source_path: &Path, url: &str, vault_path: &Path) -> Option<PathBuf> {
+    let path = markdown_url_path(url)?;
+    if path.ends_with(".md") {
+        return None;
+    }
+
+    local_markdown_candidates(source_path, &path, vault_path)
+        .into_iter()
+        .find(|candidate| candidate.exists())
+}
+
+fn resolve_link_targets<'a>(source_path: &Path, link: &Link, notes: &'a [Note], vault_path: &Path) -> Vec<&'a Note> {
+    match link {
+        Link::Wiki { target, .. } => {
+            if target.is_empty() {
+                return Vec::new();
+            }
+
+            notes
+                .iter()
+                .filter(|note| note_matches_wiki_target(note, target))
+                .collect()
+        }
+        Link::Markdown { url, .. } => {
+            let Some(url_path) = markdown_url_path(url) else {
+                return Vec::new();
+            };
+            if !url_path.ends_with(".md") {
+                return Vec::new();
+            }
+
+            let candidates = local_markdown_candidates(source_path, &url_path, vault_path);
+            notes.iter().filter(|note| candidates.contains(&note.path)).collect()
+        }
+        Link::Embed { .. } => Vec::new(),
+    }
+}
+
+fn note_matches_wiki_target(note: &Note, target: &str) -> bool {
+    note.id == target
+        || note
+            .path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .is_some_and(|stem| stem == target)
+        || note.aliases.iter().any(|alias| alias == target)
+}
+
+fn local_markdown_candidates(source_path: &Path, url_path: &str, vault_path: &Path) -> Vec<PathBuf> {
+    let source_dir = source_path.parent().unwrap_or(source_path);
+    let mut candidates = vec![
+        obsidian_core::common::normalize_path(source_dir.join(url_path), Some(vault_path)),
+        obsidian_core::common::normalize_path(url_path, Some(vault_path)),
+    ];
+    candidates.dedup();
+    candidates
+}
+
+fn markdown_url_path(url: &str) -> Option<String> {
+    if url.contains("://") || url.starts_with('/') {
+        return None;
+    }
+
+    let url_path_raw = match url.find('#') {
+        Some(index) => &url[..index],
+        None => url,
+    };
+
+    Some(percent_decode(url_path_raw))
+}
+
+fn link_fragment(link: &Link) -> Option<String> {
+    match link {
+        Link::Wiki { heading, .. } => heading.clone(),
+        Link::Markdown { url, .. } => url
+            .split_once('#')
+            .map(|(_, fragment)| percent_decode(fragment))
+            .filter(|fragment| !fragment.is_empty()),
+        Link::Embed { .. } => None,
+    }
+}
+
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let (Some(high), Some(low)) = (
+                (bytes[index + 1] as char).to_digit(16),
+                (bytes[index + 2] as char).to_digit(16),
+            )
+        {
+            output.push((high * 16 + low) as u8);
+            index += 3;
+            continue;
+        }
+
+        output.push(bytes[index]);
+        index += 1;
+    }
+
+    String::from_utf8(output).unwrap_or_else(|_| input.to_string())
+}
+
+fn selected_link_fragment(link: Option<&LocatedLink>) -> Option<String> {
+    link.and_then(|link| link_fragment(&link.link))
+}
+
+fn note_target_uri(note: &Note, link: &Link) -> Result<Url, StateError> {
+    let mut uri = path_to_uri(&note.path)?;
+    if let Some(fragment) = link_fragment(link) {
+        uri.set_fragment(Some(&fragment));
+    }
+    Ok(uri)
+}
+
+fn note_location(snapshot: &StateSnapshot, note: &Note, fragment: Option<String>) -> Result<Location, StateError> {
+    let mut uri = path_to_uri(&note.path)?;
+    if let Some(fragment) = fragment.as_deref() {
+        uri.set_fragment(Some(fragment));
+    }
+
+    Ok(Location {
+        uri,
+        range: note_definition_range(snapshot, note, fragment.as_deref())?,
+    })
+}
+
+fn note_definition_range(snapshot: &StateSnapshot, note: &Note, fragment: Option<&str>) -> Result<Range, StateError> {
+    let text = snapshot.text_for_path(&note.path)?;
+
+    if let Some(fragment) = fragment
+        && let Some(range) = find_heading_range(&text, fragment)
+    {
+        return Ok(range);
+    }
+
+    if let Some(title) = note.title.as_deref()
+        && let Some(range) = find_title_or_heading_range(&text, title)
+    {
+        return Ok(range);
+    }
+
+    if let Some(range) = find_frontmatter_key_range(&text, "id") {
+        return Ok(range);
+    }
+
+    Ok(document_start_range())
+}
+
+struct HeadingFragmentSegment<'a> {
+    raw: &'a str,
+    normalized: String,
+}
+
+struct HeadingPathSegment<'a> {
+    text: &'a str,
+    normalized_anchor: String,
+    resolved_anchor: String,
+}
+
+fn find_heading_range(text: &str, heading: &str) -> Option<Range> {
+    let expected_segments = parse_heading_fragment_segments(heading);
+    if expected_segments.is_empty() {
+        return None;
+    }
+
+    let mut seen_anchors = HashMap::new();
+    let mut current_path = Vec::new();
+
+    for (line_index, line) in text.lines().enumerate() {
+        let Some((level, col_start, heading_text)) = heading_line_parts(line) else {
+            continue;
+        };
+        let Some(resolved_anchor) = resolve_heading_anchor(heading_text, &mut seen_anchors) else {
+            continue;
+        };
+
+        current_path.truncate(level.saturating_sub(1));
+        current_path.push(HeadingPathSegment {
+            text: heading_text,
+            normalized_anchor: normalize_heading_anchor(heading_text),
+            resolved_anchor,
+        });
+
+        if heading_path_matches(&current_path, &expected_segments) {
+            return Some(range_for_span(line_index, col_start, heading_text.chars().count()));
+        }
+    }
+
+    None
+}
+
+fn parse_heading_fragment_segments(heading: &str) -> Vec<HeadingFragmentSegment<'_>> {
+    heading
+        .split('#')
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| HeadingFragmentSegment {
+            raw: segment,
+            normalized: normalize_heading_anchor(segment),
+        })
+        .collect()
+}
+
+fn heading_path_matches(path: &[HeadingPathSegment<'_>], expected: &[HeadingFragmentSegment<'_>]) -> bool {
+    if expected.len() > path.len() {
+        return false;
+    }
+
+    path[path.len() - expected.len()..]
+        .iter()
+        .zip(expected.iter())
+        .all(|(candidate, expected_segment)| heading_segment_matches(candidate, expected_segment))
+}
+
+fn heading_segment_matches(candidate: &HeadingPathSegment<'_>, expected: &HeadingFragmentSegment<'_>) -> bool {
+    candidate.text == expected.raw
+        || candidate.normalized_anchor == expected.normalized
+        || candidate.resolved_anchor == expected.normalized
+}
+
+fn heading_line_parts(line: &str) -> Option<(usize, usize, &str)> {
+    let trimmed = line.trim_start();
+    if !trimmed.starts_with('#') {
+        return None;
+    }
+
+    let marker_bytes = trimmed
+        .char_indices()
+        .take_while(|(_, ch)| *ch == '#')
+        .last()
+        .map_or(0, |(index, ch)| index + ch.len_utf8());
+    let level = trimmed[..marker_bytes].chars().count();
+    let after_markers = &trimmed[marker_bytes..];
+    let content = after_markers.trim_start();
+    if content.is_empty() {
+        return None;
+    }
+
+    let heading_text = strip_optional_heading_closing_hashes(content);
+    if heading_text.is_empty() {
+        return None;
+    }
+
+    let leading_bytes = line.len() - trimmed.len();
+    let whitespace_bytes = after_markers.len() - content.len();
+    let heading_start = leading_bytes + marker_bytes + whitespace_bytes;
+
+    Some((level, line[..heading_start].chars().count(), heading_text))
+}
+
+fn strip_optional_heading_closing_hashes(text: &str) -> &str {
+    let trimmed = text.trim_end();
+    let without_hashes = trimmed.trim_end_matches('#');
+    if without_hashes.len() == trimmed.len() || !without_hashes.chars().last().is_some_and(char::is_whitespace) {
+        return trimmed;
+    }
+
+    without_hashes.trim_end()
+}
+
+fn resolve_heading_anchor(heading_text: &str, seen_anchors: &mut HashMap<String, usize>) -> Option<String> {
+    let base_anchor = normalize_heading_anchor(heading_text);
+    if base_anchor.is_empty() {
+        return None;
+    }
+
+    let seen_count = seen_anchors.entry(base_anchor.clone()).or_default();
+    let anchor = if *seen_count == 0 {
+        base_anchor
+    } else {
+        format!("{base_anchor}-{seen_count}")
+    };
+    *seen_count += 1;
+
+    Some(anchor)
+}
+
+fn normalize_heading_anchor(text: &str) -> String {
+    let mut anchor = String::new();
+    let mut last_was_separator = true;
+
+    for ch in text.trim().chars().flat_map(char::to_lowercase) {
+        if ch.is_alphanumeric() || ch == '_' {
+            anchor.push(ch);
+            last_was_separator = false;
+        } else if (ch.is_whitespace() || ch == '-') && !last_was_separator && !anchor.is_empty() {
+            anchor.push('-');
+            last_was_separator = true;
+        }
+    }
+
+    while anchor.ends_with('-') {
+        anchor.pop();
+    }
+
+    anchor
+}
+
+fn find_link_at_position(note: &Note, position: Position) -> Option<&LocatedLink> {
+    note.links
+        .iter()
+        .filter(|link| !matches!(link.link, Link::Embed { .. }))
+        .find(|link| position_in_location(position, &link.location))
+}
+
+fn render_document_link_tooltip(prefix: Option<&str>, detail: Option<String>) -> String {
+    match (prefix, detail) {
+        (Some(prefix), Some(detail)) => format!("{prefix}: {detail}"),
+        (Some(prefix), None) => prefix.to_string(),
+        (None, Some(detail)) => detail,
+        (None, None) => "Obsidian link".to_string(),
+    }
+}
+
+fn render_ambiguous_document_link_tooltip(notes: &[&Note], vault_path: &Path) -> String {
+    format!(
+        "Ambiguous note link: {}",
+        notes
+            .iter()
+            .map(|note| relative_display(vault_path, &note.path))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn render_note_link_label(note: &Note, vault_path: &Path) -> String {
+    let title = note.title.as_deref().unwrap_or(note.id.as_str());
+    format!("{title} ({})", relative_display(vault_path, &note.path))
+}
+
 fn render_note_hover(note: &Note, vault_path: &Path) -> String {
     let mut lines = Vec::new();
     let heading = note.title.as_deref().unwrap_or(note.id.as_str());
@@ -596,10 +1224,6 @@ fn position_in_location(position: Position, location: &InlineLocation) -> bool {
     let character = position.character;
 
     line == location.line as u32 && character >= location.col_start as u32 && character < location.col_end as u32
-}
-
-fn same_location(left: &InlineLocation, right: &InlineLocation) -> bool {
-    left.line == right.line && left.col_start == right.col_start && left.col_end == right.col_end
 }
 
 fn location_to_range(location: &InlineLocation) -> Range {
@@ -820,8 +1444,7 @@ mod tests {
         assert_eq!(codes(note_b_update), vec!["duplicate-id", "duplicate-alias"]);
     }
 
-    #[test]
-    fn hover_request_returns_metadata_for_wiki_links() {
+    fn navigation_state() -> (tempfile::TempDir, BackendState, Url, Url, Url, String) {
         let vault_dir = tempfile::tempdir().unwrap();
         fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
 
@@ -831,12 +1454,17 @@ mod tests {
             "---\nid: target-id\ntitle: Target Note\naliases: [target-alias]\ntags: [rust]\n---\n\nBody.\n",
         )
         .unwrap();
+        let target_uri = path_to_uri(&target_path.canonicalize().unwrap()).unwrap();
 
         let source_path = vault_dir.path().join("source.md");
         fs::write(&source_path, "placeholder").unwrap();
         let source_path = source_path.canonicalize().unwrap();
         let source_uri = path_to_uri(&source_path).unwrap();
-        let source_text = "See [[target-id]].";
+        let source_text = "See [[target-id]] and [Target Markdown](target.md).";
+
+        let backlink_path = vault_dir.path().join("backlink.md");
+        fs::write(&backlink_path, "Another reference to [[target-id]].").unwrap();
+        let backlink_uri = path_to_uri(&backlink_path.canonicalize().unwrap()).unwrap();
 
         let vault = Vault::open(vault_dir.path()).unwrap();
         let mut state = BackendState::new(vault);
@@ -844,10 +1472,107 @@ mod tests {
             .open_document(source_uri.clone(), 1, source_text.to_string())
             .unwrap();
 
+        (
+            vault_dir,
+            state,
+            source_uri,
+            target_uri,
+            backlink_uri,
+            source_text.to_string(),
+        )
+    }
+
+    fn heading_anchor_navigation_state() -> (tempfile::TempDir, BackendState, Url, Url, String) {
+        let vault_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
+
+        let target_path = vault_dir.path().join("target.md");
+        fs::write(
+            &target_path,
+            "---\nid: target-id\ntitle: Target Note\n---\n\n# Overview\n\n## Linked Heading\nBody.\n",
+        )
+        .unwrap();
+        let target_uri = path_to_uri(&target_path.canonicalize().unwrap()).unwrap();
+
+        let source_path = vault_dir.path().join("source.md");
+        fs::write(&source_path, "placeholder").unwrap();
+        let source_path = source_path.canonicalize().unwrap();
+        let source_uri = path_to_uri(&source_path).unwrap();
+        let source_text = "See [[target-id#Linked Heading]] and [Target Markdown](target.md#linked-heading).";
+
+        let vault = Vault::open(vault_dir.path()).unwrap();
+        let mut state = BackendState::new(vault);
+        state
+            .open_document(source_uri.clone(), 1, source_text.to_string())
+            .unwrap();
+
+        (vault_dir, state, source_uri, target_uri, source_text.to_string())
+    }
+
+    fn nested_heading_anchor_navigation_state() -> (tempfile::TempDir, BackendState, Url, Url, String) {
+        let vault_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
+
+        let target_path = vault_dir.path().join("target.md");
+        fs::write(
+            &target_path,
+            concat!(
+                "---\n",
+                "id: target-id\n",
+                "title: Target Note\n",
+                "---\n",
+                "\n",
+                "# Other Heading\n",
+                "\n",
+                "## Subheading B\n",
+                "\n",
+                "# Heading A\n",
+                "\n",
+                "## Subheading B\n",
+                "Body.\n",
+            ),
+        )
+        .unwrap();
+        let target_uri = path_to_uri(&target_path.canonicalize().unwrap()).unwrap();
+
+        let source_path = vault_dir.path().join("source.md");
+        fs::write(&source_path, "placeholder").unwrap();
+        let source_path = source_path.canonicalize().unwrap();
+        let source_uri = path_to_uri(&source_path).unwrap();
+        let source_text = concat!(
+            "See [[target-id#Heading A#Subheading B]], ",
+            "[[target-id#heading-a#subheading-b]], ",
+            "and [Target Markdown](target.md#heading-a#subheading-b).\n"
+        );
+
+        let vault = Vault::open(vault_dir.path()).unwrap();
+        let mut state = BackendState::new(vault);
+        state
+            .open_document(source_uri.clone(), 1, source_text.to_string())
+            .unwrap();
+
+        (vault_dir, state, source_uri, target_uri, source_text.to_string())
+    }
+
+    fn document_link_for_raw_link(document_links: &[DocumentLink], raw_link: &str) -> DocumentLink {
+        document_links
+            .iter()
+            .find(|document_link| {
+                let data = parse_document_link_data(document_link.data.as_ref().unwrap()).unwrap();
+                data.raw_link == raw_link
+            })
+            .cloned()
+            .expect("document link should exist for the requested raw link")
+    }
+
+    #[test]
+    fn navigation_request_returns_metadata_for_wiki_links() {
+        let (_vault_dir, state, source_uri, _target_uri, _backlink_uri, source_text) = navigation_state();
+
         let hover = state
-            .hover_request(source_uri, position_for_substring(source_text, "[[target-id]]"))
+            .navigation_request(source_uri, position_for_substring(&source_text, "[[target-id]]"))
             .unwrap()
-            .compute()
+            .compute_hover()
             .unwrap()
             .unwrap();
 
@@ -861,7 +1586,7 @@ mod tests {
     }
 
     #[test]
-    fn hover_request_resolves_relative_markdown_links() {
+    fn navigation_request_resolves_relative_markdown_links() {
         let vault_dir = tempfile::tempdir().unwrap();
         fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
 
@@ -887,9 +1612,9 @@ mod tests {
             .unwrap();
 
         let hover = state
-            .hover_request(source_uri, position_for_substring(source_text, "../notes/target.md"))
+            .navigation_request(source_uri, position_for_substring(source_text, "../notes/target.md"))
             .unwrap()
-            .compute()
+            .compute_hover()
             .unwrap()
             .unwrap();
 
@@ -898,5 +1623,199 @@ mod tests {
         };
         assert!(contents.value.contains("Target Note"));
         assert!(contents.value.contains("notes/target.md"));
+    }
+
+    #[test]
+    fn document_links_request_lists_wiki_and_markdown_links() {
+        let (_vault_dir, state, source_uri, _target_uri, _backlink_uri, _source_text) = navigation_state();
+
+        let document_links = state.document_links_request(source_uri).unwrap().compute().unwrap();
+
+        assert_eq!(document_links.len(), 2);
+        assert!(
+            document_links
+                .iter()
+                .all(|document_link| document_link.target.is_none())
+        );
+        assert_eq!(
+            parse_document_link_data(document_links[0].data.as_ref().unwrap())
+                .unwrap()
+                .raw_link,
+            "[[target-id]]"
+        );
+        assert_eq!(
+            parse_document_link_data(document_links[1].data.as_ref().unwrap())
+                .unwrap()
+                .raw_link,
+            "[Target Markdown](target.md)"
+        );
+    }
+
+    #[test]
+    fn resolve_document_link_request_resolves_markdown_note_links() {
+        let (_vault_dir, state, source_uri, target_uri, _backlink_uri, _source_text) = navigation_state();
+        let document_links = state.document_links_request(source_uri).unwrap().compute().unwrap();
+        let markdown_link = document_link_for_raw_link(&document_links, "[Target Markdown](target.md)");
+
+        let resolved = state
+            .resolve_document_link_request(markdown_link)
+            .unwrap()
+            .compute()
+            .unwrap();
+
+        assert_eq!(resolved.target.as_ref(), Some(&target_uri));
+        assert!(resolved.tooltip.as_ref().unwrap().contains("Target Note"));
+    }
+
+    #[test]
+    fn navigation_request_returns_backlinks_for_current_note_when_off_link() {
+        let (_vault_dir, state, source_uri, target_uri, backlink_uri, _source_text) = navigation_state();
+
+        let references = state
+            .navigation_request(target_uri.clone(), Position::new(0, 0))
+            .unwrap()
+            .compute_references()
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(references.len(), 3);
+        assert_eq!(
+            references.iter().filter(|location| location.uri == source_uri).count(),
+            2
+        );
+        assert!(references.iter().any(|location| location.uri == backlink_uri));
+    }
+
+    #[test]
+    fn navigation_request_returns_definition_for_link_target() {
+        let (_vault_dir, state, source_uri, target_uri, _backlink_uri, source_text) = navigation_state();
+
+        let definition = state
+            .navigation_request(source_uri, position_for_substring(&source_text, "[[target-id]]"))
+            .unwrap()
+            .compute_definition()
+            .unwrap()
+            .unwrap();
+
+        let GotoDefinitionResponse::Scalar(location) = definition else {
+            panic!("expected a single definition location");
+        };
+        assert_eq!(location.uri, target_uri);
+        assert_eq!(location.range.start.line, 2);
+    }
+
+    #[test]
+    fn navigation_request_returns_definition_for_wiki_heading_anchor() {
+        let (_vault_dir, state, source_uri, target_uri, source_text) = heading_anchor_navigation_state();
+
+        let definition = state
+            .navigation_request(
+                source_uri,
+                position_for_substring(&source_text, "[[target-id#Linked Heading]]"),
+            )
+            .unwrap()
+            .compute_definition()
+            .unwrap()
+            .unwrap();
+
+        let GotoDefinitionResponse::Scalar(location) = definition else {
+            panic!("expected a single definition location");
+        };
+        assert_eq!(location.uri.path(), target_uri.path());
+        assert_eq!(location.uri.fragment(), Some("Linked%20Heading"));
+        assert_eq!(location.range.start.line, 7);
+        assert_eq!(location.range.start.character, 3);
+    }
+
+    #[test]
+    fn navigation_request_returns_definition_for_markdown_heading_anchor() {
+        let (_vault_dir, state, source_uri, target_uri, source_text) = heading_anchor_navigation_state();
+
+        let definition = state
+            .navigation_request(
+                source_uri,
+                position_for_substring(&source_text, "[Target Markdown](target.md#linked-heading)"),
+            )
+            .unwrap()
+            .compute_definition()
+            .unwrap()
+            .unwrap();
+
+        let GotoDefinitionResponse::Scalar(location) = definition else {
+            panic!("expected a single definition location");
+        };
+        assert_eq!(location.uri.path(), target_uri.path());
+        assert_eq!(location.uri.fragment(), Some("linked-heading"));
+        assert_eq!(location.range.start.line, 7);
+        assert_eq!(location.range.start.character, 3);
+    }
+
+    #[test]
+    fn navigation_request_returns_definition_for_nested_wiki_heading_anchor() {
+        let (_vault_dir, state, source_uri, target_uri, source_text) = nested_heading_anchor_navigation_state();
+
+        let definition = state
+            .navigation_request(
+                source_uri,
+                position_for_substring(&source_text, "[[target-id#Heading A#Subheading B]]"),
+            )
+            .unwrap()
+            .compute_definition()
+            .unwrap()
+            .unwrap();
+
+        let GotoDefinitionResponse::Scalar(location) = definition else {
+            panic!("expected a single definition location");
+        };
+        assert_eq!(location.uri.path(), target_uri.path());
+        assert_eq!(location.uri.fragment(), Some("Heading%20A#Subheading%20B"));
+        assert_eq!(location.range.start.line, 11);
+        assert_eq!(location.range.start.character, 3);
+    }
+
+    #[test]
+    fn navigation_request_returns_definition_for_nested_slug_heading_anchor() {
+        let (_vault_dir, state, source_uri, target_uri, source_text) = nested_heading_anchor_navigation_state();
+
+        let definition = state
+            .navigation_request(
+                source_uri,
+                position_for_substring(&source_text, "[[target-id#heading-a#subheading-b]]"),
+            )
+            .unwrap()
+            .compute_definition()
+            .unwrap()
+            .unwrap();
+
+        let GotoDefinitionResponse::Scalar(location) = definition else {
+            panic!("expected a single definition location");
+        };
+        assert_eq!(location.uri.path(), target_uri.path());
+        assert_eq!(location.uri.fragment(), Some("heading-a#subheading-b"));
+        assert_eq!(location.range.start.line, 11);
+        assert_eq!(location.range.start.character, 3);
+    }
+
+    #[test]
+    fn navigation_request_returns_definition_for_nested_markdown_heading_anchor() {
+        let (_vault_dir, state, source_uri, target_uri, source_text) = nested_heading_anchor_navigation_state();
+
+        let definition = state
+            .navigation_request(
+                source_uri,
+                position_for_substring(&source_text, "[Target Markdown](target.md#heading-a#subheading-b)"),
+            )
+            .unwrap()
+            .compute_definition()
+            .unwrap()
+            .unwrap();
+
+        let GotoDefinitionResponse::Scalar(location) = definition else {
+            panic!("expected a single definition location");
+        };
+        assert_eq!(location.uri.path(), target_uri.path());
+        assert_eq!(location.uri.fragment(), Some("heading-a#subheading-b"));
+        assert_eq!(location.range.start.line, 11);
+        assert_eq!(location.range.start.character, 3);
     }
 }

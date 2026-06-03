@@ -115,9 +115,12 @@ Current functionality:
 - in-memory buffer shadowing through `obsidian_core::Vault::load_note()` / `unload_note()`
 - diagnostics for broken links, duplicate IDs, and duplicate aliases across the vault
 - hover on note links with basic target-note metadata
+- document links for wiki and markdown note links, with resolve support
+- references/backlinks for linked notes, or for the current note when the cursor is not on a link
+- go-to definition for linked notes, including heading anchors and nested sub-anchors
 - diagnostics clearing and refresh on open/change/close events
 
-Advanced editor features such as go-to-definition, rename, and completion are not implemented yet.
+Advanced editor features such as rename and completion are not implemented yet.
 
 ## Roadmap
 
@@ -127,7 +130,7 @@ Advanced editor features such as go-to-definition, rename, and completion are no
 - [ ] More core features
   - [ ] Additional search/filter capabilities
 - [ ] LSP server
-  - [ ] Go-to definition
+  - [x] Go-to definition
 
 ## On the use of AI
 

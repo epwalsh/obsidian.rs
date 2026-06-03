@@ -242,6 +242,12 @@ fn initialize_session(harness: &mut LspHarness, vault_uri: &Url, vault_path: &Pa
     assert_eq!(initialize["jsonrpc"], "2.0");
     assert_eq!(initialize["result"]["capabilities"]["textDocumentSync"], 1);
     assert_eq!(initialize["result"]["capabilities"]["hoverProvider"], true);
+    assert_eq!(initialize["result"]["capabilities"]["referencesProvider"], true);
+    assert_eq!(initialize["result"]["capabilities"]["definitionProvider"], true);
+    assert_eq!(
+        initialize["result"]["capabilities"]["documentLinkProvider"]["resolveProvider"],
+        true
+    );
     assert_eq!(initialize["result"]["serverInfo"]["name"], "obsidian-rs-lsp");
     assert_eq!(initialize["result"]["serverInfo"]["version"], env!("CARGO_PKG_VERSION"));
 
@@ -296,6 +302,12 @@ fn diagnostic_codes(message: &Value) -> Vec<&str> {
         .collect()
 }
 
+fn raw_link(document_link: &Value) -> &str {
+    document_link["data"]["rawLink"]
+        .as_str()
+        .expect("document link should include rawLink data")
+}
+
 fn position_for_substring(text: &str, needle: &str) -> (u32, u32) {
     for (line_index, line) in text.lines().enumerate() {
         if let Some(column) = line.find(needle) {
@@ -320,7 +332,7 @@ fn create_test_vault() -> (tempfile::TempDir, PathBuf, Url) {
     (vault_dir, note_path, note_uri)
 }
 
-fn create_feature_vault() -> (tempfile::TempDir, Url, Url, String) {
+fn create_feature_vault() -> (tempfile::TempDir, Url, Url, Url, Url, String) {
     let vault_dir = tempfile::tempdir().expect("should create temp dir");
     fs::create_dir(vault_dir.path().join(".obsidian")).expect("should create .obsidian directory");
 
@@ -330,10 +342,11 @@ fn create_feature_vault() -> (tempfile::TempDir, Url, Url, String) {
         "---\nid: target-id\ntitle: Target Note\naliases: [target-alias]\ntags: [rust]\n---\n\nBody.\n",
     )
     .expect("should write target note");
+    let target_uri = Url::from_file_path(target_path.canonicalize().expect("target path should canonicalize"))
+        .expect("target path should convert to file URI");
 
     let duplicate_a_path = vault_dir.path().join("duplicate-a.md");
-    let duplicate_a_text =
-        "---\nid: shared-id\naliases: [shared-alias]\n---\n\nSee [[missing-note]] and [[target-id]].\n";
+    let duplicate_a_text = "---\nid: shared-id\naliases: [shared-alias]\n---\n\nSee [[missing-note]], [[target-id]], and [Target Markdown](target.md).\n";
     fs::write(&duplicate_a_path, duplicate_a_text).expect("should write duplicate note A");
     let duplicate_a_uri = Url::from_file_path(
         duplicate_a_path
@@ -355,12 +368,85 @@ fn create_feature_vault() -> (tempfile::TempDir, Url, Url, String) {
     )
     .expect("duplicate note B path should convert to file URI");
 
+    let backlink_path = vault_dir.path().join("backlink.md");
+    fs::write(&backlink_path, "Another reference to [[target-id]].\n").expect("should write backlink note");
+    let backlink_uri = Url::from_file_path(
+        backlink_path
+            .canonicalize()
+            .expect("backlink note path should canonicalize"),
+    )
+    .expect("backlink note path should convert to file URI");
+
     (
         vault_dir,
         duplicate_a_uri,
         duplicate_b_uri,
+        target_uri,
+        backlink_uri,
         duplicate_a_text.to_string(),
     )
+}
+
+fn create_heading_anchor_vault() -> (tempfile::TempDir, Url, Url, String) {
+    let vault_dir = tempfile::tempdir().expect("should create temp dir");
+    fs::create_dir(vault_dir.path().join(".obsidian")).expect("should create .obsidian directory");
+
+    let target_path = vault_dir.path().join("target.md");
+    fs::write(
+        &target_path,
+        "---\nid: target-id\ntitle: Target Note\n---\n\n# Overview\n\n## Linked Heading\nBody.\n",
+    )
+    .expect("should write target note");
+    let target_uri = Url::from_file_path(target_path.canonicalize().expect("target path should canonicalize"))
+        .expect("target path should convert to file URI");
+
+    let source_path = vault_dir.path().join("source.md");
+    let source_text = "See [[target-id#Linked Heading]] and [Target Markdown](target.md#linked-heading).\n";
+    fs::write(&source_path, source_text).expect("should write source note");
+    let source_uri = Url::from_file_path(source_path.canonicalize().expect("source path should canonicalize"))
+        .expect("source path should convert to file URI");
+
+    (vault_dir, source_uri, target_uri, source_text.to_string())
+}
+
+fn create_nested_heading_anchor_vault() -> (tempfile::TempDir, Url, Url, String) {
+    let vault_dir = tempfile::tempdir().expect("should create temp dir");
+    fs::create_dir(vault_dir.path().join(".obsidian")).expect("should create .obsidian directory");
+
+    let target_path = vault_dir.path().join("target.md");
+    fs::write(
+        &target_path,
+        concat!(
+            "---\n",
+            "id: target-id\n",
+            "title: Target Note\n",
+            "---\n",
+            "\n",
+            "# Other Heading\n",
+            "\n",
+            "## Subheading B\n",
+            "\n",
+            "# Heading A\n",
+            "\n",
+            "## Subheading B\n",
+            "Body.\n",
+        ),
+    )
+    .expect("should write target note");
+    let target_uri = Url::from_file_path(target_path.canonicalize().expect("target path should canonicalize"))
+        .expect("target path should convert to file URI");
+
+    let source_path = vault_dir.path().join("source.md");
+    let source_text = concat!(
+        "See [[target-id#Heading A#Subheading B]], ",
+        "[[target-id#heading-a#subheading-b]], ",
+        "and [Target Markdown](target.md#heading-a#subheading-b).\n"
+    );
+    fs::write(&source_path, source_text).expect("should write source note");
+    let source_uri = Url::from_file_path(source_path.canonicalize().expect("source path should canonicalize"))
+        .expect("source path should convert to file URI");
+
+    (vault_dir, source_uri, target_uri, source_text.to_string())
 }
 
 #[test]
@@ -442,7 +528,8 @@ fn stdio_session_handles_initialize_and_document_lifecycle() {
 
 #[test]
 fn stdio_session_reports_health_diagnostics_and_hover_metadata() {
-    let (vault_dir, duplicate_a_uri, duplicate_b_uri, duplicate_a_text) = create_feature_vault();
+    let (vault_dir, duplicate_a_uri, duplicate_b_uri, target_uri, backlink_uri, duplicate_a_text) =
+        create_feature_vault();
     let vault_path = vault_dir.path().canonicalize().expect("vault path should canonicalize");
     let vault_uri = Url::from_file_path(&vault_path).expect("vault path should convert to file URI");
     let (hover_line, hover_character) = position_for_substring(&duplicate_a_text, "[[target-id]]");
@@ -507,6 +594,317 @@ fn stdio_session_reports_health_diagnostics_and_hover_metadata() {
     assert!(hover_text.contains("target-alias"));
     assert!(hover_text.contains("rust"));
     assert!(hover_text.contains("target.md"));
+
+    harness.send(request(
+        3,
+        "textDocument/documentLink",
+        Some(json!({
+            "textDocument": {
+                "uri": duplicate_a_uri,
+            }
+        })),
+    ));
+
+    let document_links = harness.expect_message("documentLink response", |message| message["id"] == 3);
+    let document_links = document_links["result"]
+        .as_array()
+        .expect("documentLink response should be an array");
+    assert_eq!(document_links.len(), 3);
+    assert!(
+        document_links
+            .iter()
+            .all(|document_link| { document_link.get("target").is_none_or(|target| target.is_null()) })
+    );
+
+    let wiki_link = document_links
+        .iter()
+        .find(|document_link| raw_link(document_link) == "[[target-id]]")
+        .cloned()
+        .expect("documentLink response should include the wiki note link");
+    let markdown_link = document_links
+        .iter()
+        .find(|document_link| raw_link(document_link) == "[Target Markdown](target.md)")
+        .cloned()
+        .expect("documentLink response should include the markdown note link");
+
+    harness.send(request(4, "documentLink/resolve", Some(wiki_link)));
+    let resolved_wiki_link = harness.expect_message("documentLink/resolve wiki response", |message| message["id"] == 4);
+    assert_eq!(resolved_wiki_link["result"]["target"], target_uri.as_str());
+    assert!(
+        resolved_wiki_link["result"]["tooltip"]
+            .as_str()
+            .expect("resolved document link should include a tooltip")
+            .contains("Target Note")
+    );
+
+    harness.send(request(5, "documentLink/resolve", Some(markdown_link)));
+    let resolved_markdown_link =
+        harness.expect_message("documentLink/resolve markdown response", |message| message["id"] == 5);
+    assert_eq!(resolved_markdown_link["result"]["target"], target_uri.as_str());
+
+    harness.send(request(
+        6,
+        "textDocument/references",
+        Some(json!({
+            "textDocument": {
+                "uri": duplicate_a_uri,
+            },
+            "position": {
+                "line": hover_line,
+                "character": hover_character,
+            },
+            "context": {
+                "includeDeclaration": true,
+            }
+        })),
+    ));
+
+    let link_references = harness.expect_message("references response", |message| message["id"] == 6);
+    let link_references = link_references["result"]
+        .as_array()
+        .expect("references response should be an array");
+    assert_eq!(link_references.len(), 3);
+    assert_eq!(
+        link_references
+            .iter()
+            .filter(|location| location["uri"] == duplicate_a_uri.as_str())
+            .count(),
+        2
+    );
+    assert!(
+        link_references
+            .iter()
+            .any(|location| location["uri"] == backlink_uri.as_str())
+    );
+
+    harness.send(request(
+        7,
+        "textDocument/references",
+        Some(json!({
+            "textDocument": {
+                "uri": target_uri,
+            },
+            "position": {
+                "line": 0,
+                "character": 0,
+            },
+            "context": {
+                "includeDeclaration": true,
+            }
+        })),
+    ));
+
+    let note_references = harness.expect_message("off-link references response", |message| message["id"] == 7);
+    let note_references = note_references["result"]
+        .as_array()
+        .expect("off-link references response should be an array");
+    assert_eq!(note_references.len(), 3);
+
+    harness.send(request(
+        8,
+        "textDocument/definition",
+        Some(json!({
+            "textDocument": {
+                "uri": duplicate_a_uri,
+            },
+            "position": {
+                "line": hover_line,
+                "character": hover_character,
+            }
+        })),
+    ));
+
+    let definition = harness.expect_message("definition response", |message| message["id"] == 8);
+    assert_eq!(definition["result"]["uri"], target_uri.as_str());
+    assert_eq!(definition["result"]["range"]["start"]["line"], 2);
+
+    shutdown_session(&mut harness);
+}
+
+#[test]
+fn stdio_session_definition_jumps_to_heading_anchor() {
+    let (vault_dir, source_uri, target_uri, source_text) = create_heading_anchor_vault();
+    let vault_uri = Url::from_directory_path(vault_dir.path()).expect("vault path should convert to file URI");
+    let mut harness = LspHarness::spawn(vault_dir.path());
+
+    initialize_session(&mut harness, &vault_uri, vault_dir.path());
+
+    harness.send(notification(
+        "textDocument/didOpen",
+        Some(json!({
+            "textDocument": {
+                "uri": source_uri,
+                "languageId": "markdown",
+                "version": 1,
+                "text": source_text,
+            }
+        })),
+    ));
+
+    harness.send(request(
+        2,
+        "textDocument/definition",
+        Some(json!({
+            "textDocument": {
+                "uri": source_uri,
+            },
+            "position": {
+                "line": position_for_substring(&source_text, "[[target-id#Linked Heading]]").0,
+                "character": position_for_substring(&source_text, "[[target-id#Linked Heading]]").1,
+            }
+        })),
+    ));
+
+    let wiki_definition = harness.expect_message("wiki heading definition response", |message| message["id"] == 2);
+    let wiki_definition_uri = Url::parse(
+        wiki_definition["result"]["uri"]
+            .as_str()
+            .expect("definition response should include a target URI"),
+    )
+    .expect("definition target should be a valid URI");
+    assert_eq!(wiki_definition_uri.path(), target_uri.path());
+    assert_eq!(wiki_definition_uri.fragment(), Some("Linked%20Heading"));
+    assert_eq!(wiki_definition["result"]["range"]["start"]["line"], 7);
+    assert_eq!(wiki_definition["result"]["range"]["start"]["character"], 3);
+
+    harness.send(request(
+        3,
+        "textDocument/definition",
+        Some(json!({
+            "textDocument": {
+                "uri": source_uri,
+            },
+            "position": {
+                "line": position_for_substring(&source_text, "[Target Markdown](target.md#linked-heading)").0,
+                "character": position_for_substring(&source_text, "[Target Markdown](target.md#linked-heading)").1,
+            }
+        })),
+    ));
+
+    let markdown_definition =
+        harness.expect_message("markdown heading definition response", |message| message["id"] == 3);
+    let markdown_definition_uri = Url::parse(
+        markdown_definition["result"]["uri"]
+            .as_str()
+            .expect("definition response should include a target URI"),
+    )
+    .expect("definition target should be a valid URI");
+    assert_eq!(markdown_definition_uri.path(), target_uri.path());
+    assert_eq!(markdown_definition_uri.fragment(), Some("linked-heading"));
+    assert_eq!(markdown_definition["result"]["range"]["start"]["line"], 7);
+    assert_eq!(markdown_definition["result"]["range"]["start"]["character"], 3);
+
+    shutdown_session(&mut harness);
+}
+
+#[test]
+fn stdio_session_definition_jumps_to_nested_heading_anchor() {
+    let (vault_dir, source_uri, target_uri, source_text) = create_nested_heading_anchor_vault();
+    let vault_uri = Url::from_directory_path(vault_dir.path()).expect("vault path should convert to file URI");
+    let mut harness = LspHarness::spawn(vault_dir.path());
+
+    initialize_session(&mut harness, &vault_uri, vault_dir.path());
+
+    harness.send(notification(
+        "textDocument/didOpen",
+        Some(json!({
+            "textDocument": {
+                "uri": source_uri,
+                "languageId": "markdown",
+                "version": 1,
+                "text": source_text,
+            }
+        })),
+    ));
+
+    let (raw_wiki_line, raw_wiki_character) =
+        position_for_substring(&source_text, "[[target-id#Heading A#Subheading B]]");
+    harness.send(request(
+        2,
+        "textDocument/definition",
+        Some(json!({
+            "textDocument": {
+                "uri": source_uri,
+            },
+            "position": {
+                "line": raw_wiki_line,
+                "character": raw_wiki_character,
+            }
+        })),
+    ));
+
+    let raw_wiki_definition =
+        harness.expect_message("nested wiki heading definition response", |message| message["id"] == 2);
+    let raw_wiki_definition_uri = Url::parse(
+        raw_wiki_definition["result"]["uri"]
+            .as_str()
+            .expect("definition response should include a target URI"),
+    )
+    .expect("definition target should be a valid URI");
+    assert_eq!(raw_wiki_definition_uri.path(), target_uri.path());
+    assert_eq!(raw_wiki_definition_uri.fragment(), Some("Heading%20A#Subheading%20B"));
+    assert_eq!(raw_wiki_definition["result"]["range"]["start"]["line"], 11);
+    assert_eq!(raw_wiki_definition["result"]["range"]["start"]["character"], 3);
+
+    let (slug_wiki_line, slug_wiki_character) =
+        position_for_substring(&source_text, "[[target-id#heading-a#subheading-b]]");
+    harness.send(request(
+        3,
+        "textDocument/definition",
+        Some(json!({
+            "textDocument": {
+                "uri": source_uri,
+            },
+            "position": {
+                "line": slug_wiki_line,
+                "character": slug_wiki_character,
+            }
+        })),
+    ));
+
+    let slug_wiki_definition = harness.expect_message("nested slug wiki heading definition response", |message| {
+        message["id"] == 3
+    });
+    let slug_wiki_definition_uri = Url::parse(
+        slug_wiki_definition["result"]["uri"]
+            .as_str()
+            .expect("definition response should include a target URI"),
+    )
+    .expect("definition target should be a valid URI");
+    assert_eq!(slug_wiki_definition_uri.path(), target_uri.path());
+    assert_eq!(slug_wiki_definition_uri.fragment(), Some("heading-a#subheading-b"));
+    assert_eq!(slug_wiki_definition["result"]["range"]["start"]["line"], 11);
+    assert_eq!(slug_wiki_definition["result"]["range"]["start"]["character"], 3);
+
+    let (markdown_line, markdown_character) =
+        position_for_substring(&source_text, "[Target Markdown](target.md#heading-a#subheading-b)");
+    harness.send(request(
+        4,
+        "textDocument/definition",
+        Some(json!({
+            "textDocument": {
+                "uri": source_uri,
+            },
+            "position": {
+                "line": markdown_line,
+                "character": markdown_character,
+            }
+        })),
+    ));
+
+    let markdown_definition = harness.expect_message("nested markdown heading definition response", |message| {
+        message["id"] == 4
+    });
+    let markdown_definition_uri = Url::parse(
+        markdown_definition["result"]["uri"]
+            .as_str()
+            .expect("definition response should include a target URI"),
+    )
+    .expect("definition target should be a valid URI");
+    assert_eq!(markdown_definition_uri.path(), target_uri.path());
+    assert_eq!(markdown_definition_uri.fragment(), Some("heading-a#subheading-b"));
+    assert_eq!(markdown_definition["result"]["range"]["start"]["line"], 11);
+    assert_eq!(markdown_definition["result"]["range"]["start"]["character"], 3);
 
     shutdown_session(&mut harness);
 }

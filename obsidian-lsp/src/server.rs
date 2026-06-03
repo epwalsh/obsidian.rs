@@ -4,14 +4,18 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, Hover, HoverParams,
-    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, MessageType, ServerCapabilities,
-    ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, WorkspaceFoldersServerCapabilities,
-    WorkspaceServerCapabilities,
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentLink,
+    DocumentLinkOptions, DocumentLinkParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams,
+    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location, MessageType, OneOf,
+    ReferenceParams, ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind,
+    WorkspaceFoldersServerCapabilities, WorkspaceServerCapabilities,
 };
 use tower_lsp::{Client, LanguageServer};
 
-use crate::state::{BackendState, DiagnosticUpdate, DiagnosticsRequest, HoverRequest, StateError};
+use crate::state::{
+    BackendState, DiagnosticUpdate, DiagnosticsRequest, DocumentLinksRequest, NavigationRequest,
+    ResolveDocumentLinkRequest, StateError,
+};
 
 pub struct Backend {
     client: Client,
@@ -78,7 +82,23 @@ impl Backend {
         }
     }
 
-    async fn compute_hover(&self, request: std::result::Result<HoverRequest, StateError>) -> Option<Hover> {
+    async fn compute_hover(&self, request: std::result::Result<NavigationRequest, StateError>) -> Option<Hover> {
+        self.compute_request(request, "hover", |request| request.compute_hover())
+            .await
+            .flatten()
+    }
+
+    async fn compute_request<Request, Output, Compute>(
+        &self,
+        request: std::result::Result<Request, StateError>,
+        label: &'static str,
+        compute: Compute,
+    ) -> Option<Output>
+    where
+        Request: Send + 'static,
+        Output: Send + 'static,
+        Compute: FnOnce(Request) -> std::result::Result<Output, StateError> + Send + 'static,
+    {
         let request = match request {
             Ok(request) => request,
             Err(error) => {
@@ -87,14 +107,14 @@ impl Backend {
             }
         };
 
-        match tokio::task::spawn_blocking(move || request.compute()).await {
-            Ok(Ok(hover)) => hover,
+        match tokio::task::spawn_blocking(move || compute(request)).await {
+            Ok(Ok(output)) => Some(output),
             Ok(Err(error)) => {
                 self.log_error(error).await;
                 None
             }
             Err(error) => {
-                self.log_error(format!("hover task failed: {error}")).await;
+                self.log_error(format!("{label} task failed: {error}")).await;
                 None
             }
         }
@@ -108,6 +128,12 @@ impl LanguageServer for Backend {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
+                document_link_provider: Some(DocumentLinkOptions {
+                    resolve_provider: Some(true),
+                    work_done_progress_options: Default::default(),
+                }),
+                references_provider: Some(OneOf::Left(true)),
+                definition_provider: Some(OneOf::Left(true)),
                 workspace: Some(WorkspaceServerCapabilities {
                     workspace_folders: Some(WorkspaceFoldersServerCapabilities {
                         supported: Some(false),
@@ -176,12 +202,76 @@ impl LanguageServer for Backend {
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let request = {
             let state = self.state.read().await;
-            state.hover_request(
+            state.navigation_request(
                 params.text_document_position_params.text_document.uri,
                 params.text_document_position_params.position,
             )
         };
 
         Ok(self.compute_hover(request).await)
+    }
+
+    async fn document_link(&self, params: DocumentLinkParams) -> Result<Option<Vec<DocumentLink>>> {
+        let request = {
+            let state = self.state.read().await;
+            state.document_links_request(params.text_document.uri)
+        };
+
+        Ok(self
+            .compute_request(request, "documentLink", |request: DocumentLinksRequest| {
+                request.compute()
+            })
+            .await)
+    }
+
+    async fn document_link_resolve(&self, params: DocumentLink) -> Result<DocumentLink> {
+        let fallback = params.clone();
+        let request = {
+            let state = self.state.read().await;
+            state.resolve_document_link_request(params)
+        };
+
+        Ok(self
+            .compute_request(
+                request,
+                "documentLink/resolve",
+                |request: ResolveDocumentLinkRequest| request.compute(),
+            )
+            .await
+            .unwrap_or(fallback))
+    }
+
+    async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        let request = {
+            let state = self.state.read().await;
+            state.navigation_request(
+                params.text_document_position.text_document.uri,
+                params.text_document_position.position,
+            )
+        };
+
+        Ok(self
+            .compute_request(request, "references", |request: NavigationRequest| {
+                request.compute_references()
+            })
+            .await
+            .flatten())
+    }
+
+    async fn goto_definition(&self, params: GotoDefinitionParams) -> Result<Option<GotoDefinitionResponse>> {
+        let request = {
+            let state = self.state.read().await;
+            state.navigation_request(
+                params.text_document_position_params.text_document.uri,
+                params.text_document_position_params.position,
+            )
+        };
+
+        Ok(self
+            .compute_request(request, "definition", |request: NavigationRequest| {
+                request.compute_definition()
+            })
+            .await
+            .flatten())
     }
 }
