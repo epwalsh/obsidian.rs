@@ -540,14 +540,19 @@ impl CompletionRequest {
         let notes = snapshot.notes(&vault);
 
         let items: Vec<CompletionItem> = if let Some(hq) = heading_query {
-            notes
-                .iter()
-                .filter(|note| note_matches_query(note, note_query))
-                .flat_map(|note| match snapshot.text_for_path(&note.path) {
-                    Ok(note_text) => heading_completions_for_note(note, &note_text, hq, prefix_range),
-                    Err(_) => Vec::new(),
-                })
-                .collect()
+            if note_query.is_empty() {
+                // Anchor-only link [[#heading]]: complete headings within the current document.
+                anchor_completions(&text, hq, prefix_range)
+            } else {
+                notes
+                    .iter()
+                    .filter(|note| note_matches_query(note, note_query))
+                    .flat_map(|note| match snapshot.text_for_path(&note.path) {
+                        Ok(note_text) => heading_completions_for_note(note, &note_text, hq, prefix_range),
+                        Err(_) => Vec::new(),
+                    })
+                    .collect()
+            }
         } else {
             notes
                 .iter()
@@ -1481,6 +1486,29 @@ fn markdown_completions_for_note(note: &Note, vault_path: &Path, prefix_range: R
     items
 }
 
+fn anchor_completions(text: &str, heading_query: &str, prefix_range: Range) -> Vec<CompletionItem> {
+    let headings = parse_headings(text);
+    let query_lower = heading_query.to_lowercase();
+
+    headings
+        .iter()
+        .filter(|h| heading_query.is_empty() || h.to_lowercase().contains(&query_lower))
+        .map(|heading| {
+            let label = format!("[[#{}]]", heading);
+            CompletionItem {
+                label: label.clone(),
+                kind: Some(CompletionItemKind::REFERENCE),
+                sort_text: Some(label.clone()),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                    range: prefix_range,
+                    new_text: label,
+                })),
+                ..Default::default()
+            }
+        })
+        .collect()
+}
+
 fn closing_bracket_len(text_after_cursor: &str, context: &LinkContext) -> usize {
     match context {
         LinkContext::Wiki { .. } => {
@@ -1510,8 +1538,8 @@ fn parse_headings(text: &str) -> Vec<String> {
     let mut headings = Vec::new();
 
     for (i, line) in text.lines().enumerate() {
-        if i == 0 {
-            in_frontmatter = line == "---";
+        if i == 0 && line == "---" {
+            in_frontmatter = true;
             continue;
         }
         if in_frontmatter {
@@ -2435,5 +2463,84 @@ mod tests {
         // range should extend past "]" (char 4)
         assert_eq!(edit.range.start.character, 0, "range should start at [");
         assert_eq!(edit.range.end.character, 5, "range should extend past ]");
+    }
+
+    #[test]
+    fn detect_link_context_returns_wiki_with_empty_note_query_and_heading_query_for_anchor_link() {
+        let ctx = detect_link_context("See [[#Get").unwrap();
+        assert!(
+            matches!(ctx, LinkContext::Wiki { note_query, heading_query: Some(hq), .. }
+                if note_query.is_empty() && hq == "Get")
+        );
+    }
+
+    #[test]
+    fn completion_request_returns_anchor_completions_for_current_document() {
+        let vault_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
+
+        // Other note with the same headings — must NOT appear in anchor completions.
+        let other_path = vault_dir.path().join("other.md");
+        fs::write(&other_path, "# Getting Started\n\nBody.\n").unwrap();
+
+        let source_path = vault_dir.path().join("source.md");
+        let source_text = "# Overview\n\n## Getting Started\n\n[[#Get";
+        fs::write(&source_path, source_text).unwrap();
+        let source_path = source_path.canonicalize().unwrap();
+        let source_uri = path_to_uri(&source_path).unwrap();
+
+        let vault = Vault::open(vault_dir.path()).unwrap();
+        let mut state = BackendState::new(vault);
+        state
+            .open_document(source_uri.clone(), 1, source_text.to_string())
+            .unwrap();
+
+        // cursor at end of "[[#Get" (line 4, char 6)
+        let items = state
+            .completion_request(source_uri, Position::new(4, 6))
+            .unwrap()
+            .compute()
+            .unwrap()
+            .unwrap();
+
+        let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+        assert!(labels.contains(&"[[#Getting Started]]"), "missing [[#Getting Started]]");
+        // "Overview" should not match "Get"
+        assert!(!labels.contains(&"[[#Overview]]"), "Overview should not match 'Get'");
+        // Should only have items with the [[#...]] form, not [[other-note#...]]
+        assert!(
+            labels.iter().all(|l| l.starts_with("[[#")),
+            "all labels should be anchor-only form"
+        );
+    }
+
+    #[test]
+    fn completion_request_returns_all_headings_for_bare_anchor_trigger() {
+        let vault_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
+
+        let source_path = vault_dir.path().join("source.md");
+        let source_text = "# Overview\n\n## Details\n\n[[#";
+        fs::write(&source_path, source_text).unwrap();
+        let source_path = source_path.canonicalize().unwrap();
+        let source_uri = path_to_uri(&source_path).unwrap();
+
+        let vault = Vault::open(vault_dir.path()).unwrap();
+        let mut state = BackendState::new(vault);
+        state
+            .open_document(source_uri.clone(), 1, source_text.to_string())
+            .unwrap();
+
+        // cursor at end of "[[#" (line 4, char 3)
+        let items = state
+            .completion_request(source_uri, Position::new(4, 3))
+            .unwrap()
+            .compute()
+            .unwrap()
+            .unwrap();
+
+        let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+        assert!(labels.contains(&"[[#Overview]]"), "missing [[#Overview]]");
+        assert!(labels.contains(&"[[#Details]]"), "missing [[#Details]]");
     }
 }

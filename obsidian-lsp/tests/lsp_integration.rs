@@ -1134,5 +1134,40 @@ fn stdio_session_handles_completion_for_wiki_and_markdown_links() {
         "range should extend past ]] to position 7"
     );
 
+    // Test anchor-only completion: "[[#Get" completes headings within the current document only.
+    // The source document must have its own headings for this to work.
+    let anchor_text = "# Overview\n\n## Getting Started\n\n[[#Get";
+    harness.send(notification(
+        "textDocument/didChange",
+        Some(json!({
+            "textDocument": { "uri": source_uri, "version": 6 },
+            "contentChanges": [{ "text": anchor_text }],
+        })),
+    ));
+    expect_diagnostics(&mut harness, &source_uri, Some(6));
+
+    // cursor at line 4, char 6 — end of "[[#Get"
+    harness.send(request(
+        7,
+        "textDocument/completion",
+        Some(json!({
+            "textDocument": { "uri": source_uri },
+            "position": { "line": 4, "character": 6 },
+        })),
+    ));
+
+    let anchor_completion = harness.expect_message("anchor completion response", |message| message["id"] == 7);
+    let labels = completion_labels(&anchor_completion);
+    assert!(labels.contains(&"[[#Getting Started]]"), "missing [[#Getting Started]]");
+    assert!(
+        !labels.iter().any(|l| l.contains("Overview")),
+        "Overview should not match 'Get'"
+    );
+    // All items must be anchor-only (start with [[#), never [[other-note#...]]
+    assert!(
+        labels.iter().all(|l| l.starts_with("[[#")),
+        "all labels should be anchor-only [[#...]] form"
+    );
+
     shutdown_session(&mut harness);
 }
