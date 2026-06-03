@@ -15,3 +15,14 @@ path = "src/main.rs"
 
 [dependencies]
 obsidian-rs-core = { path = "../obsidian-core", version = "0.2.0" }
+clap = { version = "4", features = ["derive"] }
+color-eyre = "0.6"
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tower-lsp = "0.20"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3"
