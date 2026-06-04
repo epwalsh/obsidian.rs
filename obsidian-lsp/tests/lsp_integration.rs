@@ -1410,3 +1410,112 @@ fn stdio_session_rejects_create_note_command_for_outside_or_existing_paths() {
 
     shutdown_session(&mut harness);
 }
+
+#[test]
+fn stdio_session_handles_completion_for_tags() {
+    let vault_dir = tempfile::tempdir().expect("should create temp dir");
+    fs::create_dir(vault_dir.path().join(".obsidian")).expect("should create .obsidian directory");
+
+    // Note with frontmatter tags and an inline tag.
+    let tagged_path = vault_dir.path().join("tagged.md");
+    fs::write(
+        &tagged_path,
+        "---\nid: tagged\ntags: [project, work]\n---\n\nSome body with #rust tag.\n",
+    )
+    .expect("should write tagged note");
+
+    let vault_path = vault_dir.path().canonicalize().expect("vault path should canonicalize");
+    let vault_uri = Url::from_file_path(&vault_path).expect("vault path should convert to file URI");
+
+    let mut harness = LspHarness::spawn(vault_dir.path());
+    initialize_session(&mut harness, &vault_uri, &vault_path);
+
+    // Open a source document with a partial tag "#pro" to test prefix filtering.
+    let source_path = vault_dir.path().join("source.md");
+    let partial_tag_text = "See #pro";
+    fs::write(&source_path, partial_tag_text).expect("should write source note");
+    let source_path = source_path.canonicalize().expect("source path should canonicalize");
+    let source_uri = Url::from_file_path(&source_path).expect("source path should convert to file URI");
+
+    harness.send(notification(
+        "textDocument/didOpen",
+        Some(json!({
+            "textDocument": {
+                "uri": source_uri,
+                "languageId": "markdown",
+                "version": 1,
+                "text": partial_tag_text,
+            }
+        })),
+    ));
+    expect_diagnostics(&mut harness, &source_uri, Some(1));
+
+    // Request completion at end of "See #pro" (line 0, character 8).
+    harness.send(request(
+        2,
+        "textDocument/completion",
+        Some(json!({
+            "textDocument": { "uri": source_uri },
+            "position": { "line": 0, "character": 8 },
+        })),
+    ));
+    let partial_completion = harness.expect_message("partial tag completion response", |message| message["id"] == 2);
+    let labels = completion_labels(&partial_completion);
+    assert!(labels.contains(&"#project"), "should include #project for prefix 'pro'");
+    assert!(!labels.contains(&"#work"), "#work should not match prefix 'pro'");
+    assert!(!labels.contains(&"#rust"), "#rust should not match prefix 'pro'");
+
+    // Update the document to just "#" — empty query should return all vault tags.
+    let empty_query_text = "#";
+    harness.send(notification(
+        "textDocument/didChange",
+        Some(json!({
+            "textDocument": { "uri": source_uri, "version": 2 },
+            "contentChanges": [{ "text": empty_query_text }],
+        })),
+    ));
+    expect_diagnostics(&mut harness, &source_uri, Some(2));
+
+    harness.send(request(
+        3,
+        "textDocument/completion",
+        Some(json!({
+            "textDocument": { "uri": source_uri },
+            "position": { "line": 0, "character": 1 },
+        })),
+    ));
+    let all_tags_completion = harness.expect_message("all tags completion response", |message| message["id"] == 3);
+    let labels = completion_labels(&all_tags_completion);
+    assert!(
+        labels.contains(&"#project"),
+        "should include #project when query is empty"
+    );
+    assert!(labels.contains(&"#work"), "should include #work when query is empty");
+    assert!(labels.contains(&"#rust"), "should include #rust when query is empty");
+
+    // Ensure plain text without # returns null (no tag context).
+    harness.send(notification(
+        "textDocument/didChange",
+        Some(json!({
+            "textDocument": { "uri": source_uri, "version": 3 },
+            "contentChanges": [{ "text": "plain text" }],
+        })),
+    ));
+    expect_diagnostics(&mut harness, &source_uri, Some(3));
+
+    harness.send(request(
+        4,
+        "textDocument/completion",
+        Some(json!({
+            "textDocument": { "uri": source_uri },
+            "position": { "line": 0, "character": 10 },
+        })),
+    ));
+    let plain_completion = harness.expect_message("plain text no tag completion", |message| message["id"] == 4);
+    assert!(
+        plain_completion["result"].is_null(),
+        "plain text should return null, not tag completions"
+    );
+
+    shutdown_session(&mut harness);
+}

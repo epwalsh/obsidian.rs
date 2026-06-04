@@ -180,7 +180,7 @@ impl LanguageServer for Backend {
                     work_done_progress_options: Default::default(),
                 }),
                 completion_provider: Some(CompletionOptions {
-                    trigger_characters: Some(vec!["[".to_string()]),
+                    trigger_characters: Some(vec!["[".to_string(), "#".to_string()]),
                     ..Default::default()
                 }),
                 references_provider: Some(OneOf::Left(true)),

@@ -105,6 +105,10 @@ enum LinkContext {
         query: String,
         link_start_char: usize,
     },
+    Tag {
+        query: String,
+        tag_start_char: usize,
+    },
 }
 
 struct NavigationContext {
@@ -595,6 +599,16 @@ impl CompletionRequest {
             None => return Ok(None),
         };
 
+        if let LinkContext::Tag { query, tag_start_char } = &context {
+            let prefix_range = Range::new(
+                Position::new(position.line, *tag_start_char as u32),
+                Position::new(position.line, char_pos as u32),
+            );
+            let vault = snapshot.build_vault()?;
+            let all_tags = vault.list_tags().map_err(StateError::Vault)?;
+            return Ok(Some(tag_completions(&all_tags, query, prefix_range)));
+        }
+
         let (note_query, heading_query, link_start_char) = match &context {
             LinkContext::Wiki {
                 note_query,
@@ -602,6 +616,7 @@ impl CompletionRequest {
                 link_start_char,
             } => (note_query.as_str(), heading_query.as_deref(), *link_start_char),
             LinkContext::Markdown { query, link_start_char } => (query.as_str(), None, *link_start_char),
+            LinkContext::Tag { .. } => unreachable!(),
         };
 
         let close_len = closing_bracket_len(text_after_cursor, &context);
@@ -634,6 +649,7 @@ impl CompletionRequest {
                 .flat_map(|note| match &context {
                     LinkContext::Wiki { .. } => wiki_completions_for_note(note, prefix_range),
                     LinkContext::Markdown { .. } => markdown_completions_for_note(note, vault.path(), prefix_range),
+                    LinkContext::Tag { .. } => unreachable!(),
                 })
                 .collect()
         };
@@ -1574,6 +1590,29 @@ fn detect_link_context(line_prefix: &str) -> Option<LinkContext> {
         break;
     }
 
+    // Check for tag context: `#` at line start or after whitespace, followed by valid tag chars.
+    for i in (0..bytes.len()).rev() {
+        if bytes[i] != b'#' {
+            continue;
+        }
+        let preceded_ok = i == 0 || bytes[i - 1].is_ascii_whitespace();
+        if !preceded_ok {
+            continue;
+        }
+        let after_hash = &line_prefix[i + 1..];
+        let first_ok = after_hash.is_empty() || after_hash.as_bytes()[0].is_ascii_alphabetic();
+        let rest_ok = after_hash
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '/');
+        if first_ok && rest_ok {
+            return Some(LinkContext::Tag {
+                query: after_hash.to_string(),
+                tag_start_char: i,
+            });
+        }
+        break;
+    }
+
     None
 }
 
@@ -1694,6 +1733,26 @@ fn anchor_completions(text: &str, heading_query: &str, prefix_range: Range) -> V
         .collect()
 }
 
+fn tag_completions(tags: &[String], query: &str, prefix_range: Range) -> Vec<CompletionItem> {
+    let query_lower = query.to_lowercase();
+    tags.iter()
+        .filter(|tag| query.is_empty() || tag.starts_with(&query_lower))
+        .map(|tag| {
+            let new_text = format!("#{tag}");
+            CompletionItem {
+                label: new_text.clone(),
+                kind: Some(CompletionItemKind::KEYWORD),
+                sort_text: Some(new_text.clone()),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                    range: prefix_range,
+                    new_text,
+                })),
+                ..Default::default()
+            }
+        })
+        .collect()
+}
+
 fn closing_bracket_len(text_after_cursor: &str, context: &LinkContext) -> usize {
     match context {
         LinkContext::Wiki { .. } => {
@@ -1715,6 +1774,7 @@ fn closing_bracket_len(text_after_cursor: &str, context: &LinkContext) -> usize 
             }
             1
         }
+        LinkContext::Tag { .. } => 0,
     }
 }
 
