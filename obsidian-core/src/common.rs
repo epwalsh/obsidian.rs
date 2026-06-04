@@ -18,7 +18,7 @@ pub struct InlineLocation {
 }
 
 /// Normalizes a path by resolving `.`, `..`, and symlink components and making absolute.
-pub(crate) fn normalize_path(path: impl AsRef<Path>, root: Option<&Path>) -> PathBuf {
+pub fn normalize_path(path: impl AsRef<Path>, root: Option<&Path>) -> PathBuf {
     let path = if path.as_ref().is_absolute() {
         path.as_ref().to_path_buf()
     } else {
@@ -51,6 +51,27 @@ pub(crate) fn relative_path(from_dir: impl AsRef<Path>, to_file: impl AsRef<Path
         result.push(c);
     }
     result
+}
+
+/// Decodes percent-encoded sequences in a URL path component (e.g. `%20` → space).
+/// Invalid sequences are left as-is.
+pub(crate) fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = ((bytes[i + 1] as char).to_digit(16), (bytes[i + 2] as char).to_digit(16))
+        {
+            out.push((hi * 16 + lo) as u8);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
 }
 
 /// Rewrites link spans in `raw_content` according to `replacements`.
@@ -106,9 +127,24 @@ mod tests {
     use std::env::current_dir;
 
     #[test]
+    fn percent_decode_spaces() {
+        assert_eq!(percent_decode("My%20Note.md"), "My Note.md");
+    }
+
+    #[test]
+    fn percent_decode_no_encoding() {
+        assert_eq!(percent_decode("plain.md"), "plain.md");
+    }
+
+    #[test]
+    fn percent_decode_invalid_sequence_preserved() {
+        assert_eq!(percent_decode("bad%GG"), "bad%GG");
+    }
+
+    #[test]
     fn normalize_path_removes_dot() {
         assert_eq!(
-            normalize_path(&PathBuf::from("/a/./b"), Some(&current_dir().unwrap())),
+            normalize_path(PathBuf::from("/a/./b"), Some(&current_dir().unwrap())),
             PathBuf::from("/a/b")
         );
     }
@@ -116,14 +152,14 @@ mod tests {
     #[test]
     fn normalize_path_resolves_double_dot() {
         let cwd = current_dir().unwrap();
-        assert_eq!(normalize_path(&cwd.join("../c"), None), cwd.parent().unwrap().join("c"));
+        assert_eq!(normalize_path(cwd.join("../c"), None), cwd.parent().unwrap().join("c"));
     }
 
     #[test]
     fn normalize_path_deep_traversal() {
         let cwd = current_dir().unwrap();
         assert_eq!(
-            normalize_path(&cwd.join("../../../d"), None),
+            normalize_path(cwd.join("../../../d"), None),
             cwd.parent().unwrap().parent().unwrap().parent().unwrap().join("d")
         );
     }
@@ -132,7 +168,7 @@ mod tests {
     fn normalize_path_traversal_beyond_root_stops_at_root() {
         let cwd = current_dir().unwrap();
         assert_eq!(
-            normalize_path(&cwd.join("../../../../../../b"), None),
+            normalize_path(cwd.join("../../../../../../b"), None),
             PathBuf::from("/b")
         );
     }
@@ -140,14 +176,14 @@ mod tests {
     #[test]
     fn normalize_path_starting_with_single_dot() {
         let cwd = current_dir().unwrap();
-        assert_eq!(normalize_path(&PathBuf::from("./b"), Some(&cwd.clone())), cwd.join("b"));
+        assert_eq!(normalize_path(PathBuf::from("./b"), Some(&cwd)), cwd.join("b"));
     }
 
     #[test]
     fn normalize_path_starting_with_double_dot() {
         let cwd = current_dir().unwrap();
         assert_eq!(
-            normalize_path(&PathBuf::from("../b"), Some(&cwd.clone())),
+            normalize_path(PathBuf::from("../b"), Some(&cwd)),
             cwd.parent().unwrap().join("b")
         );
     }
