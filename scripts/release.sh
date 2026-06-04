@@ -29,6 +29,9 @@ else
     cargo set-version "$VERSION"
 fi
 
+# Re-build workspace crates to update Cargo.lock.
+cargo build
+
 # Ensure changelog has section for new version
 if ! grep -q "^## v$VERSION" CHANGELOG.md; then
     echo "Updating changelog..."
