@@ -15,9 +15,9 @@
 <a href="https://rust-lang.org"><img alt="Built with Rust" src="https://img.shields.io/badge/Rust-Built_with_rust-grey?style=for-the-badge&logo=Rust&logoColor=D9E0EE&labelColor=302D41&color=%23B7410E"></a>
 <a href="https://github.com/epwalsh/obsidian.rs/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/crates/l/obsidian-rs-core?style=for-the-badge&logoColor=D9E0EE&labelColor=302D41"></a>
 </div>
+A collection of tools for working with [Obsidian](https://obsidian.md) vaults, written in Rust.
 <hr>
 
-A collection of tools for working with [Obsidian](https://obsidian.md) vaults, written in Rust.
 
 | Crate | Docs | Description |
 |---|---|---|
