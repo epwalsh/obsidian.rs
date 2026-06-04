@@ -9,8 +9,9 @@ use serde_json::{Value, json};
 use thiserror::Error;
 use tower_lsp::lsp_types::{
     CodeAction, CodeActionKind, Command, CompletionItem, CompletionItemKind, CompletionTextEdit, Diagnostic,
-    DiagnosticSeverity, DocumentLink, GotoDefinitionResponse, Hover, HoverContents, Location, MarkupContent,
-    MarkupKind, NumberOrString, Position, Range, TextDocumentContentChangeEvent, TextEdit, Url,
+    DiagnosticSeverity, DocumentChangeOperation, DocumentChanges, DocumentLink, GotoDefinitionResponse, Hover,
+    HoverContents, Location, MarkupContent, MarkupKind, NumberOrString, OneOf, OptionalVersionedTextDocumentIdentifier,
+    Position, Range, TextDocumentContentChangeEvent, TextDocumentEdit, TextEdit, Url, WorkspaceEdit,
 };
 
 use crate::uri::{UriError, path_to_uri, uri_to_path, vault_relative_path};
@@ -287,7 +288,13 @@ impl BackendState {
     fn sync_document(&mut self, uri: Url, version: i32, text: String) -> Result<DiagnosticsRequest, StateError> {
         let path = self.path_from_uri(&uri)?;
 
-        self.vault.load_note(Note::parse(&path, &text));
+        // Only shadow the on-disk note when the file actually exists. If the file doesn't exist
+        // yet, a preview plugin may have opened a temporary buffer (e.g. to show a diff for a
+        // "Create note" code action) without the user intending to create the file. Loading a
+        // non-existent note into vault memory would prematurely resolve broken-link diagnostics.
+        if path.exists() {
+            self.vault.load_note(Note::parse(&path, &text));
+        }
         self.open_documents.insert(
             path.clone(),
             OpenDocument {
@@ -639,7 +646,12 @@ impl StateSnapshot {
     fn build_vault(&self) -> Result<Vault, StateError> {
         let mut vault = Vault::open(&self.vault_path)?;
         for document in self.open_documents.values() {
-            vault.load_note(Note::parse(&document.path, &document.text));
+            // Only shadow on-disk notes. If the file doesn't exist yet the buffer was likely
+            // opened by a preview plugin for a "Create note" action; loading it would
+            // prematurely resolve broken-link diagnostics before the file is actually created.
+            if document.path.exists() {
+                vault.load_note(Note::parse(&document.path, &document.text));
+            }
         }
         Ok(vault)
     }
@@ -1035,11 +1047,32 @@ impl CodeActionRequest {
             .to_string();
 
         let new_path_str = new_path.to_string_lossy().into_owned();
+        let new_uri = path_to_uri(&new_path)?;
         let title = format!("Create note '{stem}'");
 
+        // `edit` is a TextDocumentEdit (no CreateFile) so preview plugins can show the diff
+        // without creating any file on disk. `command` does the actual work when the user applies.
         let action = CodeAction {
             title: title.clone(),
             kind: Some(CodeActionKind::QUICKFIX),
+            edit: Some(WorkspaceEdit {
+                document_changes: Some(DocumentChanges::Operations(vec![DocumentChangeOperation::Edit(
+                    TextDocumentEdit {
+                        text_document: OptionalVersionedTextDocumentIdentifier {
+                            uri: new_uri,
+                            version: None,
+                        },
+                        edits: vec![OneOf::Left(TextEdit {
+                            range: Range {
+                                start: Position { line: 0, character: 0 },
+                                end: Position { line: 0, character: 0 },
+                            },
+                            new_text: format!("---\nid: {stem}\n---\n"),
+                        })],
+                    },
+                )])),
+                ..Default::default()
+            }),
             command: Some(Command {
                 title,
                 command: "obsidian.createNote".to_string(),

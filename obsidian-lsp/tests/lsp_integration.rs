@@ -1228,12 +1228,26 @@ fn stdio_session_offers_create_note_code_action_for_broken_links() {
         .expect("should have a create action for 'missing-note'");
 
     assert_eq!(create_action["kind"], "quickfix");
-    // Action carries a command — no workspace edit.
-    assert!(
-        create_action["edit"].is_null(),
-        "edit should be absent (command-based action)"
-    );
+    // Action has a TextDocumentEdit for preview and a command for actual execution.
     assert_eq!(create_action["command"]["command"], "obsidian.createNote");
+    let text_edit_changes = create_action["edit"]["documentChanges"]
+        .as_array()
+        .expect("edit should have documentChanges for preview");
+    let preview_edit = text_edit_changes
+        .iter()
+        .find(|op| {
+            op["textDocument"]["uri"]
+                .as_str()
+                .map_or(false, |u| u.ends_with("missing-note.md"))
+        })
+        .expect("should have a TextDocumentEdit for the new file");
+    let preview_text = preview_edit["edits"][0]["newText"]
+        .as_str()
+        .expect("TextDocumentEdit should have newText");
+    assert!(
+        preview_text.contains("id: missing-note"),
+        "preview text should contain the note id"
+    );
 
     let wiki_path_arg = create_action["command"]["arguments"][0]
         .as_str()
