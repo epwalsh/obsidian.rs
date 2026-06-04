@@ -1171,3 +1171,351 @@ fn stdio_session_handles_completion_for_wiki_and_markdown_links() {
 
     shutdown_session(&mut harness);
 }
+
+#[test]
+fn stdio_session_offers_create_note_code_action_for_broken_links() {
+    let vault_dir = tempfile::tempdir().expect("should create temp dir");
+    fs::create_dir(vault_dir.path().join(".obsidian")).expect("should create .obsidian directory");
+
+    let source_path = vault_dir.path().join("source.md");
+    let source_text = "See [[missing-note]] and [Missing Markdown](missing-markdown.md).";
+    fs::write(&source_path, source_text).expect("should write source note");
+    let source_path = source_path.canonicalize().expect("source path should canonicalize");
+    let source_uri = Url::from_file_path(&source_path).expect("source path should convert to URI");
+
+    let vault_uri = Url::from_file_path(vault_dir.path()).expect("vault path should convert to URI");
+
+    let mut harness = LspHarness::spawn(vault_dir.path());
+    initialize_session(&mut harness, &vault_uri, vault_dir.path());
+
+    harness.send(notification(
+        "textDocument/didOpen",
+        Some(json!({
+            "textDocument": {
+                "uri": source_uri,
+                "languageId": "markdown",
+                "version": 1,
+                "text": source_text,
+            },
+        })),
+    ));
+    expect_diagnostics(&mut harness, &source_uri, Some(1));
+
+    // Code action for wiki link [[missing-note]]: cursor on "missing-note"
+    let (wiki_line, wiki_char) = position_for_substring(source_text, "[[missing-note]]");
+    harness.send(request(
+        2,
+        "textDocument/codeAction",
+        Some(json!({
+            "textDocument": { "uri": source_uri },
+            "range": {
+                "start": { "line": wiki_line, "character": wiki_char },
+                "end":   { "line": wiki_line, "character": wiki_char },
+            },
+            "context": { "diagnostics": [] },
+        })),
+    ));
+
+    let wiki_action_response = harness.expect_message("wiki code action response", |message| message["id"] == 2);
+    let actions = wiki_action_response["result"]
+        .as_array()
+        .expect("code action result should be an array");
+    assert!(!actions.is_empty(), "should have at least one code action");
+
+    let create_action = actions
+        .iter()
+        .find(|a| a["title"].as_str().map_or(false, |t| t.contains("missing-note")))
+        .expect("should have a create action for 'missing-note'");
+
+    assert_eq!(create_action["kind"], "quickfix");
+    // Action has a TextDocumentEdit for preview and a command for actual execution.
+    assert_eq!(create_action["command"]["command"], "obsidian.createNote");
+    let text_edit_changes = create_action["edit"]["documentChanges"]
+        .as_array()
+        .expect("edit should have documentChanges for preview");
+    let preview_edit = text_edit_changes
+        .iter()
+        .find(|op| {
+            op["textDocument"]["uri"]
+                .as_str()
+                .map_or(false, |u| u.ends_with("missing-note.md"))
+        })
+        .expect("should have a TextDocumentEdit for the new file");
+    let preview_text = preview_edit["edits"][0]["newText"]
+        .as_str()
+        .expect("TextDocumentEdit should have newText");
+    assert!(
+        preview_text.contains("id: missing-note"),
+        "preview text should contain the note id"
+    );
+
+    let wiki_path_arg = create_action["command"]["arguments"][0]
+        .as_str()
+        .expect("command should have a path argument");
+    assert!(
+        wiki_path_arg.ends_with("missing-note.md"),
+        "command argument should point to missing-note.md, got: {wiki_path_arg}"
+    );
+
+    // The new file should be a sibling of source.md (same directory)
+    let source_parent = source_path.parent().expect("source should have a parent");
+    let expected_new_path = source_parent.join("missing-note.md");
+    assert_eq!(wiki_path_arg, expected_new_path.to_string_lossy().as_ref());
+
+    // Execute the command — server creates the file and refreshes diagnostics.
+    harness.send(request(
+        3,
+        "workspace/executeCommand",
+        Some(json!({ "command": "obsidian.createNote", "arguments": [wiki_path_arg] })),
+    ));
+    harness.expect_message("executeCommand response", |message| message["id"] == 3);
+    // Diagnostics are refreshed after the note is created (still version 1 of the document).
+    expect_diagnostics(&mut harness, &source_uri, Some(1));
+
+    let new_note_content =
+        fs::read_to_string(&expected_new_path).expect("new note should exist on disk after executeCommand");
+    assert!(
+        new_note_content.contains("id: missing-note"),
+        "new note should have frontmatter id"
+    );
+
+    // Code action for markdown link [Missing Markdown](missing-markdown.md)
+    // Re-open the original broken-link document to trigger a fresh action.
+    harness.send(notification(
+        "textDocument/didChange",
+        Some(json!({
+            "textDocument": { "uri": source_uri, "version": 2 },
+            "contentChanges": [{ "text": source_text }],
+        })),
+    ));
+    expect_diagnostics(&mut harness, &source_uri, Some(2));
+
+    let (md_line, md_char) = position_for_substring(source_text, "[Missing Markdown](missing-markdown.md)");
+    harness.send(request(
+        4,
+        "textDocument/codeAction",
+        Some(json!({
+            "textDocument": { "uri": source_uri },
+            "range": {
+                "start": { "line": md_line, "character": md_char },
+                "end":   { "line": md_line, "character": md_char },
+            },
+            "context": { "diagnostics": [] },
+        })),
+    ));
+
+    let md_action_response = harness.expect_message("markdown code action response", |message| message["id"] == 4);
+    let md_actions = md_action_response["result"]
+        .as_array()
+        .expect("markdown code action result should be an array");
+    assert!(
+        !md_actions.is_empty(),
+        "should have a code action for the markdown link"
+    );
+
+    let md_path_arg = md_actions
+        .iter()
+        .find_map(|a| {
+            let p = a["command"]["arguments"][0].as_str()?;
+            p.ends_with("missing-markdown.md").then_some(p)
+        })
+        .expect("should have a createNote command for 'missing-markdown.md'");
+
+    let vault_canonical = vault_dir.path().canonicalize().expect("vault path should canonicalize");
+    let expected_md_path = vault_canonical.join("missing-markdown.md");
+    assert_eq!(
+        md_path_arg,
+        expected_md_path.to_string_lossy().as_ref(),
+        "markdown link should create relative to vault root"
+    );
+
+    // No code action for an existing note.
+    let existing_path = vault_dir.path().join("existing.md");
+    fs::write(&existing_path, "---\nid: existing\n---\n").expect("should write existing note");
+
+    let source_with_existing = "[[existing]]";
+    harness.send(notification(
+        "textDocument/didChange",
+        Some(json!({
+            "textDocument": { "uri": source_uri, "version": 3 },
+            "contentChanges": [{ "text": source_with_existing }],
+        })),
+    ));
+    expect_diagnostics(&mut harness, &source_uri, Some(3));
+
+    harness.send(request(
+        6,
+        "textDocument/codeAction",
+        Some(json!({
+            "textDocument": { "uri": source_uri },
+            "range": {
+                "start": { "line": 0, "character": 3 },
+                "end":   { "line": 0, "character": 3 },
+            },
+            "context": { "diagnostics": [] },
+        })),
+    ));
+
+    let existing_response = harness.expect_message("existing note code action response", |message| message["id"] == 6);
+    assert!(
+        existing_response["result"].is_null(),
+        "should return null for an already-resolved link"
+    );
+
+    shutdown_session(&mut harness);
+}
+
+#[test]
+fn stdio_session_rejects_create_note_command_for_outside_or_existing_paths() {
+    let vault_dir = tempfile::tempdir().expect("should create temp dir");
+    fs::create_dir(vault_dir.path().join(".obsidian")).expect("should create .obsidian directory");
+
+    let vault_uri = Url::from_file_path(vault_dir.path()).expect("vault path should convert to URI");
+
+    let mut harness = LspHarness::spawn(vault_dir.path());
+    initialize_session(&mut harness, &vault_uri, vault_dir.path());
+
+    let outside_dir = tempfile::tempdir().expect("should create outside temp dir");
+    let outside_path = outside_dir.path().join("outside.md");
+    harness.send(request(
+        2,
+        "workspace/executeCommand",
+        Some(json!({
+            "command": "obsidian.createNote",
+            "arguments": [outside_path.to_string_lossy().as_ref()],
+        })),
+    ));
+    harness.expect_message("outside executeCommand response", |message| message["id"] == 2);
+    assert!(
+        !outside_path.exists(),
+        "executeCommand should not create files outside the vault"
+    );
+
+    let existing_path = vault_dir.path().join("existing.md");
+    fs::write(&existing_path, "original content").expect("should write existing note");
+    harness.send(request(
+        3,
+        "workspace/executeCommand",
+        Some(json!({
+            "command": "obsidian.createNote",
+            "arguments": [existing_path.to_string_lossy().as_ref()],
+        })),
+    ));
+    harness.expect_message("existing executeCommand response", |message| message["id"] == 3);
+    assert_eq!(
+        fs::read_to_string(&existing_path).expect("existing note should still be readable"),
+        "original content",
+        "executeCommand should not overwrite existing notes"
+    );
+
+    shutdown_session(&mut harness);
+}
+
+#[test]
+fn stdio_session_handles_completion_for_tags() {
+    let vault_dir = tempfile::tempdir().expect("should create temp dir");
+    fs::create_dir(vault_dir.path().join(".obsidian")).expect("should create .obsidian directory");
+
+    // Note with frontmatter tags and an inline tag.
+    let tagged_path = vault_dir.path().join("tagged.md");
+    fs::write(
+        &tagged_path,
+        "---\nid: tagged\ntags: [project, work]\n---\n\nSome body with #rust tag.\n",
+    )
+    .expect("should write tagged note");
+
+    let vault_path = vault_dir.path().canonicalize().expect("vault path should canonicalize");
+    let vault_uri = Url::from_file_path(&vault_path).expect("vault path should convert to file URI");
+
+    let mut harness = LspHarness::spawn(vault_dir.path());
+    initialize_session(&mut harness, &vault_uri, &vault_path);
+
+    // Open a source document with a partial tag "#pro" to test prefix filtering.
+    let source_path = vault_dir.path().join("source.md");
+    let partial_tag_text = "See #pro";
+    fs::write(&source_path, partial_tag_text).expect("should write source note");
+    let source_path = source_path.canonicalize().expect("source path should canonicalize");
+    let source_uri = Url::from_file_path(&source_path).expect("source path should convert to file URI");
+
+    harness.send(notification(
+        "textDocument/didOpen",
+        Some(json!({
+            "textDocument": {
+                "uri": source_uri,
+                "languageId": "markdown",
+                "version": 1,
+                "text": partial_tag_text,
+            }
+        })),
+    ));
+    expect_diagnostics(&mut harness, &source_uri, Some(1));
+
+    // Request completion at end of "See #pro" (line 0, character 8).
+    harness.send(request(
+        2,
+        "textDocument/completion",
+        Some(json!({
+            "textDocument": { "uri": source_uri },
+            "position": { "line": 0, "character": 8 },
+        })),
+    ));
+    let partial_completion = harness.expect_message("partial tag completion response", |message| message["id"] == 2);
+    let labels = completion_labels(&partial_completion);
+    assert!(labels.contains(&"#project"), "should include #project for prefix 'pro'");
+    assert!(!labels.contains(&"#work"), "#work should not match prefix 'pro'");
+    assert!(!labels.contains(&"#rust"), "#rust should not match prefix 'pro'");
+
+    // Update the document to just "#" — empty query should return all vault tags.
+    let empty_query_text = "#";
+    harness.send(notification(
+        "textDocument/didChange",
+        Some(json!({
+            "textDocument": { "uri": source_uri, "version": 2 },
+            "contentChanges": [{ "text": empty_query_text }],
+        })),
+    ));
+    expect_diagnostics(&mut harness, &source_uri, Some(2));
+
+    harness.send(request(
+        3,
+        "textDocument/completion",
+        Some(json!({
+            "textDocument": { "uri": source_uri },
+            "position": { "line": 0, "character": 1 },
+        })),
+    ));
+    let all_tags_completion = harness.expect_message("all tags completion response", |message| message["id"] == 3);
+    let labels = completion_labels(&all_tags_completion);
+    assert!(
+        labels.contains(&"#project"),
+        "should include #project when query is empty"
+    );
+    assert!(labels.contains(&"#work"), "should include #work when query is empty");
+    assert!(labels.contains(&"#rust"), "should include #rust when query is empty");
+
+    // Ensure plain text without # returns null (no tag context).
+    harness.send(notification(
+        "textDocument/didChange",
+        Some(json!({
+            "textDocument": { "uri": source_uri, "version": 3 },
+            "contentChanges": [{ "text": "plain text" }],
+        })),
+    ));
+    expect_diagnostics(&mut harness, &source_uri, Some(3));
+
+    harness.send(request(
+        4,
+        "textDocument/completion",
+        Some(json!({
+            "textDocument": { "uri": source_uri },
+            "position": { "line": 0, "character": 10 },
+        })),
+    ));
+    let plain_completion = harness.expect_message("plain text no tag completion", |message| message["id"] == 4);
+    assert!(
+        plain_completion["result"].is_null(),
+        "plain text should return null, not tag completions"
+    );
+
+    shutdown_session(&mut harness);
+}

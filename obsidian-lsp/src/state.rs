@@ -8,12 +8,19 @@ use obsidian_core::{
 use serde_json::{Value, json};
 use thiserror::Error;
 use tower_lsp::lsp_types::{
-    CompletionItem, CompletionItemKind, CompletionTextEdit, Diagnostic, DiagnosticSeverity, DocumentLink,
-    GotoDefinitionResponse, Hover, HoverContents, Location, MarkupContent, MarkupKind, NumberOrString, Position, Range,
-    TextDocumentContentChangeEvent, TextEdit, Url,
+    CodeAction, CodeActionKind, Command, CompletionItem, CompletionItemKind, CompletionTextEdit, Diagnostic,
+    DiagnosticSeverity, DocumentChangeOperation, DocumentChanges, DocumentLink, GotoDefinitionResponse, Hover,
+    HoverContents, Location, MarkupContent, MarkupKind, NumberOrString, OneOf, OptionalVersionedTextDocumentIdentifier,
+    Position, Range, TextDocumentContentChangeEvent, TextDocumentEdit, TextEdit, Url, WorkspaceEdit,
 };
 
 use crate::uri::{UriError, path_to_uri, uri_to_path, vault_relative_path};
+
+#[derive(Clone, Debug, Default)]
+pub struct Config {
+    pub vault_path_override: Option<PathBuf>,
+    pub diagnostics_ignore: Vec<String>,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct OpenDocument {
@@ -41,6 +48,7 @@ pub struct DiagnosticsBatch {
 struct StateSnapshot {
     vault_path: PathBuf,
     open_documents: HashMap<PathBuf, OpenDocument>,
+    diagnostics_ignore: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -80,6 +88,13 @@ pub struct CompletionRequest {
     position: Position,
 }
 
+#[derive(Debug)]
+pub struct CodeActionRequest {
+    snapshot: StateSnapshot,
+    path: PathBuf,
+    position: Position,
+}
+
 enum LinkContext {
     Wiki {
         note_query: String,
@@ -89,6 +104,10 @@ enum LinkContext {
     Markdown {
         query: String,
         link_start_char: usize,
+    },
+    Tag {
+        query: String,
+        tag_start_char: usize,
     },
 }
 
@@ -136,6 +155,7 @@ pub struct BackendState {
     open_documents: HashMap<PathBuf, OpenDocument>,
     published_diagnostics: HashMap<PathBuf, Url>,
     diagnostics_revision: u64,
+    config: Config,
 }
 
 impl BackendState {
@@ -145,7 +165,27 @@ impl BackendState {
             open_documents: HashMap::new(),
             published_diagnostics: HashMap::new(),
             diagnostics_revision: 0,
+            config: Config::default(),
         }
+    }
+
+    pub fn apply_config(&mut self, config: Config) -> Result<(), StateError> {
+        if let Some(new_path) = &config.vault_path_override
+            && new_path != self.vault.path()
+        {
+            self.vault = Vault::open(new_path)?;
+            self.open_documents.clear();
+            self.published_diagnostics.clear();
+            self.diagnostics_revision += 1;
+        }
+        self.config = config;
+        Ok(())
+    }
+
+    pub fn global_diagnostics_request(&mut self) -> Option<DiagnosticsRequest> {
+        let doc = self.open_documents.values().next()?;
+        let (path, uri, version) = (doc.path.clone(), doc.uri.clone(), Some(doc.version));
+        Some(self.prepare_diagnostics_request(path, uri, version))
     }
 
     pub fn vault_path(&self) -> &Path {
@@ -239,10 +279,26 @@ impl BackendState {
         })
     }
 
+    pub fn code_action_request(&self, uri: Url, position: Position) -> Result<CodeActionRequest, StateError> {
+        let path = self.path_from_uri(&uri)?;
+
+        Ok(CodeActionRequest {
+            snapshot: self.snapshot(),
+            path,
+            position,
+        })
+    }
+
     fn sync_document(&mut self, uri: Url, version: i32, text: String) -> Result<DiagnosticsRequest, StateError> {
         let path = self.path_from_uri(&uri)?;
 
-        self.vault.load_note(Note::parse(&path, &text));
+        // Only shadow the on-disk note when the file actually exists. If the file doesn't exist
+        // yet, a preview plugin may have opened a temporary buffer (e.g. to show a diff for a
+        // "Create note" code action) without the user intending to create the file. Loading a
+        // non-existent note into vault memory would prematurely resolve broken-link diagnostics.
+        if path.exists() {
+            self.vault.load_note(Note::parse(&path, &text));
+        }
         self.open_documents.insert(
             path.clone(),
             OpenDocument {
@@ -271,6 +327,7 @@ impl BackendState {
         StateSnapshot {
             vault_path: self.vault.path().to_path_buf(),
             open_documents: self.open_documents.clone(),
+            diagnostics_ignore: self.config.diagnostics_ignore.clone(),
         }
     }
 
@@ -284,7 +341,11 @@ impl BackendState {
 impl DiagnosticsRequest {
     pub fn compute(self) -> Result<DiagnosticsBatch, StateError> {
         let vault = self.snapshot.build_vault()?;
-        let report = vault.check(|_| true);
+        let ignore_set = build_ignore_set(&self.snapshot.diagnostics_ignore);
+        let report = vault.check(|path| {
+            let rel = path.strip_prefix(vault.path()).unwrap_or(path);
+            !ignore_set.is_match(rel)
+        });
         let mut diagnostics_by_path = build_diagnostics_by_path(&self.snapshot, &report)?;
 
         let mut paths_to_publish = BTreeSet::new();
@@ -538,6 +599,16 @@ impl CompletionRequest {
             None => return Ok(None),
         };
 
+        if let LinkContext::Tag { query, tag_start_char } = &context {
+            let prefix_range = Range::new(
+                Position::new(position.line, *tag_start_char as u32),
+                Position::new(position.line, char_pos as u32),
+            );
+            let vault = snapshot.build_vault()?;
+            let all_tags = vault.list_tags().map_err(StateError::Vault)?;
+            return Ok(Some(tag_completions(&all_tags, query, prefix_range)));
+        }
+
         let (note_query, heading_query, link_start_char) = match &context {
             LinkContext::Wiki {
                 note_query,
@@ -545,6 +616,7 @@ impl CompletionRequest {
                 link_start_char,
             } => (note_query.as_str(), heading_query.as_deref(), *link_start_char),
             LinkContext::Markdown { query, link_start_char } => (query.as_str(), None, *link_start_char),
+            LinkContext::Tag { .. } => unreachable!(),
         };
 
         let close_len = closing_bracket_len(text_after_cursor, &context);
@@ -577,6 +649,7 @@ impl CompletionRequest {
                 .flat_map(|note| match &context {
                     LinkContext::Wiki { .. } => wiki_completions_for_note(note, prefix_range),
                     LinkContext::Markdown { .. } => markdown_completions_for_note(note, vault.path(), prefix_range),
+                    LinkContext::Tag { .. } => unreachable!(),
                 })
                 .collect()
         };
@@ -589,7 +662,12 @@ impl StateSnapshot {
     fn build_vault(&self) -> Result<Vault, StateError> {
         let mut vault = Vault::open(&self.vault_path)?;
         for document in self.open_documents.values() {
-            vault.load_note(Note::parse(&document.path, &document.text));
+            // Only shadow on-disk notes. If the file doesn't exist yet the buffer was likely
+            // opened by a preview plugin for a "Create note" action; loading it would
+            // prematurely resolve broken-link diagnostics before the file is actually created.
+            if document.path.exists() {
+                vault.load_note(Note::parse(&document.path, &document.text));
+            }
         }
         Ok(vault)
     }
@@ -954,6 +1032,112 @@ fn resolve_local_file_target_path(source_path: &Path, url: &str, vault_path: &Pa
     local_markdown_candidates(source_path, &path, vault_path)
         .into_iter()
         .find(|candidate| candidate.exists())
+}
+
+impl CodeActionRequest {
+    pub fn compute(self) -> Result<Option<Vec<CodeAction>>, StateError> {
+        let source_note = self.snapshot.note_for_path(&self.path)?;
+        let Some(located_link) = find_link_at_position(&source_note, self.position) else {
+            return Ok(None);
+        };
+
+        let vault = self.snapshot.build_vault()?;
+        let notes = self.snapshot.notes(&vault);
+        let targets = resolve_link_targets(&self.path, &located_link.link, &notes, vault.path());
+        if !targets.is_empty() {
+            return Ok(None);
+        }
+
+        let Some(new_path) = compute_new_note_path(&self.path, vault.path(), &located_link.link) else {
+            return Ok(None);
+        };
+
+        if new_path.exists() {
+            return Ok(None);
+        }
+
+        let stem = new_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("note")
+            .to_string();
+
+        let new_path_str = new_path.to_string_lossy().into_owned();
+        let new_uri = path_to_uri(&new_path)?;
+        let title = format!("Create note '{stem}'");
+
+        // `edit` is a TextDocumentEdit (no CreateFile) so preview plugins can show the diff
+        // without creating any file on disk. `command` does the actual work when the user applies.
+        let action = CodeAction {
+            title: title.clone(),
+            kind: Some(CodeActionKind::QUICKFIX),
+            edit: Some(WorkspaceEdit {
+                document_changes: Some(DocumentChanges::Operations(vec![DocumentChangeOperation::Edit(
+                    TextDocumentEdit {
+                        text_document: OptionalVersionedTextDocumentIdentifier {
+                            uri: new_uri,
+                            version: None,
+                        },
+                        edits: vec![OneOf::Left(TextEdit {
+                            range: Range {
+                                start: Position { line: 0, character: 0 },
+                                end: Position { line: 0, character: 0 },
+                            },
+                            new_text: format!("---\nid: {stem}\n---\n"),
+                        })],
+                    },
+                )])),
+                ..Default::default()
+            }),
+            command: Some(Command {
+                title,
+                command: "obsidian.createNote".to_string(),
+                arguments: Some(vec![json!(new_path_str)]),
+            }),
+            ..Default::default()
+        };
+
+        Ok(Some(vec![action]))
+    }
+}
+
+fn compute_new_note_path(source_path: &Path, vault_path: &Path, link: &Link) -> Option<PathBuf> {
+    match link {
+        Link::Wiki { target, .. } => {
+            if target.is_empty() {
+                return None;
+            }
+            let source_dir = source_path.parent().unwrap_or(source_path);
+            normalize_new_note_path(vault_path, source_dir.join(format!("{target}.md")))
+        }
+        Link::Markdown { url, .. } => {
+            let url_path = markdown_url_path(url)?;
+            if !url_path.ends_with(".md") {
+                return None;
+            }
+            normalize_new_note_path(vault_path, vault_path.join(&url_path))
+        }
+        Link::Embed { .. } => None,
+    }
+}
+
+pub(crate) fn normalize_new_note_path(vault_path: &Path, candidate: impl AsRef<Path>) -> Option<PathBuf> {
+    let vault_path = obsidian_core::common::normalize_path(vault_path, None);
+    let path = obsidian_core::common::normalize_path(candidate, Some(&vault_path));
+    if !path.starts_with(&vault_path) || path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+        return None;
+    }
+    Some(path)
+}
+
+fn build_ignore_set(patterns: &[String]) -> globset::GlobSet {
+    let mut builder = globset::GlobSetBuilder::new();
+    for pattern in patterns {
+        if let Ok(glob) = globset::GlobBuilder::new(pattern).case_insensitive(false).build() {
+            builder.add(glob);
+        }
+    }
+    builder.build().unwrap_or_default()
 }
 
 fn resolve_link_targets<'a>(source_path: &Path, link: &Link, notes: &'a [Note], vault_path: &Path) -> Vec<&'a Note> {
@@ -1406,6 +1590,29 @@ fn detect_link_context(line_prefix: &str) -> Option<LinkContext> {
         break;
     }
 
+    // Check for tag context: `#` at line start or after whitespace, followed by valid tag chars.
+    for i in (0..bytes.len()).rev() {
+        if bytes[i] != b'#' {
+            continue;
+        }
+        let preceded_ok = i == 0 || bytes[i - 1].is_ascii_whitespace();
+        if !preceded_ok {
+            continue;
+        }
+        let after_hash = &line_prefix[i + 1..];
+        let first_ok = after_hash.is_empty() || after_hash.as_bytes()[0].is_ascii_alphabetic();
+        let rest_ok = after_hash
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '/');
+        if first_ok && rest_ok {
+            return Some(LinkContext::Tag {
+                query: after_hash.to_string(),
+                tag_start_char: i,
+            });
+        }
+        break;
+    }
+
     None
 }
 
@@ -1526,6 +1733,26 @@ fn anchor_completions(text: &str, heading_query: &str, prefix_range: Range) -> V
         .collect()
 }
 
+fn tag_completions(tags: &[String], query: &str, prefix_range: Range) -> Vec<CompletionItem> {
+    let query_lower = query.to_lowercase();
+    tags.iter()
+        .filter(|tag| query.is_empty() || tag.starts_with(&query_lower))
+        .map(|tag| {
+            let new_text = format!("#{tag}");
+            CompletionItem {
+                label: new_text.clone(),
+                kind: Some(CompletionItemKind::KEYWORD),
+                sort_text: Some(new_text.clone()),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                    range: prefix_range,
+                    new_text,
+                })),
+                ..Default::default()
+            }
+        })
+        .collect()
+}
+
 fn closing_bracket_len(text_after_cursor: &str, context: &LinkContext) -> usize {
     match context {
         LinkContext::Wiki { .. } => {
@@ -1547,6 +1774,7 @@ fn closing_bracket_len(text_after_cursor: &str, context: &LinkContext) -> usize 
             }
             1
         }
+        LinkContext::Tag { .. } => 0,
     }
 }
 
@@ -1994,6 +2222,44 @@ mod tests {
         };
         assert!(contents.value.contains("Target Note"));
         assert!(contents.value.contains("notes/target.md"));
+    }
+
+    #[test]
+    fn code_action_request_rejects_create_note_paths_outside_the_vault() {
+        let vault_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
+
+        let source_path = vault_dir.path().join("source.md");
+        let source_text = "See [[../outside]] and [Outside](../outside.md).";
+        fs::write(&source_path, source_text).unwrap();
+        let source_path = source_path.canonicalize().unwrap();
+        let source_uri = path_to_uri(&source_path).unwrap();
+
+        let vault = Vault::open(vault_dir.path()).unwrap();
+        let mut state = BackendState::new(vault);
+        state
+            .open_document(source_uri.clone(), 1, source_text.to_string())
+            .unwrap();
+
+        let wiki_actions = state
+            .code_action_request(
+                source_uri.clone(),
+                position_for_substring(source_text, "[[../outside]]"),
+            )
+            .unwrap()
+            .compute()
+            .unwrap();
+        assert!(wiki_actions.is_none());
+
+        let markdown_actions = state
+            .code_action_request(
+                source_uri,
+                position_for_substring(source_text, "[Outside](../outside.md)"),
+            )
+            .unwrap()
+            .compute()
+            .unwrap();
+        assert!(markdown_actions.is_none());
     }
 
     #[test]
