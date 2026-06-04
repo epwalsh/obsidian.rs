@@ -1092,21 +1092,26 @@ fn compute_new_note_path(source_path: &Path, vault_path: &Path, link: &Link) -> 
                 return None;
             }
             let source_dir = source_path.parent().unwrap_or(source_path);
-            Some(source_dir.join(format!("{target}.md")))
+            normalize_new_note_path(vault_path, source_dir.join(format!("{target}.md")))
         }
         Link::Markdown { url, .. } => {
             let url_path = markdown_url_path(url)?;
             if !url_path.ends_with(".md") {
                 return None;
             }
-            let new_path = vault_path.join(&url_path);
-            if !new_path.starts_with(vault_path) {
-                return None;
-            }
-            Some(new_path)
+            normalize_new_note_path(vault_path, vault_path.join(&url_path))
         }
         Link::Embed { .. } => None,
     }
+}
+
+pub(crate) fn normalize_new_note_path(vault_path: &Path, candidate: impl AsRef<Path>) -> Option<PathBuf> {
+    let vault_path = obsidian_core::common::normalize_path(vault_path, None);
+    let path = obsidian_core::common::normalize_path(candidate, Some(&vault_path));
+    if !path.starts_with(&vault_path) || path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+        return None;
+    }
+    Some(path)
 }
 
 fn build_ignore_set(patterns: &[String]) -> globset::GlobSet {
@@ -2157,6 +2162,44 @@ mod tests {
         };
         assert!(contents.value.contains("Target Note"));
         assert!(contents.value.contains("notes/target.md"));
+    }
+
+    #[test]
+    fn code_action_request_rejects_create_note_paths_outside_the_vault() {
+        let vault_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
+
+        let source_path = vault_dir.path().join("source.md");
+        let source_text = "See [[../outside]] and [Outside](../outside.md).";
+        fs::write(&source_path, source_text).unwrap();
+        let source_path = source_path.canonicalize().unwrap();
+        let source_uri = path_to_uri(&source_path).unwrap();
+
+        let vault = Vault::open(vault_dir.path()).unwrap();
+        let mut state = BackendState::new(vault);
+        state
+            .open_document(source_uri.clone(), 1, source_text.to_string())
+            .unwrap();
+
+        let wiki_actions = state
+            .code_action_request(
+                source_uri.clone(),
+                position_for_substring(source_text, "[[../outside]]"),
+            )
+            .unwrap()
+            .compute()
+            .unwrap();
+        assert!(wiki_actions.is_none());
+
+        let markdown_actions = state
+            .code_action_request(
+                source_uri,
+                position_for_substring(source_text, "[Outside](../outside.md)"),
+            )
+            .unwrap()
+            .compute()
+            .unwrap();
+        assert!(markdown_actions.is_none());
     }
 
     #[test]

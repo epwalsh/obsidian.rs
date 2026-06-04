@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+
+- Guarded the LSP `obsidian.createNote` command and create-note quick fix so note creation stays inside the active vault and never overwrites existing files.
+
 ## v0.3.0 - 2026-06-03
 
 ### Added

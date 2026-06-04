@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,7 +19,7 @@ use tower_lsp::{Client, LanguageServer};
 
 use crate::state::{
     BackendState, CodeActionRequest, CompletionRequest, Config, DiagnosticUpdate, DiagnosticsRequest,
-    DocumentLinksRequest, NavigationRequest, ResolveDocumentLinkRequest, StateError,
+    DocumentLinksRequest, NavigationRequest, ResolveDocumentLinkRequest, StateError, normalize_new_note_path,
 };
 
 pub struct Backend {
@@ -381,14 +382,23 @@ impl LanguageServer for Backend {
             }
         };
 
-        let path = std::path::PathBuf::from(&path_str);
+        let path = {
+            let state = self.state.read().await;
+            normalize_new_note_path(state.vault_path(), &path_str)
+        };
+        let Some(path) = path else {
+            self.log_error(format!("obsidian.createNote: invalid note path: {path_str}"))
+                .await;
+            return Ok(None);
+        };
         let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("note").to_string();
 
         match tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::write(&path, format!("---\nid: {stem}\n---\n"))
+            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)?;
+            file.write_all(format!("---\nid: {stem}\n---\n").as_bytes())
         })
         .await
         {

@@ -1364,3 +1364,49 @@ fn stdio_session_offers_create_note_code_action_for_broken_links() {
 
     shutdown_session(&mut harness);
 }
+
+#[test]
+fn stdio_session_rejects_create_note_command_for_outside_or_existing_paths() {
+    let vault_dir = tempfile::tempdir().expect("should create temp dir");
+    fs::create_dir(vault_dir.path().join(".obsidian")).expect("should create .obsidian directory");
+
+    let vault_uri = Url::from_file_path(vault_dir.path()).expect("vault path should convert to URI");
+
+    let mut harness = LspHarness::spawn(vault_dir.path());
+    initialize_session(&mut harness, &vault_uri, vault_dir.path());
+
+    let outside_dir = tempfile::tempdir().expect("should create outside temp dir");
+    let outside_path = outside_dir.path().join("outside.md");
+    harness.send(request(
+        2,
+        "workspace/executeCommand",
+        Some(json!({
+            "command": "obsidian.createNote",
+            "arguments": [outside_path.to_string_lossy().as_ref()],
+        })),
+    ));
+    harness.expect_message("outside executeCommand response", |message| message["id"] == 2);
+    assert!(
+        !outside_path.exists(),
+        "executeCommand should not create files outside the vault"
+    );
+
+    let existing_path = vault_dir.path().join("existing.md");
+    fs::write(&existing_path, "original content").expect("should write existing note");
+    harness.send(request(
+        3,
+        "workspace/executeCommand",
+        Some(json!({
+            "command": "obsidian.createNote",
+            "arguments": [existing_path.to_string_lossy().as_ref()],
+        })),
+    ));
+    harness.expect_message("existing executeCommand response", |message| message["id"] == 3);
+    assert_eq!(
+        fs::read_to_string(&existing_path).expect("existing note should still be readable"),
+        "original content",
+        "executeCommand should not overwrite existing notes"
+    );
+
+    shutdown_session(&mut harness);
+}

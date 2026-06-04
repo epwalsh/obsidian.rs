@@ -122,5 +122,6 @@ Current functionality:
 - go-to definition for linked notes, including heading anchors and nested sub-anchors
 - diagnostics clearing and refresh on open/change/close events
 - completion for wiki links (`[[`) and markdown links (`[`) with per-note variants: bare ID, bare title, alias override, and bare alias forms
+- quick fixes for broken note links that create missing notes inside the active vault without overwriting existing files
 
 Advanced editor features such as rename are not implemented yet.
