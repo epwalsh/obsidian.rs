@@ -1513,7 +1513,7 @@ fn merge_dry_run_json_format() {
     let s = String::from_utf8(output).unwrap();
     let v: serde_json::Value = serde_json::from_str(&s).unwrap();
     assert!(v["dest_path"].as_str().unwrap().contains("combined.md"));
-    assert_eq!(v["dest_is_new"].as_bool().unwrap(), true);
+    assert!(v["dest_is_new"].as_bool().unwrap());
     assert!(v["sources"].as_array().unwrap().len() == 2);
     let updated = v["updated_notes"].as_array().unwrap();
     assert_eq!(updated.len(), 1);
