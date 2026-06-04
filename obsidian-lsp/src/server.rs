@@ -1,26 +1,30 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
+use serde_json::Value;
 use tokio::sync::{Mutex, RwLock};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
-    CompletionOptions, CompletionParams, CompletionResponse, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DocumentLink, DocumentLinkOptions, DocumentLinkParams, GotoDefinitionParams,
-    GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
-    InitializedParams, Location, MessageType, OneOf, ReferenceParams, ServerCapabilities, ServerInfo,
-    TextDocumentSyncCapability, TextDocumentSyncKind, WorkspaceFoldersServerCapabilities, WorkspaceServerCapabilities,
+    CompletionOptions, CompletionParams, CompletionResponse, ConfigurationItem, DidChangeConfigurationParams,
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentLink,
+    DocumentLinkOptions, DocumentLinkParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams,
+    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location, MessageType, OneOf,
+    ReferenceParams, ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind,
+    WorkspaceFoldersServerCapabilities, WorkspaceServerCapabilities,
 };
 use tower_lsp::{Client, LanguageServer};
 
 use crate::state::{
-    BackendState, CompletionRequest, DiagnosticUpdate, DiagnosticsRequest, DocumentLinksRequest, NavigationRequest,
-    ResolveDocumentLinkRequest, StateError,
+    BackendState, CompletionRequest, Config, DiagnosticUpdate, DiagnosticsRequest, DocumentLinksRequest,
+    NavigationRequest, ResolveDocumentLinkRequest, StateError,
 };
 
 pub struct Backend {
     client: Client,
     state: Arc<RwLock<BackendState>>,
     diagnostics_lock: Arc<Mutex<()>>,
+    supports_pull_config: AtomicBool,
 }
 
 impl Backend {
@@ -29,6 +33,39 @@ impl Backend {
             client,
             state: Arc::new(RwLock::new(BackendState::new(vault))),
             diagnostics_lock: Arc::new(Mutex::new(())),
+            supports_pull_config: AtomicBool::new(false),
+        }
+    }
+
+    async fn pull_and_apply_config(&self) {
+        let result = self
+            .client
+            .configuration(vec![ConfigurationItem {
+                scope_uri: None,
+                section: Some("obsidian".to_string()),
+            }])
+            .await;
+
+        let values = match result {
+            Ok(v) => v,
+            Err(error) => {
+                self.log_error(format!("failed to fetch configuration: {error}")).await;
+                return;
+            }
+        };
+
+        let config = parse_config(values.first().unwrap_or(&Value::Null));
+        let request = {
+            let mut state = self.state.write().await;
+            if let Err(error) = state.apply_config(config) {
+                self.log_error(format!("failed to apply configuration: {error}")).await;
+                return;
+            }
+            state.global_diagnostics_request()
+        };
+
+        if let Some(request) = request {
+            self.handle_diagnostics(Ok(request)).await;
         }
     }
 
@@ -123,7 +160,15 @@ impl Backend {
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
-    async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
+    async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+        let supports_config = params
+            .capabilities
+            .workspace
+            .as_ref()
+            .and_then(|w| w.configuration)
+            .unwrap_or(false);
+        self.supports_pull_config.store(supports_config, Ordering::Relaxed);
+
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
@@ -155,6 +200,10 @@ impl LanguageServer for Backend {
     }
 
     async fn initialized(&self, _: InitializedParams) {
+        if self.supports_pull_config.load(Ordering::Relaxed) {
+            self.pull_and_apply_config().await;
+        }
+
         let vault_path = self.vault_path().await;
         self.client
             .log_message(
@@ -162,6 +211,12 @@ impl LanguageServer for Backend {
                 format!("obsidian-lsp ready for vault {}", vault_path.display()),
             )
             .await;
+    }
+
+    async fn did_change_configuration(&self, _: DidChangeConfigurationParams) {
+        if self.supports_pull_config.load(Ordering::Relaxed) {
+            self.pull_and_apply_config().await;
+        }
     }
 
     async fn shutdown(&self) -> Result<()> {
@@ -293,5 +348,25 @@ impl LanguageServer for Backend {
             })
             .await
             .flatten())
+    }
+}
+
+fn parse_config(value: &Value) -> Config {
+    let vault_path_override = value
+        .get("vault")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from);
+
+    let diagnostics_ignore = value
+        .get("diagnostics")
+        .and_then(|d| d.get("ignore"))
+        .and_then(Value::as_array)
+        .map(|arr| arr.iter().filter_map(Value::as_str).map(String::from).collect())
+        .unwrap_or_default();
+
+    Config {
+        vault_path_override,
+        diagnostics_ignore,
     }
 }

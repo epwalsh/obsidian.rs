@@ -15,6 +15,12 @@ use tower_lsp::lsp_types::{
 
 use crate::uri::{UriError, path_to_uri, uri_to_path, vault_relative_path};
 
+#[derive(Clone, Debug, Default)]
+pub struct Config {
+    pub vault_path_override: Option<PathBuf>,
+    pub diagnostics_ignore: Vec<String>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct OpenDocument {
     pub uri: Url,
@@ -41,6 +47,7 @@ pub struct DiagnosticsBatch {
 struct StateSnapshot {
     vault_path: PathBuf,
     open_documents: HashMap<PathBuf, OpenDocument>,
+    diagnostics_ignore: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -136,6 +143,7 @@ pub struct BackendState {
     open_documents: HashMap<PathBuf, OpenDocument>,
     published_diagnostics: HashMap<PathBuf, Url>,
     diagnostics_revision: u64,
+    config: Config,
 }
 
 impl BackendState {
@@ -145,7 +153,27 @@ impl BackendState {
             open_documents: HashMap::new(),
             published_diagnostics: HashMap::new(),
             diagnostics_revision: 0,
+            config: Config::default(),
         }
+    }
+
+    pub fn apply_config(&mut self, config: Config) -> Result<(), StateError> {
+        if let Some(new_path) = &config.vault_path_override
+            && new_path != self.vault.path()
+        {
+            self.vault = Vault::open(new_path)?;
+            self.open_documents.clear();
+            self.published_diagnostics.clear();
+            self.diagnostics_revision += 1;
+        }
+        self.config = config;
+        Ok(())
+    }
+
+    pub fn global_diagnostics_request(&mut self) -> Option<DiagnosticsRequest> {
+        let doc = self.open_documents.values().next()?;
+        let (path, uri, version) = (doc.path.clone(), doc.uri.clone(), Some(doc.version));
+        Some(self.prepare_diagnostics_request(path, uri, version))
     }
 
     pub fn vault_path(&self) -> &Path {
@@ -271,6 +299,7 @@ impl BackendState {
         StateSnapshot {
             vault_path: self.vault.path().to_path_buf(),
             open_documents: self.open_documents.clone(),
+            diagnostics_ignore: self.config.diagnostics_ignore.clone(),
         }
     }
 
@@ -284,7 +313,11 @@ impl BackendState {
 impl DiagnosticsRequest {
     pub fn compute(self) -> Result<DiagnosticsBatch, StateError> {
         let vault = self.snapshot.build_vault()?;
-        let report = vault.check(|_| true);
+        let ignore_set = build_ignore_set(&self.snapshot.diagnostics_ignore);
+        let report = vault.check(|path| {
+            let rel = path.strip_prefix(vault.path()).unwrap_or(path);
+            !ignore_set.is_match(rel)
+        });
         let mut diagnostics_by_path = build_diagnostics_by_path(&self.snapshot, &report)?;
 
         let mut paths_to_publish = BTreeSet::new();
@@ -954,6 +987,16 @@ fn resolve_local_file_target_path(source_path: &Path, url: &str, vault_path: &Pa
     local_markdown_candidates(source_path, &path, vault_path)
         .into_iter()
         .find(|candidate| candidate.exists())
+}
+
+fn build_ignore_set(patterns: &[String]) -> globset::GlobSet {
+    let mut builder = globset::GlobSetBuilder::new();
+    for pattern in patterns {
+        if let Ok(glob) = globset::GlobBuilder::new(pattern).case_insensitive(false).build() {
+            builder.add(glob);
+        }
+    }
+    builder.build().unwrap_or_default()
 }
 
 fn resolve_link_targets<'a>(source_path: &Path, link: &Link, notes: &'a [Note], vault_path: &Path) -> Vec<&'a Note> {
