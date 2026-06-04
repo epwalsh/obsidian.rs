@@ -1,12 +1,3 @@
-# obsidian.rs
-
-[![crates.io (core)](https://img.shields.io/crates/v/obsidian-rs-core?label=obsidian-rs-core)](https://crates.io/crates/obsidian-rs-core)
-[![crates.io (cli)](https://img.shields.io/crates/v/obsidian-rs-cli?label=obsidian-rs-cli)](https://crates.io/crates/obsidian-rs-cli)
-[![crates.io (mcp)](https://img.shields.io/crates/v/obsidian-rs-mcp?label=obsidian-rs-mcp)](https://crates.io/crates/obsidian-rs-mcp)
-[![crates.io (lsp)](https://img.shields.io/crates/v/obsidian-rs-lsp?label=obsidian-rs-lsp)](https://crates.io/crates/obsidian-rs-lsp)
-[![docs.rs](https://img.shields.io/docsrs/obsidian-rs-core)](https://docs.rs/obsidian-rs-core)
-[![License](https://img.shields.io/crates/l/obsidian-rs-core)](LICENSE)
-
 <h1 align="center">obsidian.rs</h1>
 <div><h4 align="center"><a href="#cli">CLI</a> · <a href="#mcp-server">MCP Server</a> · <a href="#lsp-server">LSP Server</a></h4></div>
 <div align="center">
@@ -15,8 +6,9 @@
 <a href="https://rust-lang.org"><img alt="Built with Rust" src="https://img.shields.io/badge/Rust-Built_with_rust-grey?style=for-the-badge&logo=Rust&logoColor=D9E0EE&labelColor=302D41&color=%23B7410E"></a>
 <a href="https://github.com/epwalsh/obsidian.rs/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/crates/l/obsidian-rs-core?style=for-the-badge&logoColor=D9E0EE&labelColor=302D41"></a>
 </div>
-A collection of tools for working with [Obsidian](https://obsidian.md) vaults, written in Rust.
 <hr>
+
+A collection of tools for working with [Obsidian](https://obsidian.md) vaults, written in Rust.
 
 
 | Crate | Docs | Description |
