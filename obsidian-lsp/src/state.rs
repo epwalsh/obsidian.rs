@@ -8,9 +8,9 @@ use obsidian_core::{
 use serde_json::{Value, json};
 use thiserror::Error;
 use tower_lsp::lsp_types::{
-    CompletionItem, CompletionItemKind, CompletionTextEdit, Diagnostic, DiagnosticSeverity, DocumentLink,
-    GotoDefinitionResponse, Hover, HoverContents, Location, MarkupContent, MarkupKind, NumberOrString, Position, Range,
-    TextDocumentContentChangeEvent, TextEdit, Url,
+    CodeAction, CodeActionKind, Command, CompletionItem, CompletionItemKind, CompletionTextEdit, Diagnostic,
+    DiagnosticSeverity, DocumentLink, GotoDefinitionResponse, Hover, HoverContents, Location, MarkupContent,
+    MarkupKind, NumberOrString, Position, Range, TextDocumentContentChangeEvent, TextEdit, Url,
 };
 
 use crate::uri::{UriError, path_to_uri, uri_to_path, vault_relative_path};
@@ -82,6 +82,13 @@ pub struct NavigationRequest {
 
 #[derive(Debug)]
 pub struct CompletionRequest {
+    snapshot: StateSnapshot,
+    path: PathBuf,
+    position: Position,
+}
+
+#[derive(Debug)]
+pub struct CodeActionRequest {
     snapshot: StateSnapshot,
     path: PathBuf,
     position: Position,
@@ -261,6 +268,16 @@ impl BackendState {
         let path = self.path_from_uri(&uri)?;
 
         Ok(CompletionRequest {
+            snapshot: self.snapshot(),
+            path,
+            position,
+        })
+    }
+
+    pub fn code_action_request(&self, uri: Url, position: Position) -> Result<CodeActionRequest, StateError> {
+        let path = self.path_from_uri(&uri)?;
+
+        Ok(CodeActionRequest {
             snapshot: self.snapshot(),
             path,
             position,
@@ -987,6 +1004,76 @@ fn resolve_local_file_target_path(source_path: &Path, url: &str, vault_path: &Pa
     local_markdown_candidates(source_path, &path, vault_path)
         .into_iter()
         .find(|candidate| candidate.exists())
+}
+
+impl CodeActionRequest {
+    pub fn compute(self) -> Result<Option<Vec<CodeAction>>, StateError> {
+        let source_note = self.snapshot.note_for_path(&self.path)?;
+        let Some(located_link) = find_link_at_position(&source_note, self.position) else {
+            return Ok(None);
+        };
+
+        let vault = self.snapshot.build_vault()?;
+        let notes = self.snapshot.notes(&vault);
+        let targets = resolve_link_targets(&self.path, &located_link.link, &notes, vault.path());
+        if !targets.is_empty() {
+            return Ok(None);
+        }
+
+        let Some(new_path) = compute_new_note_path(&self.path, vault.path(), &located_link.link) else {
+            return Ok(None);
+        };
+
+        if new_path.exists() {
+            return Ok(None);
+        }
+
+        let stem = new_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("note")
+            .to_string();
+
+        let new_path_str = new_path.to_string_lossy().into_owned();
+        let title = format!("Create note '{stem}'");
+
+        let action = CodeAction {
+            title: title.clone(),
+            kind: Some(CodeActionKind::QUICKFIX),
+            command: Some(Command {
+                title,
+                command: "obsidian.createNote".to_string(),
+                arguments: Some(vec![json!(new_path_str)]),
+            }),
+            ..Default::default()
+        };
+
+        Ok(Some(vec![action]))
+    }
+}
+
+fn compute_new_note_path(source_path: &Path, vault_path: &Path, link: &Link) -> Option<PathBuf> {
+    match link {
+        Link::Wiki { target, .. } => {
+            if target.is_empty() {
+                return None;
+            }
+            let source_dir = source_path.parent().unwrap_or(source_path);
+            Some(source_dir.join(format!("{target}.md")))
+        }
+        Link::Markdown { url, .. } => {
+            let url_path = markdown_url_path(url)?;
+            if !url_path.ends_with(".md") {
+                return None;
+            }
+            let new_path = vault_path.join(&url_path);
+            if !new_path.starts_with(vault_path) {
+                return None;
+            }
+            Some(new_path)
+        }
+        Link::Embed { .. } => None,
+    }
 }
 
 fn build_ignore_set(patterns: &[String]) -> globset::GlobSet {

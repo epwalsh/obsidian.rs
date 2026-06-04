@@ -6,9 +6,10 @@ use serde_json::Value;
 use tokio::sync::{Mutex, RwLock};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
-    CompletionOptions, CompletionParams, CompletionResponse, ConfigurationItem, DidChangeConfigurationParams,
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentLink,
-    DocumentLinkOptions, DocumentLinkParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams,
+    CodeActionOrCommand, CodeActionParams, CodeActionProviderCapability, CodeActionResponse, CompletionOptions,
+    CompletionParams, CompletionResponse, ConfigurationItem, DidChangeConfigurationParams, DidChangeTextDocumentParams,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentLink, DocumentLinkOptions, DocumentLinkParams,
+    ExecuteCommandOptions, ExecuteCommandParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams,
     HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location, MessageType, OneOf,
     ReferenceParams, ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind,
     WorkspaceFoldersServerCapabilities, WorkspaceServerCapabilities,
@@ -16,8 +17,8 @@ use tower_lsp::lsp_types::{
 use tower_lsp::{Client, LanguageServer};
 
 use crate::state::{
-    BackendState, CompletionRequest, Config, DiagnosticUpdate, DiagnosticsRequest, DocumentLinksRequest,
-    NavigationRequest, ResolveDocumentLinkRequest, StateError,
+    BackendState, CodeActionRequest, CompletionRequest, Config, DiagnosticUpdate, DiagnosticsRequest,
+    DocumentLinksRequest, NavigationRequest, ResolveDocumentLinkRequest, StateError,
 };
 
 pub struct Backend {
@@ -183,6 +184,11 @@ impl LanguageServer for Backend {
                 }),
                 references_provider: Some(OneOf::Left(true)),
                 definition_provider: Some(OneOf::Left(true)),
+                code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+                execute_command_provider: Some(ExecuteCommandOptions {
+                    commands: vec!["obsidian.createNote".to_string()],
+                    work_done_progress_options: Default::default(),
+                }),
                 workspace: Some(WorkspaceServerCapabilities {
                     workspace_folders: Some(WorkspaceFoldersServerCapabilities {
                         supported: Some(false),
@@ -348,6 +354,66 @@ impl LanguageServer for Backend {
             })
             .await
             .flatten())
+    }
+
+    async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
+        let request = {
+            let state = self.state.read().await;
+            state.code_action_request(params.text_document.uri, params.range.start)
+        };
+        Ok(self
+            .compute_request(request, "codeAction", |request: CodeActionRequest| request.compute())
+            .await
+            .flatten()
+            .map(|actions| actions.into_iter().map(CodeActionOrCommand::CodeAction).collect()))
+    }
+
+    async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<serde_json::Value>> {
+        if params.command != "obsidian.createNote" {
+            return Ok(None);
+        }
+
+        let path_str = match params.arguments.first().and_then(|v| v.as_str()) {
+            Some(p) => p.to_string(),
+            None => {
+                self.log_error("obsidian.createNote: missing path argument").await;
+                return Ok(None);
+            }
+        };
+
+        let path = std::path::PathBuf::from(&path_str);
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("note").to_string();
+
+        match tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&path, format!("---\nid: {stem}\n---\n"))
+        })
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                self.log_error(format!("obsidian.createNote: failed to write file: {e}"))
+                    .await;
+                return Ok(None);
+            }
+            Err(e) => {
+                self.log_error(format!("obsidian.createNote task failed: {e}")).await;
+                return Ok(None);
+            }
+        }
+
+        // Proactively refresh diagnostics so the broken-link warning clears immediately.
+        let request = {
+            let mut state = self.state.write().await;
+            state.global_diagnostics_request()
+        };
+        if let Some(request) = request {
+            self.handle_diagnostics(Ok(request)).await;
+        }
+
+        Ok(None)
     }
 }
 
