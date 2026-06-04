@@ -7,6 +7,16 @@
 [![docs.rs](https://img.shields.io/docsrs/obsidian-rs-core)](https://docs.rs/obsidian-rs-core)
 [![License](https://img.shields.io/crates/l/obsidian-rs-core)](LICENSE)
 
+<h1 align="center">obsidian.rs</h1>
+<div><h4 align="center"><a href="#cli">CLI</a> · <a href="#mcp-server">MCP Server</a> · <a href="#lsp-server">LSP Server</a>
+<div align="center">
+<a href="https://github.com/epwalsh/obsidian.rs/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/epwalsh/obsidian.rs?style=for-the-badge&logo=starship&logoColor=D9E0EE&labelColor=302D41&&color=d9b3ff&include_prerelease&sort=semver" /></a>
+<a href="https://github.com/epwalsh/obsidian.rs/pulse"><img alt="Last commit" src="https://img.shields.io/github/last-commit/epwalsh/obsidian.rs?style=for-the-badge&logo=github&logoColor=D9E0EE&labelColor=302D41&color=9fdf9f"/></a>
+<a href="https://rust-lang.org"><img alt="Built with Rust" src="https://img.shields.io/badge/Rust-Built_with_rust-grey?style=for-the-badge&logo=Rust&labelColor=%23B7410E"></a>
+<a href="https://github.com/epwalsh/obsidian.rs/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/crates/l/obsidian-rs-core?style=for-the-badge"></a>
+</div>
+<hr>
+
 A collection of tools for working with [Obsidian](https://obsidian.md) vaults, written in Rust.
 
 | Crate | Description |
