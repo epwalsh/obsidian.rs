@@ -1,20 +1,22 @@
-# obsidian.rs
-
-[![crates.io (core)](https://img.shields.io/crates/v/obsidian-rs-core?label=obsidian-rs-core)](https://crates.io/crates/obsidian-rs-core)
-[![crates.io (cli)](https://img.shields.io/crates/v/obsidian-rs-cli?label=obsidian-rs-cli)](https://crates.io/crates/obsidian-rs-cli)
-[![crates.io (mcp)](https://img.shields.io/crates/v/obsidian-rs-mcp?label=obsidian-rs-mcp)](https://crates.io/crates/obsidian-rs-mcp)
-[![crates.io (lsp)](https://img.shields.io/crates/v/obsidian-rs-lsp?label=obsidian-rs-lsp)](https://crates.io/crates/obsidian-rs-lsp)
-[![docs.rs](https://img.shields.io/docsrs/obsidian-rs-core)](https://docs.rs/obsidian-rs-core)
-[![License](https://img.shields.io/crates/l/obsidian-rs-core)](LICENSE)
+<h1 align="center">obsidian.rs</h1>
+<div><h4 align="center"><a href="#cli">CLI</a> · <a href="#mcp-server">MCP Server</a> · <a href="#lsp-server">LSP Server</a></h4></div>
+<div align="center">
+<a href="https://github.com/epwalsh/obsidian.rs/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/epwalsh/obsidian.rs?style=for-the-badge&logo=starship&logoColor=D9E0EE&labelColor=302D41&&color=d9b3ff&include_prerelease&sort=semver" /></a>
+<a href="https://github.com/epwalsh/obsidian.rs/pulse"><img alt="Last commit" src="https://img.shields.io/github/last-commit/epwalsh/obsidian.rs?style=for-the-badge&logo=github&logoColor=D9E0EE&labelColor=302D41&color=9fdf9f"/></a>
+<a href="https://rust-lang.org"><img alt="Built with Rust" src="https://img.shields.io/badge/Rust-Built_with_rust-grey?style=for-the-badge&logo=Rust&logoColor=D9E0EE&labelColor=302D41&color=%23B7410E"></a>
+<a href="https://github.com/epwalsh/obsidian.rs/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/crates/l/obsidian-rs-core?style=for-the-badge&logoColor=D9E0EE&labelColor=302D41"></a>
+</div>
+<hr>
 
 A collection of tools for working with [Obsidian](https://obsidian.md) vaults, written in Rust.
 
-| Crate | Description |
-|---|---|
-| [`obsidian-rs-core`](https://crates.io/crates/obsidian-rs-core) | Core library — the foundation the other tools build on |
-| [`obsidian-rs-cli`](https://crates.io/crates/obsidian-rs-cli) | Command-line tool for querying and managing vaults |
-| [`obsidian-rs-mcp`](https://crates.io/crates/obsidian-rs-mcp) | MCP server so agents can interact with your vault |
-| [`obsidian-rs-lsp`](https://crates.io/crates/obsidian-rs-lsp) | A language server for vault editing in your IDE |
+
+| Crate | Docs | Description |
+|---|---|---|
+| [`obsidian-rs-core`](https://crates.io/crates/obsidian-rs-core) | [docs.rs/obsidian-rs-core](https://docs.rs/obsidian-rs-core) | Core library — the foundation the other tools build on |
+| [`obsidian-rs-cli`](https://crates.io/crates/obsidian-rs-cli) | [docs.rs/obsidian-rs-cli](https://docs.rs/obsidian-rs-cli) | Command-line tool for querying and managing vaults |
+| [`obsidian-rs-mcp`](https://crates.io/crates/obsidian-rs-mcp) | [docs.rs/obsidian-rs-mcp](https://docs.rs/obsidian-rs-mcp) | MCP server so agents can interact with your vault |
+| [`obsidian-rs-lsp`](https://crates.io/crates/obsidian-rs-lsp) | [docs.rs/obsidian-rs-lsp](https://docs.rs/obsidian-rs-lsp) | A language server for vault editing in your IDE |
 
 ## CLI
 
