@@ -55,24 +55,37 @@ echo "$release_notes"
 echo "========================================================================================="
 echo ""
 read -rp "Does this look good? [Y/n] " prompt
-if ! [[ $prompt == "y" || $prompt == "Y" || $prompt == "yes" || $prompt == "Yes" ]]; then echo "Canceled"
+if ! [[ $prompt == "y" || $prompt == "Y" || $prompt == "yes" || $prompt == "Yes" ]]; then
+    echo "Canceled"
     git checkout CHANGELOG.md
     exit 1
 fi
 
-# Commit changes
-echo "Committing changes..."
-git add -A
-git commit -m "(chore) prepare for release $VERSION" || true && git push
+# Commit changes if needed
+if [[ -z $(git status --porcelain) ]]; then
+    echo "No changes to commit"
+else
+    git status
+
+    read -rp "Commit changes and continue? [Y/n] " prompt
+    if ! [[ $prompt == "y" || $prompt == "Y" || $prompt == "yes" || $prompt == "Yes" ]]; then
+        echo "Canceled"
+        exit 1
+    fi
+
+    git add -A
+    git commit -m "(chore) prepare for release $VERSION" || true && git push
+fi
 
 # Publish all workspace crates
 echo "Publishing all workspace crates..."
 cargo publish --workspace
 
 # Create git tag
-echo "Creating new git tag v$VERSION"
+echo "Creating new git tag v$VERSION..."
 git tag "v$VERSION" -m "Release $VERSION"
 git push --tags
 
 # Publish gh release from tag
+echo "Creating GitHub release v$VERSION..."
 gh release create "v$VERSION" --verify-tag --notes "$release_notes"
