@@ -65,7 +65,9 @@ fi
 if [[ -z $(git status --porcelain) ]]; then
     echo "No changes to commit"
 else
-    git status
+    echo "Changes ready to commit:"
+    git status --porcelain
+    echo ""
 
     read -rp "Commit changes and continue? [Y/n] " prompt
     if ! [[ $prompt == "y" || $prompt == "Y" || $prompt == "yes" || $prompt == "Yes" ]]; then
