@@ -2742,11 +2742,26 @@ fn matching_diagnostics(diagnostics: &[Diagnostic], code: &str, range: Range) ->
 }
 
 fn diagnostic_applies_to_request(diagnostic: &Diagnostic, range: Range, position: Position) -> bool {
-    ranges_intersect(diagnostic.range, range) || position_in_or_at_range(position, &diagnostic.range)
+    range_applies_to_request(diagnostic.range, range, position)
 }
 
 fn diagnostic_applies_to_request_range(diagnostic_range: Range, range: Range, position: Position) -> bool {
-    ranges_intersect(diagnostic_range, range) || position_in_or_at_range(position, &diagnostic_range)
+    range_applies_to_request(diagnostic_range, range, position)
+}
+
+fn range_applies_to_request(target: Range, request: Range, position: Position) -> bool {
+    ranges_intersect(target, request)
+        || position_in_or_at_range(position, &target)
+        || range_lines_intersect(target, request)
+        || position_on_range_line(position, &target)
+}
+
+fn range_lines_intersect(left: Range, right: Range) -> bool {
+    left.start.line <= right.end.line && right.start.line <= left.end.line
+}
+
+fn position_on_range_line(position: Position, range: &Range) -> bool {
+    position.line >= range.start.line && position.line <= range.end.line
 }
 
 fn markdown_link_text(source_path: &Path, link: &Link, target: &Note) -> String {
@@ -4441,6 +4456,23 @@ mod tests {
             .unwrap();
         let assign_id = action_by_title(&id_actions_without_client_diagnostics, "Assign unique note ID 'source'");
         assert_eq!(assign_id.diagnostics.as_ref().unwrap().len(), 1);
+        let id_line_actions_without_client_diagnostics = state
+            .code_action_request(
+                source_uri.clone(),
+                Range::new(
+                    Position::new(duplicate_id.range.start.line, 0),
+                    Position::new(duplicate_id.range.start.line, 0),
+                ),
+                Vec::new(),
+            )
+            .unwrap()
+            .compute()
+            .unwrap()
+            .unwrap();
+        action_by_title(
+            &id_line_actions_without_client_diagnostics,
+            "Assign unique note ID 'source'",
+        );
 
         let alias_actions = state
             .code_action_request(source_uri.clone(), duplicate_alias.range, diagnostics)
@@ -4469,6 +4501,23 @@ mod tests {
             "Change duplicate alias 'shared' to 'shared-2'",
         );
         assert_eq!(change_alias.diagnostics.as_ref().unwrap().len(), 1);
+        let alias_line_actions_without_client_diagnostics = state
+            .code_action_request(
+                source_uri.clone(),
+                Range::new(
+                    Position::new(duplicate_alias.range.start.line, 0),
+                    Position::new(duplicate_alias.range.start.line, 0),
+                ),
+                Vec::new(),
+            )
+            .unwrap()
+            .compute()
+            .unwrap()
+            .unwrap();
+        action_by_title(
+            &alias_line_actions_without_client_diagnostics,
+            "Change duplicate alias 'shared' to 'shared-2'",
+        );
     }
 
     #[test]

@@ -780,6 +780,38 @@ fn stdio_session_reports_health_diagnostics_and_hover_metadata() {
                 == 1
     }));
 
+    let duplicate_alias_line = duplicate_alias_diagnostic["range"]["start"]["line"]
+        .as_u64()
+        .expect("duplicate alias diagnostic line should be a number");
+    harness.send(request(
+        23,
+        "textDocument/codeAction",
+        Some(json!({
+            "textDocument": { "uri": duplicate_a_uri },
+            "range": {
+                "start": { "line": duplicate_alias_line, "character": 0 },
+                "end": { "line": duplicate_alias_line, "character": 0 },
+            },
+            "context": { "diagnostics": [] },
+        })),
+    ));
+    let duplicate_alias_line_actions_without_client_diagnostics = harness.expect_message(
+        "duplicate alias line code action response without client diagnostics",
+        |message| message["id"] == 23,
+    );
+    let duplicate_alias_line_actions_without_client_diagnostics =
+        duplicate_alias_line_actions_without_client_diagnostics["result"]
+            .as_array()
+            .expect("duplicate alias line code action response should be an array");
+    assert!(
+        duplicate_alias_line_actions_without_client_diagnostics
+            .iter()
+            .any(|action| {
+                action["title"] == "Change duplicate alias 'shared-alias' to 'shared-alias-2'"
+                    && action["kind"] == "quickfix"
+            })
+    );
+
     let duplicate_b_diagnostics = expect_diagnostics(&mut harness, &duplicate_b_uri, None);
     assert_eq!(
         diagnostic_codes(&duplicate_b_diagnostics),
