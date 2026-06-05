@@ -3,7 +3,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use obsidian_core::{
-    BrokenLink, DuplicateAlias, DuplicateId, InlineLocation, Link, LocatedLink, Note, NoteError, Vault, VaultError,
+    BrokenLink, DuplicateAlias, DuplicateId, InlineLocation, Link, LocatedLink, Location as CoreLocation, Note,
+    NoteError, Vault, VaultError,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -133,12 +134,34 @@ struct NavigationContext {
     notes: Vec<Note>,
     source_note: Note,
     selected_link: Option<LocatedLink>,
+    selected_tag: Option<TagSelection>,
 }
 
 struct RenameTarget {
     note: Note,
     range: Range,
     placeholder: String,
+}
+
+#[derive(Clone, Debug)]
+struct TagSelection {
+    tag: String,
+    range: Range,
+    rename_range: Range,
+    placeholder: String,
+}
+
+#[derive(Clone, Debug)]
+struct TagOccurrence {
+    path: PathBuf,
+    range: Range,
+    inline: bool,
+}
+
+#[derive(Clone, Debug)]
+struct FrontmatterTagRange {
+    tag: String,
+    range: Range,
 }
 
 #[derive(Debug)]
@@ -172,6 +195,8 @@ pub enum StateError {
     InvalidDocumentLinkData(String),
     #[error("invalid rename target '{new_name}' for note '{path}'")]
     InvalidRenameTarget { path: PathBuf, new_name: String },
+    #[error("invalid tag rename target '{0}'")]
+    InvalidTagRenameTarget(String),
 }
 
 pub struct BackendState {
@@ -492,6 +517,17 @@ impl ResolveDocumentLinkRequest {
 impl NavigationRequest {
     pub fn compute_hover(self) -> Result<Option<Hover>, StateError> {
         let context = self.build_context()?;
+        if let Some(selected_tag) = context.selected_tag.as_ref() {
+            let occurrences = tag_occurrences(&context.snapshot, &selected_tag.tag)?;
+            return Ok(Some(Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: render_tag_hover(&selected_tag.tag, occurrences.len()),
+                }),
+                range: Some(selected_tag.range),
+            }));
+        }
+
         let Some(selected_link) = context.selected_link.as_ref() else {
             return Ok(None);
         };
@@ -518,6 +554,10 @@ impl NavigationRequest {
 
     pub fn compute_references(self) -> Result<Option<Vec<Location>>, StateError> {
         let context = self.build_context()?;
+        if let Some(selected_tag) = context.selected_tag.as_ref() {
+            return Ok(Some(tag_locations(&context.snapshot, &selected_tag.tag)?));
+        }
+
         let target_notes = if context.selected_link.is_some() {
             let matching = context.resolve_selected_link_targets();
             if matching.len() != 1 {
@@ -554,6 +594,17 @@ impl NavigationRequest {
 
     pub fn compute_definition(self) -> Result<Option<GotoDefinitionResponse>, StateError> {
         let context = self.build_context()?;
+        if let Some(selected_tag) = context.selected_tag.as_ref() {
+            let mut locations = tag_locations(&context.snapshot, &selected_tag.tag)?;
+            return Ok(if locations.is_empty() {
+                None
+            } else if locations.len() == 1 {
+                Some(GotoDefinitionResponse::Scalar(locations.remove(0)))
+            } else {
+                Some(GotoDefinitionResponse::Array(locations))
+            });
+        }
+
         let matching_notes = context.resolve_selected_link_targets();
 
         if matching_notes.is_empty() {
@@ -605,6 +656,11 @@ impl NavigationRequest {
         let notes = self.snapshot.notes(&vault);
         let source_note = self.snapshot.note_for_path(&self.path)?;
         let selected_link = find_link_at_position(&source_note, self.position).cloned();
+        let selected_tag = if selected_link.is_none() {
+            find_tag_at_position(&self.snapshot, &source_note, self.position)?
+        } else {
+            None
+        };
 
         Ok(NavigationContext {
             snapshot: self.snapshot,
@@ -612,6 +668,7 @@ impl NavigationRequest {
             notes,
             source_note,
             selected_link,
+            selected_tag,
         })
     }
 }
@@ -623,6 +680,128 @@ impl NavigationContext {
             .map(|link| resolve_link_targets(&self.source_note.path, &link.link, &self.notes, self.vault.path()))
             .unwrap_or_default()
     }
+}
+
+fn find_tag_at_position(
+    snapshot: &StateSnapshot,
+    note: &Note,
+    position: Position,
+) -> Result<Option<TagSelection>, StateError> {
+    for tag in &note.tags {
+        if let CoreLocation::Inline(location) = &tag.location
+            && position_in_location(position, location)
+        {
+            let range = location_to_range(location);
+            return Ok(Some(TagSelection {
+                tag: tag.tag.clone(),
+                rename_range: range,
+                range,
+                placeholder: format!("#{}", tag.tag),
+            }));
+        }
+    }
+
+    let frontmatter_tags = note
+        .tags
+        .iter()
+        .filter_map(|tag| match tag.location {
+            CoreLocation::Frontmatter => Some(tag.tag.as_str()),
+            CoreLocation::Inline(_) => None,
+        })
+        .collect::<Vec<_>>();
+    if frontmatter_tags.is_empty() {
+        return Ok(None);
+    }
+
+    let text = snapshot.text_for_path(&note.path)?;
+    for tag_range in frontmatter_tag_ranges(&text) {
+        if !frontmatter_tags
+            .iter()
+            .any(|tag| tag.eq_ignore_ascii_case(&tag_range.tag))
+        {
+            continue;
+        }
+        if position_in_range(position, &tag_range.range) {
+            return Ok(Some(TagSelection {
+                tag: tag_range.tag.clone(),
+                range: tag_range.range,
+                rename_range: tag_range.range,
+                placeholder: tag_range.tag,
+            }));
+        }
+    }
+
+    Ok(None)
+}
+
+fn tag_locations(snapshot: &StateSnapshot, tag: &str) -> Result<Vec<Location>, StateError> {
+    let mut locations = tag_occurrences(snapshot, tag)?
+        .into_iter()
+        .map(|occurrence| {
+            Ok(Location {
+                uri: snapshot.uri_for_path(&occurrence.path)?,
+                range: occurrence.range,
+            })
+        })
+        .collect::<Result<Vec<_>, StateError>>()?;
+
+    locations.sort_by(|left, right| {
+        left.uri
+            .cmp(&right.uri)
+            .then(left.range.start.line.cmp(&right.range.start.line))
+            .then(left.range.start.character.cmp(&right.range.start.character))
+    });
+    locations.dedup_by(|left, right| left.uri == right.uri && left.range == right.range);
+    Ok(locations)
+}
+
+fn tag_occurrences(snapshot: &StateSnapshot, tag: &str) -> Result<Vec<TagOccurrence>, StateError> {
+    let vault = snapshot.build_vault()?;
+    let results = vault.find_tags(&[tag.to_string()])?;
+    let mut occurrences = Vec::new();
+    let mut frontmatter_cache: HashMap<PathBuf, Vec<FrontmatterTagRange>> = HashMap::new();
+    let mut used_frontmatter_ranges: HashMap<PathBuf, Vec<Range>> = HashMap::new();
+
+    for (note, tags) in results {
+        for tag in tags {
+            match tag.location {
+                CoreLocation::Inline(location) => occurrences.push(TagOccurrence {
+                    path: note.path.clone(),
+                    range: location_to_range(&location),
+                    inline: true,
+                }),
+                CoreLocation::Frontmatter => {
+                    let ranges = match frontmatter_cache.get(&note.path) {
+                        Some(ranges) => ranges,
+                        None => {
+                            let text = snapshot.text_for_path(&note.path)?;
+                            frontmatter_cache.insert(note.path.clone(), frontmatter_tag_ranges(&text));
+                            frontmatter_cache.get(&note.path).unwrap()
+                        }
+                    };
+                    let used = used_frontmatter_ranges.entry(note.path.clone()).or_default();
+                    if let Some(tag_range) = ranges.iter().find(|tag_range| {
+                        tag_range.tag.eq_ignore_ascii_case(&tag.tag) && !used.contains(&tag_range.range)
+                    }) {
+                        used.push(tag_range.range);
+                        occurrences.push(TagOccurrence {
+                            path: note.path.clone(),
+                            range: tag_range.range,
+                            inline: false,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    occurrences.sort_by(|left, right| {
+        left.path
+            .cmp(&right.path)
+            .then(left.range.start.line.cmp(&right.range.start.line))
+            .then(left.range.start.character.cmp(&right.range.start.character))
+    });
+    Ok(occurrences)
 }
 
 impl CompletionRequest {
@@ -957,6 +1136,146 @@ fn find_frontmatter_key_value_range(text: &str, key: &str, expected_value: &str)
     None
 }
 
+fn frontmatter_tag_ranges(text: &str) -> Vec<FrontmatterTagRange> {
+    let mut lines = text.lines();
+    if lines.next() != Some("---") {
+        return Vec::new();
+    }
+
+    let mut ranges = Vec::new();
+    let mut in_tags_block = false;
+
+    for (line_index, line) in text.lines().enumerate().skip(1) {
+        if line == "---" || line == "..." {
+            break;
+        }
+
+        let trimmed = line.trim_start();
+        let leading_bytes = line.len() - trimmed.len();
+
+        if in_tags_block {
+            if trimmed.is_empty() {
+                continue;
+            }
+            if is_frontmatter_key_line(trimmed) && !trimmed.starts_with('-') {
+                in_tags_block = false;
+            } else if let Some(after_dash) = trimmed.strip_prefix('-') {
+                let segment_start = leading_bytes + 1;
+                ranges.extend(scan_frontmatter_tag_tokens(line, line_index, segment_start, after_dash));
+                continue;
+            } else {
+                continue;
+            }
+        }
+
+        let Some(after_key) = trimmed.strip_prefix("tags:") else {
+            continue;
+        };
+        let segment_start = leading_bytes + "tags:".len();
+        let after_key_trimmed = after_key.trim_start();
+        if after_key_trimmed.is_empty() {
+            in_tags_block = true;
+        } else if after_key_trimmed.starts_with('[') {
+            ranges.extend(scan_frontmatter_tag_tokens(line, line_index, segment_start, after_key));
+        }
+    }
+
+    ranges
+}
+
+fn scan_frontmatter_tag_tokens(
+    line: &str,
+    line_index: usize,
+    segment_start: usize,
+    segment: &str,
+) -> Vec<FrontmatterTagRange> {
+    let mut ranges = Vec::new();
+    let mut index = 0;
+
+    while index < segment.len() {
+        let Some((offset, ch)) = segment[index..]
+            .char_indices()
+            .find(|(_, ch)| !ch.is_whitespace() && !matches!(ch, '[' | ']' | ','))
+        else {
+            break;
+        };
+        index += offset;
+
+        let token_start = index;
+        let (value_start, value_end, token_end) = if ch == '\'' || ch == '"' {
+            let quote = ch;
+            let content_start = token_start + quote.len_utf8();
+            let mut end = content_start;
+            let mut close_end = content_start;
+            for (relative, candidate) in segment[content_start..].char_indices() {
+                if candidate == quote {
+                    end = content_start + relative;
+                    close_end = end + quote.len_utf8();
+                    break;
+                }
+            }
+            if close_end == content_start {
+                break;
+            }
+            (content_start, end, close_end)
+        } else {
+            let token_end = segment[token_start..]
+                .char_indices()
+                .find_map(|(relative, candidate)| matches!(candidate, ',' | ']').then_some(token_start + relative))
+                .unwrap_or(segment.len());
+            let (value_start, value_end) = trim_span(segment, token_start, token_end);
+            (value_start, value_end, token_end)
+        };
+
+        if value_start < value_end {
+            let tag = segment[value_start..value_end].trim_start_matches('#').to_string();
+            if !tag.is_empty() {
+                let col_start = line[..segment_start + value_start].chars().count();
+                ranges.push(FrontmatterTagRange {
+                    tag,
+                    range: range_for_span(line_index, col_start, segment[value_start..value_end].chars().count()),
+                });
+            }
+        }
+
+        index = token_end;
+    }
+
+    ranges
+}
+
+fn trim_span(text: &str, mut start: usize, mut end: usize) -> (usize, usize) {
+    while start < end {
+        let Some(ch) = text[start..end].chars().next() else {
+            break;
+        };
+        if !ch.is_whitespace() {
+            break;
+        }
+        start += ch.len_utf8();
+    }
+    while start < end {
+        let Some(ch) = text[start..end].chars().next_back() else {
+            break;
+        };
+        if !ch.is_whitespace() {
+            break;
+        }
+        end -= ch.len_utf8();
+    }
+    (start, end)
+}
+
+fn is_frontmatter_key_line(trimmed_line: &str) -> bool {
+    let Some((key, _)) = trimmed_line.split_once(':') else {
+        return false;
+    };
+    !key.is_empty()
+        && key
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+}
+
 fn find_alias_range(text: &str, alias: &str) -> Option<Range> {
     find_frontmatter_value_range(text, alias).or_else(|| find_title_or_heading_range(text, alias))
 }
@@ -1181,6 +1500,16 @@ impl CodeActionRequest {
 
 impl PrepareRenameRequest {
     pub fn compute(self) -> Result<Option<PrepareRenameResponse>, StateError> {
+        let source_note = self.snapshot.note_for_path(&self.path)?;
+        if find_link_at_position(&source_note, self.position).is_none()
+            && let Some(selected_tag) = find_tag_at_position(&self.snapshot, &source_note, self.position)?
+        {
+            return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
+                range: selected_tag.rename_range,
+                placeholder: selected_tag.placeholder,
+            }));
+        }
+
         let Some(target) = rename_target(&self.snapshot, &self.path, self.position)? else {
             return Ok(None);
         };
@@ -1194,6 +1523,17 @@ impl PrepareRenameRequest {
 
 impl RenameRequest {
     pub fn compute(self) -> Result<Option<WorkspaceEdit>, StateError> {
+        let source_note = self.snapshot.note_for_path(&self.path)?;
+        if find_link_at_position(&source_note, self.position).is_none()
+            && let Some(selected_tag) = find_tag_at_position(&self.snapshot, &source_note, self.position)?
+        {
+            return Ok(Some(tag_rename_workspace_edit(
+                &self.snapshot,
+                &selected_tag.tag,
+                &self.new_name,
+            )?));
+        }
+
         let Some(target) = rename_target(&self.snapshot, &self.path, self.position)? else {
             return Ok(None);
         };
@@ -1313,6 +1653,85 @@ fn rename_workspace_edit(snapshot: &StateSnapshot, note: &Note, new_name: &str) 
         document_changes: Some(DocumentChanges::Operations(operations)),
         ..Default::default()
     })
+}
+
+fn tag_rename_workspace_edit(
+    snapshot: &StateSnapshot,
+    old_tag: &str,
+    new_name: &str,
+) -> Result<WorkspaceEdit, StateError> {
+    let new_tag = normalize_tag_rename_target(new_name)?;
+    if old_tag.eq_ignore_ascii_case(&new_tag) {
+        return Ok(WorkspaceEdit::default());
+    }
+
+    let mut edits_by_path: HashMap<PathBuf, Vec<TextEdit>> = HashMap::new();
+    for occurrence in tag_occurrences(snapshot, old_tag)? {
+        edits_by_path.entry(occurrence.path).or_default().push(TextEdit {
+            range: occurrence.range,
+            new_text: if occurrence.inline {
+                format!("#{new_tag}")
+            } else {
+                new_tag.clone()
+            },
+        });
+    }
+
+    workspace_edit_from_text_edits(snapshot, edits_by_path)
+}
+
+fn workspace_edit_from_text_edits(
+    snapshot: &StateSnapshot,
+    mut edits_by_path: HashMap<PathBuf, Vec<TextEdit>>,
+) -> Result<WorkspaceEdit, StateError> {
+    let mut operations = Vec::new();
+    let mut paths = edits_by_path.keys().cloned().collect::<Vec<_>>();
+    paths.sort();
+
+    for path in paths {
+        let mut edits = edits_by_path.remove(&path).unwrap_or_default();
+        edits.sort_by(|left, right| {
+            left.range
+                .start
+                .line
+                .cmp(&right.range.start.line)
+                .then(left.range.start.character.cmp(&right.range.start.character))
+        });
+        edits.dedup_by(|left, right| left.range == right.range);
+        if edits.is_empty() {
+            continue;
+        }
+
+        operations.push(DocumentChangeOperation::Edit(TextDocumentEdit {
+            text_document: OptionalVersionedTextDocumentIdentifier {
+                uri: snapshot.uri_for_path(&path)?,
+                version: snapshot.version_for_path(&path),
+            },
+            edits: edits.into_iter().map(OneOf::Left).collect(),
+        }));
+    }
+
+    Ok(WorkspaceEdit {
+        document_changes: Some(DocumentChanges::Operations(operations)),
+        ..Default::default()
+    })
+}
+
+fn normalize_tag_rename_target(new_name: &str) -> Result<String, StateError> {
+    let tag = new_name.trim().trim_start_matches('#');
+    if tag.is_empty() {
+        return Err(StateError::InvalidTagRenameTarget(new_name.to_string()));
+    }
+
+    let mut chars = tag.chars();
+    if !chars.next().is_some_and(|ch| ch.is_ascii_alphabetic()) {
+        return Err(StateError::InvalidTagRenameTarget(new_name.to_string()));
+    }
+    if !chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '/') {
+        return Err(StateError::InvalidTagRenameTarget(new_name.to_string()));
+    }
+
+    Ok(tag.to_string())
 }
 
 fn new_note_title_from_link(link: &Link) -> Option<String> {
@@ -1837,6 +2256,10 @@ fn render_note_hover(note: &Note, vault_path: &Path) -> String {
     lines.join("\n")
 }
 
+fn render_tag_hover(tag: &str, occurrence_count: usize) -> String {
+    format!("**#{}**\n\n- Occurrences: {}", tag, occurrence_count)
+}
+
 fn render_ambiguous_hover(notes: &[&Note], vault_path: &Path) -> String {
     let mut lines = vec![
         "**Ambiguous note link**".to_string(),
@@ -1869,6 +2292,13 @@ fn position_in_location(position: Position, location: &InlineLocation) -> bool {
     let character = position.character;
 
     line == location.line as u32 && character >= location.col_start as u32 && character < location.col_end as u32
+}
+
+fn position_in_range(position: Position, range: &Range) -> bool {
+    (position.line > range.start.line
+        || (position.line == range.start.line && position.character >= range.start.character))
+        && (position.line < range.end.line
+            || (position.line == range.end.line && position.character < range.end.character))
 }
 
 fn location_to_range(location: &InlineLocation) -> Range {
@@ -2651,6 +3081,119 @@ mod tests {
     }
 
     #[test]
+    fn frontmatter_tag_ranges_cover_core_supported_tag_lists() {
+        let text = "---\ntags: [foo, bar, foo]\nother: value\n---\n";
+        let ranges = frontmatter_tag_ranges(text);
+        assert_eq!(
+            ranges.iter().map(|range| range.tag.as_str()).collect::<Vec<_>>(),
+            vec!["foo", "bar", "foo"]
+        );
+        assert_ne!(ranges[0].range, ranges[2].range);
+
+        let block_text = "---\ntags:\n- foo\n- bar\n---\n";
+        let block_ranges = frontmatter_tag_ranges(block_text);
+        assert_eq!(
+            block_ranges.iter().map(|range| range.tag.as_str()).collect::<Vec<_>>(),
+            vec!["foo", "bar"]
+        );
+
+        assert!(frontmatter_tag_ranges("---\ntags: foo\n---\n").is_empty());
+    }
+
+    #[test]
+    fn navigation_request_handles_tag_language_features() {
+        let vault_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
+
+        let tagged_path = vault_dir.path().join("tagged.md");
+        let tagged_text = "---\nid: tagged\ntags: [project, work]\n---\n\nBody #project and #project/task.\n";
+        fs::write(&tagged_path, tagged_text).unwrap();
+        let tagged_path = tagged_path.canonicalize().unwrap();
+        let tagged_uri = path_to_uri(&tagged_path).unwrap();
+
+        let other_path = vault_dir.path().join("other.md");
+        fs::write(&other_path, "---\nid: other\ntags:\n- project\n---\n\nBody #project.\n").unwrap();
+        let other_path = other_path.canonicalize().unwrap();
+        let other_uri = path_to_uri(&other_path).unwrap();
+
+        let state = BackendState::new(Vault::open(vault_dir.path()).unwrap());
+        let position = position_for_substring(tagged_text, "#project and");
+
+        let hover = state
+            .navigation_request(tagged_uri.clone(), position)
+            .unwrap()
+            .compute_hover()
+            .unwrap()
+            .unwrap();
+        let HoverContents::Markup(contents) = hover.contents else {
+            panic!("expected markdown hover contents");
+        };
+        assert!(contents.value.contains("**#project**"));
+        assert!(contents.value.contains("Occurrences: 5"));
+
+        let references = state
+            .navigation_request(tagged_uri.clone(), position)
+            .unwrap()
+            .compute_references()
+            .unwrap()
+            .unwrap();
+        assert_eq!(references.len(), 5);
+        assert_eq!(
+            references.iter().filter(|location| location.uri == tagged_uri).count(),
+            3
+        );
+        assert_eq!(
+            references.iter().filter(|location| location.uri == other_uri).count(),
+            2
+        );
+
+        let definition = state
+            .navigation_request(tagged_uri.clone(), position)
+            .unwrap()
+            .compute_definition()
+            .unwrap()
+            .unwrap();
+        let GotoDefinitionResponse::Array(definitions) = definition else {
+            panic!("multiple tag occurrences should return an array definition response");
+        };
+        assert_eq!(definitions.len(), 5);
+
+        let prepare = state
+            .prepare_rename_request(tagged_uri.clone(), position)
+            .unwrap()
+            .compute()
+            .unwrap()
+            .unwrap();
+        let PrepareRenameResponse::RangeWithPlaceholder { placeholder, .. } = prepare else {
+            panic!("tag prepareRename should return a placeholder range");
+        };
+        assert_eq!(placeholder, "#project");
+
+        let edit = state
+            .rename_request(tagged_uri.clone(), position, "#area".to_string())
+            .unwrap()
+            .compute()
+            .unwrap()
+            .unwrap();
+        let tagged_edits = plain_text_edits_for_uri(&edit, &tagged_uri);
+        assert_eq!(
+            tagged_edits
+                .iter()
+                .map(|edit| edit.new_text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["area", "#area", "#area"]
+        );
+        let other_edits = plain_text_edits_for_uri(&edit, &other_uri);
+        assert_eq!(
+            other_edits
+                .iter()
+                .map(|edit| edit.new_text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["area", "#area"]
+        );
+    }
+
+    #[test]
     fn navigation_request_returns_metadata_for_wiki_links() {
         let (_vault_dir, state, source_uri, _target_uri, _backlink_uri, source_text) = navigation_state();
 
@@ -2796,6 +3339,28 @@ mod tests {
 
         let references = state
             .navigation_request(target_uri.clone(), Position::new(0, 0))
+            .unwrap()
+            .compute_references()
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(references.len(), 3);
+        assert_eq!(
+            references.iter().filter(|location| location.uri == source_uri).count(),
+            2
+        );
+        assert!(references.iter().any(|location| location.uri == backlink_uri));
+    }
+
+    #[test]
+    fn navigation_request_returns_backlinks_for_link_target_when_on_markdown_link() {
+        let (_vault_dir, state, source_uri, _target_uri, backlink_uri, source_text) = navigation_state();
+
+        let references = state
+            .navigation_request(
+                source_uri.clone(),
+                position_for_substring(&source_text, "[Target Markdown](target.md)"),
+            )
             .unwrap()
             .compute_references()
             .unwrap()

@@ -681,6 +681,44 @@ fn stdio_session_reports_health_diagnostics_and_hover_metadata() {
             .any(|location| location["uri"] == backlink_uri.as_str())
     );
 
+    let (markdown_ref_line, markdown_ref_character) =
+        position_for_substring(&duplicate_a_text, "[Target Markdown](target.md)");
+    harness.send(request(
+        60,
+        "textDocument/references",
+        Some(json!({
+            "textDocument": {
+                "uri": duplicate_a_uri,
+            },
+            "position": {
+                "line": markdown_ref_line,
+                "character": markdown_ref_character,
+            },
+            "context": {
+                "includeDeclaration": true,
+            }
+        })),
+    ));
+
+    let markdown_link_references =
+        harness.expect_message("markdown link references response", |message| message["id"] == 60);
+    let markdown_link_references = markdown_link_references["result"]
+        .as_array()
+        .expect("references response should be an array");
+    assert_eq!(markdown_link_references.len(), 3);
+    assert_eq!(
+        markdown_link_references
+            .iter()
+            .filter(|location| location["uri"] == duplicate_a_uri.as_str())
+            .count(),
+        2
+    );
+    assert!(
+        markdown_link_references
+            .iter()
+            .any(|location| location["uri"] == backlink_uri.as_str())
+    );
+
     harness.send(request(
         7,
         "textDocument/references",
@@ -995,6 +1033,159 @@ fn stdio_session_handles_rename_for_note_links() {
     let new_uri = Url::from_file_path(vault_path.join("new-note.md")).expect("new path should convert to URI");
     assert!(document_changes.iter().any(|change| {
         change["kind"] == "rename" && change["oldUri"] == target_uri.as_str() && change["newUri"] == new_uri.as_str()
+    }));
+
+    shutdown_session(&mut harness);
+}
+
+#[test]
+fn stdio_session_handles_tag_language_features() {
+    let vault_dir = tempfile::tempdir().expect("should create temp dir");
+    fs::create_dir(vault_dir.path().join(".obsidian")).expect("should create .obsidian directory");
+
+    let tagged_path = vault_dir.path().join("tagged.md");
+    let tagged_text = "---\nid: tagged\ntags: [project, work]\n---\n\nBody #project and #project/task.\n";
+    fs::write(&tagged_path, tagged_text).expect("should write tagged note");
+    let tagged_uri = Url::from_file_path(tagged_path.canonicalize().expect("tagged path should canonicalize"))
+        .expect("tagged path should convert to URI");
+
+    let other_path = vault_dir.path().join("other.md");
+    fs::write(&other_path, "---\nid: other\ntags:\n- project\n---\n\nBody #project.\n")
+        .expect("should write other note");
+    let other_uri = Url::from_file_path(other_path.canonicalize().expect("other path should canonicalize"))
+        .expect("other path should convert to URI");
+
+    let vault_path = vault_dir.path().canonicalize().expect("vault path should canonicalize");
+    let vault_uri = Url::from_file_path(&vault_path).expect("vault path should convert to URI");
+    let mut harness = LspHarness::spawn(vault_dir.path());
+    initialize_session(&mut harness, &vault_uri, &vault_path);
+
+    harness.send(notification(
+        "textDocument/didOpen",
+        Some(json!({
+            "textDocument": {
+                "uri": tagged_uri,
+                "languageId": "markdown",
+                "version": 1,
+                "text": tagged_text,
+            }
+        })),
+    ));
+    expect_diagnostics(&mut harness, &tagged_uri, Some(1));
+
+    let (line, character) = position_for_substring(tagged_text, "#project and");
+    harness.send(request(
+        2,
+        "textDocument/hover",
+        Some(json!({
+            "textDocument": { "uri": tagged_uri },
+            "position": { "line": line, "character": character },
+        })),
+    ));
+    let hover = harness.expect_message("tag hover response", |message| message["id"] == 2);
+    let hover_text = hover["result"]["contents"]["value"]
+        .as_str()
+        .expect("hover should contain markdown text");
+    assert!(hover_text.contains("**#project**"));
+    assert!(hover_text.contains("Occurrences: 5"));
+
+    harness.send(request(
+        3,
+        "textDocument/references",
+        Some(json!({
+            "textDocument": { "uri": tagged_uri },
+            "position": { "line": line, "character": character },
+            "context": { "includeDeclaration": true },
+        })),
+    ));
+    let references = harness.expect_message("tag references response", |message| message["id"] == 3);
+    let references = references["result"]
+        .as_array()
+        .expect("references response should be an array");
+    assert_eq!(references.len(), 5);
+    assert_eq!(
+        references
+            .iter()
+            .filter(|location| location["uri"] == tagged_uri.as_str())
+            .count(),
+        3
+    );
+    assert_eq!(
+        references
+            .iter()
+            .filter(|location| location["uri"] == other_uri.as_str())
+            .count(),
+        2
+    );
+
+    harness.send(request(
+        4,
+        "textDocument/definition",
+        Some(json!({
+            "textDocument": { "uri": tagged_uri },
+            "position": { "line": line, "character": character },
+        })),
+    ));
+    let definition = harness.expect_message("tag definition response", |message| message["id"] == 4);
+    assert_eq!(
+        definition["result"]
+            .as_array()
+            .expect("definition response should be an array")
+            .len(),
+        5
+    );
+
+    harness.send(request(
+        5,
+        "textDocument/prepareRename",
+        Some(json!({
+            "textDocument": { "uri": tagged_uri },
+            "position": { "line": line, "character": character },
+        })),
+    ));
+    let prepare = harness.expect_message("tag prepareRename response", |message| message["id"] == 5);
+    assert_eq!(prepare["result"]["placeholder"], "#project");
+
+    harness.send(request(
+        6,
+        "textDocument/rename",
+        Some(json!({
+            "textDocument": { "uri": tagged_uri },
+            "position": { "line": line, "character": character },
+            "newName": "#area",
+        })),
+    ));
+    let rename = harness.expect_message("tag rename response", |message| message["id"] == 6);
+    let document_changes = rename["result"]["documentChanges"]
+        .as_array()
+        .expect("rename should return documentChanges");
+    assert!(document_changes.iter().any(|change| {
+        change["textDocument"]["uri"] == tagged_uri.as_str()
+            && change["edits"]
+                .as_array()
+                .expect("tagged change should include edits")
+                .iter()
+                .any(|edit| edit["newText"] == "area")
+            && change["edits"]
+                .as_array()
+                .expect("tagged change should include edits")
+                .iter()
+                .filter(|edit| edit["newText"] == "#area")
+                .count()
+                == 2
+    }));
+    assert!(document_changes.iter().any(|change| {
+        change["textDocument"]["uri"] == other_uri.as_str()
+            && change["edits"]
+                .as_array()
+                .expect("other change should include edits")
+                .iter()
+                .any(|edit| edit["newText"] == "area")
+            && change["edits"]
+                .as_array()
+                .expect("other change should include edits")
+                .iter()
+                .any(|edit| edit["newText"] == "#area")
     }));
 
     shutdown_session(&mut harness);
