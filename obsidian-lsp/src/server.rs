@@ -19,7 +19,8 @@ use tower_lsp::{Client, LanguageServer};
 
 use crate::state::{
     BackendState, CodeActionRequest, CompletionRequest, Config, DiagnosticUpdate, DiagnosticsRequest,
-    DocumentLinksRequest, NavigationRequest, ResolveDocumentLinkRequest, StateError, normalize_new_note_path,
+    DocumentLinksRequest, NavigationRequest, ResolveDocumentLinkRequest, StateError, new_note_content,
+    normalize_new_note_path,
 };
 
 pub struct Backend {
@@ -392,13 +393,14 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
         let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("note").to_string();
+        let note_title = params.arguments.get(1).and_then(Value::as_str).map(str::to_string);
 
         match tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
             let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)?;
-            file.write_all(format!("---\nid: {stem}\n---\n").as_bytes())
+            file.write_all(new_note_content(&stem, note_title.as_deref()).as_bytes())
         })
         .await
         {

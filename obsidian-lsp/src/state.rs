@@ -1061,10 +1061,16 @@ impl CodeActionRequest {
             .and_then(|s| s.to_str())
             .unwrap_or("note")
             .to_string();
+        let note_title = new_note_title_from_link(&located_link.link);
+        let new_note_text = new_note_content(&stem, note_title.as_deref());
 
         let new_path_str = new_path.to_string_lossy().into_owned();
         let new_uri = path_to_uri(&new_path)?;
         let title = format!("Create note '{stem}'");
+        let mut arguments = vec![json!(new_path_str)];
+        if let Some(note_title) = note_title {
+            arguments.push(json!(note_title));
+        }
 
         // `edit` is a TextDocumentEdit (no CreateFile) so preview plugins can show the diff
         // without creating any file on disk. `command` does the actual work when the user applies.
@@ -1083,7 +1089,7 @@ impl CodeActionRequest {
                                 start: Position { line: 0, character: 0 },
                                 end: Position { line: 0, character: 0 },
                             },
-                            new_text: format!("---\nid: {stem}\n---\n"),
+                            new_text: new_note_text,
                         })],
                     },
                 )])),
@@ -1092,12 +1098,58 @@ impl CodeActionRequest {
             command: Some(Command {
                 title,
                 command: "obsidian.createNote".to_string(),
-                arguments: Some(vec![json!(new_path_str)]),
+                arguments: Some(arguments),
             }),
             ..Default::default()
         };
 
         Ok(Some(vec![action]))
+    }
+}
+
+fn new_note_title_from_link(link: &Link) -> Option<String> {
+    match link {
+        Link::Wiki { alias, .. } => alias.as_deref(),
+        Link::Markdown { text, .. } => Some(text.as_str()),
+        Link::Embed { .. } => None,
+    }
+    .map(str::trim)
+    .filter(|title| !title.is_empty())
+    .map(|title| title.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
+pub(crate) fn new_note_content(id: &str, title: Option<&str>) -> String {
+    let Some(title) = title.map(str::trim).filter(|title| !title.is_empty()) else {
+        return format!("---\nid: {id}\n---\n");
+    };
+    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    format!(
+        "---\nid: {id}\naliases:\n- {}\n---\n\n# {}\n",
+        yaml_scalar(&title),
+        title
+    )
+}
+
+fn yaml_scalar(value: &str) -> String {
+    let lower = value.to_ascii_lowercase();
+    let starts_with_yaml_indicator = value.chars().next().is_some_and(|c| {
+        matches!(
+            c,
+            '-' | '?' | ':' | '!' | '&' | '*' | '#' | '[' | ']' | '{' | '}' | ',' | '|' | '>' | '@' | '`' | '"' | '\''
+        )
+    });
+    if !value.is_empty()
+        && !matches!(lower.as_str(), "null" | "true" | "false" | "~")
+        && !starts_with_yaml_indicator
+        && !value.ends_with(':')
+        && !value.contains(": ")
+        && !value.contains(" #")
+        && !value.chars().any(|c| matches!(c, '\n' | '\r' | '\t'))
+    {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', "''"))
     }
 }
 
@@ -1908,6 +1960,19 @@ mod tests {
         }
 
         panic!("substring '{needle}' not found");
+    }
+
+    #[test]
+    fn new_note_content_includes_primary_alias_and_heading_when_title_is_available() {
+        assert_eq!(
+            new_note_content("foo", Some("Foo")),
+            "---\nid: foo\naliases:\n- Foo\n---\n\n# Foo\n"
+        );
+    }
+
+    #[test]
+    fn new_note_content_preserves_existing_minimal_template_without_title() {
+        assert_eq!(new_note_content("foo", None), "---\nid: foo\n---\n");
     }
 
     #[test]

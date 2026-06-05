@@ -1178,7 +1178,7 @@ fn stdio_session_offers_create_note_code_action_for_broken_links() {
     fs::create_dir(vault_dir.path().join(".obsidian")).expect("should create .obsidian directory");
 
     let source_path = vault_dir.path().join("source.md");
-    let source_text = "See [[missing-note]] and [Missing Markdown](missing-markdown.md).";
+    let source_text = "See [[missing-note|Missing Note]] and [Missing Markdown](missing-markdown.md).";
     fs::write(&source_path, source_text).expect("should write source note");
     let source_path = source_path.canonicalize().expect("source path should canonicalize");
     let source_uri = Url::from_file_path(&source_path).expect("source path should convert to URI");
@@ -1201,8 +1201,8 @@ fn stdio_session_offers_create_note_code_action_for_broken_links() {
     ));
     expect_diagnostics(&mut harness, &source_uri, Some(1));
 
-    // Code action for wiki link [[missing-note]]: cursor on "missing-note"
-    let (wiki_line, wiki_char) = position_for_substring(source_text, "[[missing-note]]");
+    // Code action for wiki link [[missing-note|Missing Note]]: cursor on "missing-note"
+    let (wiki_line, wiki_char) = position_for_substring(source_text, "[[missing-note|Missing Note]]");
     harness.send(request(
         2,
         "textDocument/codeAction",
@@ -1244,14 +1244,18 @@ fn stdio_session_offers_create_note_code_action_for_broken_links() {
     let preview_text = preview_edit["edits"][0]["newText"]
         .as_str()
         .expect("TextDocumentEdit should have newText");
-    assert!(
-        preview_text.contains("id: missing-note"),
-        "preview text should contain the note id"
+    assert_eq!(
+        preview_text,
+        "---\nid: missing-note\naliases:\n- Missing Note\n---\n\n# Missing Note\n"
     );
 
     let wiki_path_arg = create_action["command"]["arguments"][0]
         .as_str()
         .expect("command should have a path argument");
+    assert_eq!(
+        create_action["command"]["arguments"][1], "Missing Note",
+        "command should pass the wiki alias through as the note title"
+    );
     assert!(
         wiki_path_arg.ends_with("missing-note.md"),
         "command argument should point to missing-note.md, got: {wiki_path_arg}"
@@ -1266,7 +1270,7 @@ fn stdio_session_offers_create_note_code_action_for_broken_links() {
     harness.send(request(
         3,
         "workspace/executeCommand",
-        Some(json!({ "command": "obsidian.createNote", "arguments": [wiki_path_arg] })),
+        Some(json!({ "command": "obsidian.createNote", "arguments": [wiki_path_arg, "Missing Note"] })),
     ));
     harness.expect_message("executeCommand response", |message| message["id"] == 3);
     // Diagnostics are refreshed after the note is created (still version 1 of the document).
@@ -1274,9 +1278,9 @@ fn stdio_session_offers_create_note_code_action_for_broken_links() {
 
     let new_note_content =
         fs::read_to_string(&expected_new_path).expect("new note should exist on disk after executeCommand");
-    assert!(
-        new_note_content.contains("id: missing-note"),
-        "new note should have frontmatter id"
+    assert_eq!(
+        new_note_content, "---\nid: missing-note\naliases:\n- Missing Note\n---\n\n# Missing Note\n",
+        "new note should use the wiki alias as its primary alias and heading"
     );
 
     // Code action for markdown link [Missing Markdown](missing-markdown.md)
@@ -1313,13 +1317,16 @@ fn stdio_session_offers_create_note_code_action_for_broken_links() {
         "should have a code action for the markdown link"
     );
 
-    let md_path_arg = md_actions
+    let md_create_action = md_actions
         .iter()
         .find_map(|a| {
             let p = a["command"]["arguments"][0].as_str()?;
-            p.ends_with("missing-markdown.md").then_some(p)
+            p.ends_with("missing-markdown.md").then_some(a)
         })
         .expect("should have a createNote command for 'missing-markdown.md'");
+    let md_path_arg = md_create_action["command"]["arguments"][0]
+        .as_str()
+        .expect("markdown command should have a path argument");
 
     let vault_canonical = vault_dir.path().canonicalize().expect("vault path should canonicalize");
     let expected_md_path = vault_canonical.join("missing-markdown.md");
@@ -1327,6 +1334,43 @@ fn stdio_session_offers_create_note_code_action_for_broken_links() {
         md_path_arg,
         expected_md_path.to_string_lossy().as_ref(),
         "markdown link should create relative to vault root"
+    );
+    assert_eq!(
+        md_create_action["command"]["arguments"][1], "Missing Markdown",
+        "command should pass the markdown link text through as the note title"
+    );
+
+    let md_text_edit_changes = md_create_action["edit"]["documentChanges"]
+        .as_array()
+        .expect("markdown edit should have documentChanges for preview");
+    let md_preview_edit = md_text_edit_changes
+        .iter()
+        .find(|op| {
+            op["textDocument"]["uri"]
+                .as_str()
+                .map_or(false, |u| u.ends_with("missing-markdown.md"))
+        })
+        .expect("should have a TextDocumentEdit for the markdown new file");
+    let md_preview_text = md_preview_edit["edits"][0]["newText"]
+        .as_str()
+        .expect("markdown TextDocumentEdit should have newText");
+    assert_eq!(
+        md_preview_text,
+        "---\nid: missing-markdown\naliases:\n- Missing Markdown\n---\n\n# Missing Markdown\n"
+    );
+
+    harness.send(request(
+        5,
+        "workspace/executeCommand",
+        Some(json!({ "command": "obsidian.createNote", "arguments": [md_path_arg, "Missing Markdown"] })),
+    ));
+    harness.expect_message("markdown executeCommand response", |message| message["id"] == 5);
+
+    let md_note_content =
+        fs::read_to_string(&expected_md_path).expect("markdown note should exist on disk after executeCommand");
+    assert_eq!(
+        md_note_content, "---\nid: missing-markdown\naliases:\n- Missing Markdown\n---\n\n# Missing Markdown\n",
+        "new markdown note should use link text as its primary alias and heading"
     );
 
     // No code action for an existing note.
