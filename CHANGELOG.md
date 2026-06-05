@@ -19,10 +19,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - LSP create-note quick fixes now use wiki aliases and markdown link text as the new note's primary alias and heading.
 
-### Fixed
-
-- Fixed LSP duplicate-alias diagnostics and quick fixes to attach to the exact frontmatter alias token when available, and to appear for cursor-line code-action requests even when clients omit diagnostics.
-
 ## v0.4.0 - 2026-06-05
 
 ### Added
