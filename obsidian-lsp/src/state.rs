@@ -11,7 +11,8 @@ use tower_lsp::lsp_types::{
     CodeAction, CodeActionKind, Command, CompletionItem, CompletionItemKind, CompletionTextEdit, Diagnostic,
     DiagnosticSeverity, DocumentChangeOperation, DocumentChanges, DocumentLink, GotoDefinitionResponse, Hover,
     HoverContents, Location, MarkupContent, MarkupKind, NumberOrString, OneOf, OptionalVersionedTextDocumentIdentifier,
-    Position, Range, TextDocumentContentChangeEvent, TextDocumentEdit, TextEdit, Url, WorkspaceEdit,
+    Position, PrepareRenameResponse, Range, RenameFile, RenameFileOptions, ResourceOp, TextDocumentContentChangeEvent,
+    TextDocumentEdit, TextEdit, Url, WorkspaceEdit,
 };
 
 use crate::uri::{UriError, path_to_uri, uri_to_path, vault_relative_path};
@@ -95,6 +96,21 @@ pub struct CodeActionRequest {
     position: Position,
 }
 
+#[derive(Debug)]
+pub struct PrepareRenameRequest {
+    snapshot: StateSnapshot,
+    path: PathBuf,
+    position: Position,
+}
+
+#[derive(Debug)]
+pub struct RenameRequest {
+    snapshot: StateSnapshot,
+    path: PathBuf,
+    position: Position,
+    new_name: String,
+}
+
 enum LinkContext {
     Wiki {
         note_query: String,
@@ -117,6 +133,12 @@ struct NavigationContext {
     notes: Vec<Note>,
     source_note: Note,
     selected_link: Option<LocatedLink>,
+}
+
+struct RenameTarget {
+    note: Note,
+    range: Range,
+    placeholder: String,
 }
 
 #[derive(Debug)]
@@ -148,6 +170,8 @@ pub enum StateError {
     MissingDocumentContent { uri: Url },
     #[error("invalid document link data: {0}")]
     InvalidDocumentLinkData(String),
+    #[error("invalid rename target '{new_name}' for note '{path}'")]
+    InvalidRenameTarget { path: PathBuf, new_name: String },
 }
 
 pub struct BackendState {
@@ -286,6 +310,27 @@ impl BackendState {
             snapshot: self.snapshot(),
             path,
             position,
+        })
+    }
+
+    pub fn prepare_rename_request(&self, uri: Url, position: Position) -> Result<PrepareRenameRequest, StateError> {
+        let path = self.path_from_uri(&uri)?;
+
+        Ok(PrepareRenameRequest {
+            snapshot: self.snapshot(),
+            path,
+            position,
+        })
+    }
+
+    pub fn rename_request(&self, uri: Url, position: Position, new_name: String) -> Result<RenameRequest, StateError> {
+        let path = self.path_from_uri(&uri)?;
+
+        Ok(RenameRequest {
+            snapshot: self.snapshot(),
+            path,
+            position,
+            new_name,
         })
     }
 
@@ -885,6 +930,33 @@ fn find_frontmatter_key_range(text: &str, key: &str) -> Option<Range> {
     None
 }
 
+fn find_frontmatter_key_value_range(text: &str, key: &str, expected_value: &str) -> Option<Range> {
+    let mut lines = text.lines();
+    if lines.next()? != "---" {
+        return None;
+    }
+
+    let key_prefix = format!("{key}:");
+    for (line_index, line) in text.lines().enumerate().skip(1) {
+        if line == "---" || line == "..." {
+            break;
+        }
+
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with(&key_prefix) {
+            continue;
+        }
+
+        let leading_width = line.len() - trimmed.len();
+        let after_key = &trimmed[key_prefix.len()..];
+        let value_start = after_key.find(expected_value)?;
+        let col_start = leading_width + key_prefix.len() + after_key[..value_start].chars().count();
+        return Some(range_for_span(line_index, col_start, expected_value.chars().count()));
+    }
+
+    None
+}
+
 fn find_alias_range(text: &str, alias: &str) -> Option<Range> {
     find_frontmatter_value_range(text, alias).or_else(|| find_title_or_heading_range(text, alias))
 }
@@ -1107,6 +1179,142 @@ impl CodeActionRequest {
     }
 }
 
+impl PrepareRenameRequest {
+    pub fn compute(self) -> Result<Option<PrepareRenameResponse>, StateError> {
+        let Some(target) = rename_target(&self.snapshot, &self.path, self.position)? else {
+            return Ok(None);
+        };
+
+        Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
+            range: target.range,
+            placeholder: target.placeholder,
+        }))
+    }
+}
+
+impl RenameRequest {
+    pub fn compute(self) -> Result<Option<WorkspaceEdit>, StateError> {
+        let Some(target) = rename_target(&self.snapshot, &self.path, self.position)? else {
+            return Ok(None);
+        };
+
+        Ok(Some(rename_workspace_edit(
+            &self.snapshot,
+            &target.note,
+            &self.new_name,
+        )?))
+    }
+}
+
+fn rename_target(
+    snapshot: &StateSnapshot,
+    path: &Path,
+    position: Position,
+) -> Result<Option<RenameTarget>, StateError> {
+    let source_note = snapshot.note_for_path(path)?;
+
+    if let Some(selected_link) = find_link_at_position(&source_note, position) {
+        let vault = snapshot.build_vault()?;
+        let notes = snapshot.notes(&vault);
+        let matching_notes = resolve_link_targets(&source_note.path, &selected_link.link, &notes, vault.path());
+        if matching_notes.len() != 1 {
+            return Ok(None);
+        }
+
+        let note = matching_notes[0].clone();
+        if !note.path.exists() {
+            return Ok(None);
+        }
+        let placeholder = note_file_stem(&note);
+        let range =
+            rename_link_target_range(selected_link).unwrap_or_else(|| location_to_range(&selected_link.location));
+        return Ok(Some(RenameTarget {
+            note,
+            range,
+            placeholder,
+        }));
+    }
+
+    if !source_note.path.exists() {
+        return Ok(None);
+    }
+    let placeholder = note_file_stem(&source_note);
+    Ok(Some(RenameTarget {
+        note: source_note,
+        range: Range::new(position, position),
+        placeholder,
+    }))
+}
+
+fn rename_workspace_edit(snapshot: &StateSnapshot, note: &Note, new_name: &str) -> Result<WorkspaceEdit, StateError> {
+    let new_path = rename_target_path(snapshot.vault_path.as_path(), &note.path, new_name)?;
+    if new_path == note.path {
+        return Ok(WorkspaceEdit::default());
+    }
+
+    let vault = snapshot.build_vault()?;
+    let rename_edits = vault.rename_edits(note, &new_path)?;
+    let mut edits_by_path: HashMap<PathBuf, Vec<TextEdit>> = HashMap::new();
+
+    if rename_edits.id_will_update {
+        let text = snapshot.text_for_path(&note.path)?;
+        if let Some(range) = find_frontmatter_key_value_range(&text, "id", &note.id) {
+            edits_by_path.entry(note.path.clone()).or_default().push(TextEdit {
+                range,
+                new_text: rename_edits.new_stem.clone(),
+            });
+        }
+    }
+
+    for (path, replacements) in &rename_edits.backlink_edits {
+        let edits = edits_by_path.entry(path.clone()).or_default();
+        edits.extend(replacements.iter().map(|(link, new_text)| TextEdit {
+            range: location_to_range(&link.location),
+            new_text: new_text.clone(),
+        }));
+    }
+
+    let mut operations = Vec::new();
+    let mut paths = edits_by_path.keys().cloned().collect::<Vec<_>>();
+    paths.sort();
+    for path in paths {
+        let mut edits = edits_by_path.remove(&path).unwrap_or_default();
+        edits.sort_by(|left, right| {
+            left.range
+                .start
+                .line
+                .cmp(&right.range.start.line)
+                .then(left.range.start.character.cmp(&right.range.start.character))
+        });
+        operations.push(DocumentChangeOperation::Edit(TextDocumentEdit {
+            text_document: OptionalVersionedTextDocumentIdentifier {
+                uri: snapshot.uri_for_path(&path)?,
+                version: if path == note.path {
+                    None
+                } else {
+                    snapshot.version_for_path(&path)
+                },
+            },
+            edits: edits.into_iter().map(OneOf::Left).collect(),
+        }));
+    }
+
+    operations.push(DocumentChangeOperation::Op(ResourceOp::Rename(RenameFile {
+        old_uri: snapshot.uri_for_path(&note.path)?,
+        new_uri: path_to_uri(&rename_edits.new_path)?,
+        options: Some(RenameFileOptions {
+            overwrite: Some(false),
+            ignore_if_exists: Some(false),
+        }),
+        annotation_id: None,
+    })));
+
+    Ok(WorkspaceEdit {
+        document_changes: Some(DocumentChanges::Operations(operations)),
+        ..Default::default()
+    })
+}
+
 fn new_note_title_from_link(link: &Link) -> Option<String> {
     match link {
         Link::Wiki { alias, .. } => alias.as_deref(),
@@ -1171,6 +1379,41 @@ fn compute_new_note_path(source_path: &Path, vault_path: &Path, link: &Link) -> 
         }
         Link::Embed { .. } => None,
     }
+}
+
+fn rename_target_path(vault_path: &Path, note_path: &Path, new_name: &str) -> Result<PathBuf, StateError> {
+    let new_name = new_name.trim();
+    if new_name.is_empty() {
+        return Err(StateError::InvalidRenameTarget {
+            path: note_path.to_path_buf(),
+            new_name: new_name.to_string(),
+        });
+    }
+
+    let raw = PathBuf::from(new_name);
+    let raw = match raw.extension().and_then(|ext| ext.to_str()) {
+        Some("md") => raw,
+        Some(_) => {
+            return Err(StateError::InvalidRenameTarget {
+                path: note_path.to_path_buf(),
+                new_name: new_name.to_string(),
+            });
+        }
+        None => raw.with_extension("md"),
+    };
+    let has_parent_component = raw.components().count() > 1;
+    let candidate = if raw.is_absolute() {
+        raw
+    } else if has_parent_component {
+        vault_path.join(raw)
+    } else {
+        note_path.parent().unwrap_or(vault_path).join(raw)
+    };
+
+    normalize_new_note_path(vault_path, candidate).ok_or_else(|| StateError::InvalidRenameTarget {
+        path: note_path.to_path_buf(),
+        new_name: new_name.to_string(),
+    })
 }
 
 pub(crate) fn normalize_new_note_path(vault_path: &Path, candidate: impl AsRef<Path>) -> Option<PathBuf> {
@@ -1488,6 +1731,59 @@ fn find_link_at_position(note: &Note, position: Position) -> Option<&LocatedLink
         .iter()
         .filter(|link| !matches!(link.link, Link::Embed { .. }))
         .find(|link| position_in_location(position, &link.location))
+}
+
+fn note_file_stem(note: &Note) -> String {
+    note.path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or(note.id.as_str())
+        .to_string()
+}
+
+fn rename_link_target_range(link: &LocatedLink) -> Option<Range> {
+    let line = (link.location.line.saturating_sub(1)) as u32;
+    match &link.link {
+        Link::Wiki { target, .. } => {
+            if target.is_empty() {
+                return None;
+            }
+            let start = link.location.col_start + 2;
+            Some(Range::new(
+                Position::new(line, start as u32),
+                Position::new(line, (start + target.chars().count()) as u32),
+            ))
+        }
+        Link::Markdown { text, url } => {
+            let url_start = link.location.col_start + 1 + text.chars().count() + 2;
+            let path_end = url.find('#').unwrap_or(url.len());
+            let raw_path = &url[..path_end];
+            if raw_path.is_empty() {
+                return None;
+            }
+
+            let stem_start = match (raw_path.rfind('/'), raw_path.rfind('\\')) {
+                (Some(left), Some(right)) => left.max(right) + 1,
+                (Some(index), None) | (None, Some(index)) => index + 1,
+                (None, None) => 0,
+            };
+            let stem_end = raw_path
+                .strip_suffix(".md")
+                .map(|without_ext| without_ext.len())
+                .unwrap_or(raw_path.len());
+            if stem_start >= stem_end {
+                return None;
+            }
+
+            let start = url_start + raw_path[..stem_start].chars().count();
+            let end = url_start + raw_path[..stem_end].chars().count();
+            Some(Range::new(
+                Position::new(line, start as u32),
+                Position::new(line, end as u32),
+            ))
+        }
+        Link::Embed { .. } => None,
+    }
 }
 
 fn render_document_link_tooltip(prefix: Option<&str>, detail: Option<String>) -> String {
@@ -2227,6 +2523,131 @@ mod tests {
             })
             .cloned()
             .expect("document link should exist for the requested raw link")
+    }
+
+    fn plain_text_edits_for_uri(edit: &WorkspaceEdit, uri: &Url) -> Vec<TextEdit> {
+        let Some(DocumentChanges::Operations(operations)) = edit.document_changes.as_ref() else {
+            panic!("workspace edit should use document change operations");
+        };
+
+        operations
+            .iter()
+            .filter_map(|operation| match operation {
+                DocumentChangeOperation::Edit(document_edit) if document_edit.text_document.uri == *uri => {
+                    Some(&document_edit.edits)
+                }
+                _ => None,
+            })
+            .flat_map(|edits| edits.iter())
+            .map(|edit| match edit {
+                OneOf::Left(edit) => edit.clone(),
+                OneOf::Right(_) => panic!("rename edits should not use annotated text edits"),
+            })
+            .collect()
+    }
+
+    fn rename_file_operation(edit: &WorkspaceEdit) -> (Url, Url) {
+        let Some(DocumentChanges::Operations(operations)) = edit.document_changes.as_ref() else {
+            panic!("workspace edit should use document change operations");
+        };
+
+        operations
+            .iter()
+            .find_map(|operation| match operation {
+                DocumentChangeOperation::Op(ResourceOp::Rename(rename)) => {
+                    Some((rename.old_uri.clone(), rename.new_uri.clone()))
+                }
+                _ => None,
+            })
+            .expect("workspace edit should include a rename file operation")
+    }
+
+    #[test]
+    fn rename_request_renames_file_id_and_backlinks_when_id_matches_stem() {
+        let vault_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
+
+        let target_path = vault_dir.path().join("old-note.md");
+        fs::write(&target_path, "---\ntitle: old-note\nid: old-note\n---\n\nBody.\n").unwrap();
+        let target_path = target_path.canonicalize().unwrap();
+        let target_uri = path_to_uri(&target_path).unwrap();
+
+        let source_path = vault_dir.path().join("source.md");
+        let source_text = "See [[old-note]] and [Old](old-note.md).";
+        fs::write(&source_path, source_text).unwrap();
+        let source_path = source_path.canonicalize().unwrap();
+        let source_uri = path_to_uri(&source_path).unwrap();
+
+        let state = BackendState::new(Vault::open(vault_dir.path()).unwrap());
+        let position = position_for_substring(source_text, "[[old-note]]");
+        let prepare = state
+            .prepare_rename_request(source_uri.clone(), position)
+            .unwrap()
+            .compute()
+            .unwrap()
+            .unwrap();
+        let PrepareRenameResponse::RangeWithPlaceholder { range, placeholder } = prepare else {
+            panic!("prepare rename should return a placeholder range");
+        };
+        assert_eq!(placeholder, "old-note");
+        assert_eq!(range.start.character, 6);
+        assert_eq!(range.end.character, 14);
+
+        let edit = state
+            .rename_request(source_uri.clone(), position, "new-note".to_string())
+            .unwrap()
+            .compute()
+            .unwrap()
+            .unwrap();
+        let new_uri = path_to_uri(&vault_dir.path().join("new-note.md")).unwrap();
+        assert_eq!(rename_file_operation(&edit), (target_uri.clone(), new_uri));
+
+        let target_edits = plain_text_edits_for_uri(&edit, &target_uri);
+        assert_eq!(target_edits.len(), 1);
+        assert_eq!(target_edits[0].new_text, "new-note");
+        assert_eq!(target_edits[0].range.start.line, 2);
+        assert_eq!(target_edits[0].range.start.character, 4);
+
+        let source_edits = plain_text_edits_for_uri(&edit, &source_uri);
+        let source_replacements = source_edits
+            .iter()
+            .map(|edit| edit.new_text.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(source_replacements, vec!["[[new-note]]", "[Old](new-note.md)"]);
+    }
+
+    #[test]
+    fn rename_request_keeps_custom_id_and_wiki_backlinks() {
+        let vault_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
+
+        let target_path = vault_dir.path().join("my-note.md");
+        fs::write(&target_path, "---\nid: custom-id\n---\n\nBody.\n").unwrap();
+        let target_path = target_path.canonicalize().unwrap();
+        let target_uri = path_to_uri(&target_path).unwrap();
+
+        let source_path = vault_dir.path().join("source.md");
+        let source_text = "See [[custom-id]] and [Custom](my-note.md).";
+        fs::write(&source_path, source_text).unwrap();
+        let source_path = source_path.canonicalize().unwrap();
+        let source_uri = path_to_uri(&source_path).unwrap();
+
+        let state = BackendState::new(Vault::open(vault_dir.path()).unwrap());
+        let edit = state
+            .rename_request(
+                source_uri.clone(),
+                position_for_substring(source_text, "[[custom-id]]"),
+                "renamed-note".to_string(),
+            )
+            .unwrap()
+            .compute()
+            .unwrap()
+            .unwrap();
+
+        assert!(plain_text_edits_for_uri(&edit, &target_uri).is_empty());
+        let source_edits = plain_text_edits_for_uri(&edit, &source_uri);
+        assert_eq!(source_edits.len(), 1);
+        assert_eq!(source_edits[0].new_text, "[Custom](renamed-note.md)");
     }
 
     #[test]

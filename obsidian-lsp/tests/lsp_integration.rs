@@ -245,6 +245,10 @@ fn initialize_session(harness: &mut LspHarness, vault_uri: &Url, vault_path: &Pa
     assert_eq!(initialize["result"]["capabilities"]["referencesProvider"], true);
     assert_eq!(initialize["result"]["capabilities"]["definitionProvider"], true);
     assert_eq!(
+        initialize["result"]["capabilities"]["renameProvider"]["prepareProvider"],
+        true
+    );
+    assert_eq!(
         initialize["result"]["capabilities"]["documentLinkProvider"]["resolveProvider"],
         true
     );
@@ -905,6 +909,93 @@ fn stdio_session_definition_jumps_to_nested_heading_anchor() {
     assert_eq!(markdown_definition_uri.fragment(), Some("heading-a#subheading-b"));
     assert_eq!(markdown_definition["result"]["range"]["start"]["line"], 11);
     assert_eq!(markdown_definition["result"]["range"]["start"]["character"], 3);
+
+    shutdown_session(&mut harness);
+}
+
+#[test]
+fn stdio_session_handles_rename_for_note_links() {
+    let vault_dir = tempfile::tempdir().expect("should create temp dir");
+    fs::create_dir(vault_dir.path().join(".obsidian")).expect("should create .obsidian directory");
+
+    let target_path = vault_dir.path().join("old-note.md");
+    fs::write(&target_path, "---\ntitle: Old Note\nid: old-note\n---\n\nBody.\n").expect("should write target note");
+    let target_uri = Url::from_file_path(target_path.canonicalize().expect("target path should canonicalize"))
+        .expect("target path should convert to URI");
+
+    let source_path = vault_dir.path().join("source.md");
+    let source_text = "See [[old-note]] and [Old](old-note.md).";
+    fs::write(&source_path, source_text).expect("should write source note");
+    let source_uri = Url::from_file_path(source_path.canonicalize().expect("source path should canonicalize"))
+        .expect("source path should convert to URI");
+
+    let vault_path = vault_dir.path().canonicalize().expect("vault path should canonicalize");
+    let vault_uri = Url::from_file_path(&vault_path).expect("vault path should convert to URI");
+    let mut harness = LspHarness::spawn(vault_dir.path());
+    initialize_session(&mut harness, &vault_uri, &vault_path);
+
+    harness.send(notification(
+        "textDocument/didOpen",
+        Some(json!({
+            "textDocument": {
+                "uri": source_uri,
+                "languageId": "markdown",
+                "version": 1,
+                "text": source_text,
+            }
+        })),
+    ));
+    expect_diagnostics(&mut harness, &source_uri, Some(1));
+
+    let (line, character) = position_for_substring(source_text, "[[old-note]]");
+    harness.send(request(
+        2,
+        "textDocument/prepareRename",
+        Some(json!({
+            "textDocument": { "uri": source_uri },
+            "position": { "line": line, "character": character },
+        })),
+    ));
+
+    let prepare = harness.expect_message("prepareRename response", |message| message["id"] == 2);
+    assert_eq!(prepare["result"]["placeholder"], "old-note");
+    assert_eq!(prepare["result"]["range"]["start"]["character"], 6);
+    assert_eq!(prepare["result"]["range"]["end"]["character"], 14);
+
+    harness.send(request(
+        3,
+        "textDocument/rename",
+        Some(json!({
+            "textDocument": { "uri": source_uri },
+            "position": { "line": line, "character": character },
+            "newName": "new-note",
+        })),
+    ));
+
+    let rename = harness.expect_message("rename response", |message| message["id"] == 3);
+    let document_changes = rename["result"]["documentChanges"]
+        .as_array()
+        .expect("rename should return documentChanges");
+    assert!(document_changes.iter().any(|change| {
+        change["textDocument"]["uri"] == target_uri.as_str() && change["edits"][0]["newText"] == "new-note"
+    }));
+    assert!(document_changes.iter().any(|change| {
+        change["textDocument"]["uri"] == source_uri.as_str()
+            && change["edits"]
+                .as_array()
+                .expect("source change should have edits")
+                .iter()
+                .any(|edit| edit["newText"] == "[[new-note]]")
+            && change["edits"]
+                .as_array()
+                .expect("source change should have edits")
+                .iter()
+                .any(|edit| edit["newText"] == "[Old](new-note.md)")
+    }));
+    let new_uri = Url::from_file_path(vault_path.join("new-note.md")).expect("new path should convert to URI");
+    assert!(document_changes.iter().any(|change| {
+        change["kind"] == "rename" && change["oldUri"] == target_uri.as_str() && change["newUri"] == new_uri.as_str()
+    }));
 
     shutdown_session(&mut harness);
 }

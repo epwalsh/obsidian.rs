@@ -586,20 +586,39 @@ impl Vault {
     ///
     /// Same validation and error variants as `rename`.
     pub fn rename_preview(&self, note: &Note, new_path: &Path) -> Result<RenamePreview, VaultError> {
+        let edits = self.rename_edits(note, new_path)?;
+        let updated_notes = edits
+            .backlink_edits
+            .iter()
+            .map(|(path, replacements)| (path.clone(), replacements.len()))
+            .collect();
+
+        Ok(RenamePreview {
+            new_path: edits.new_path,
+            id_will_update: edits.id_will_update,
+            updated_notes,
+        })
+    }
+
+    /// Returns the exact backlink edits that [`rename`](Self::rename) would make without touching the filesystem.
+    ///
+    /// Same validation and error variants as `rename`.
+    pub fn rename_edits(&self, note: &Note, new_path: &Path) -> Result<RenameEdits, VaultError> {
         let new_path = common::normalize_path(new_path, Some(&self.path));
         let op = self.compute_rename_op(note, &new_path)?;
 
-        let mut updated_notes: Vec<(PathBuf, usize)> = op
+        let mut backlink_edits: Vec<(PathBuf, Vec<(LocatedLink, String)>)> = op
             .per_note_replacements
-            .iter()
-            .map(|(source_note, replacements)| (source_note.path.clone(), replacements.len()))
+            .into_iter()
+            .map(|(source_note, replacements)| (source_note.path, replacements))
             .collect();
-        updated_notes.sort_by(|(a, _), (b, _)| a.cmp(b));
+        backlink_edits.sort_by(|(a, _), (b, _)| a.cmp(b));
 
-        Ok(RenamePreview {
+        Ok(RenameEdits {
             new_path: new_path.to_path_buf(),
+            new_stem: op.new_stem,
             id_will_update: op.frontmatter_id_will_update,
-            updated_notes,
+            backlink_edits,
         })
     }
 
@@ -924,6 +943,15 @@ pub struct RenamePreview {
     pub id_will_update: bool,
     /// Notes with backlinks that would be rewritten, sorted by path. Each entry is (path, link_count).
     pub updated_notes: Vec<(PathBuf, usize)>,
+}
+
+/// Exact text changes required for backlink rewrites during a note rename.
+pub struct RenameEdits {
+    pub new_path: PathBuf,
+    pub new_stem: String,
+    pub id_will_update: bool,
+    /// Notes with backlinks that would be rewritten, sorted by path.
+    pub backlink_edits: Vec<(PathBuf, Vec<(LocatedLink, String)>)>,
 }
 
 /// Public summary of what a merge would change, without touching the filesystem.
@@ -1546,6 +1574,28 @@ mod tests {
         assert_eq!(preview.updated_notes.len(), 1);
         assert!(preview.updated_notes[0].0.ends_with("source.md"));
         assert_eq!(preview.updated_notes[0].1, 1);
+    }
+
+    #[test]
+    fn rename_edits_include_exact_backlink_replacements() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("target.md"), "---\nid: target\n---\nTarget.").unwrap();
+        fs::write(dir.path().join("source.md"), "See [[target]] and [link](target.md).").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("target.md")).unwrap();
+        let edits = vault.rename_edits(&note, &dir.path().join("renamed.md")).unwrap();
+
+        assert_eq!(edits.new_stem, "renamed");
+        assert!(edits.id_will_update);
+        assert_eq!(edits.backlink_edits.len(), 1);
+        assert!(edits.backlink_edits[0].0.ends_with("source.md"));
+        let replacements = edits.backlink_edits[0]
+            .1
+            .iter()
+            .map(|(_, new_text)| new_text.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(replacements, vec!["[[renamed]]", "[link](renamed.md)"]);
     }
 
     #[test]

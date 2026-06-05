@@ -14,4 +14,4 @@ pub use link::{Link, LocatedLink};
 pub use note::{Note, NoteBuilder};
 pub use search::{SearchQuery, SortOrder};
 pub use tag::LocatedTag;
-pub use vault::{MergePreview, RenamePreview, Vault};
+pub use vault::{MergePreview, RenameEdits, RenamePreview, Vault};

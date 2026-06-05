@@ -12,15 +12,16 @@ use tower_lsp::lsp_types::{
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentLink, DocumentLinkOptions, DocumentLinkParams,
     ExecuteCommandOptions, ExecuteCommandParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams,
     HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location, MessageType, OneOf,
-    ReferenceParams, ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind,
+    PrepareRenameResponse, ReferenceParams, RenameOptions, RenameParams, ServerCapabilities, ServerInfo,
+    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, WorkspaceEdit,
     WorkspaceFoldersServerCapabilities, WorkspaceServerCapabilities,
 };
 use tower_lsp::{Client, LanguageServer};
 
 use crate::state::{
     BackendState, CodeActionRequest, CompletionRequest, Config, DiagnosticUpdate, DiagnosticsRequest,
-    DocumentLinksRequest, NavigationRequest, ResolveDocumentLinkRequest, StateError, new_note_content,
-    normalize_new_note_path,
+    DocumentLinksRequest, NavigationRequest, PrepareRenameRequest, RenameRequest, ResolveDocumentLinkRequest,
+    StateError, new_note_content, normalize_new_note_path,
 };
 
 pub struct Backend {
@@ -186,6 +187,10 @@ impl LanguageServer for Backend {
                 }),
                 references_provider: Some(OneOf::Left(true)),
                 definition_provider: Some(OneOf::Left(true)),
+                rename_provider: Some(OneOf::Right(RenameOptions {
+                    prepare_provider: Some(true),
+                    work_done_progress_options: Default::default(),
+                })),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 execute_command_provider: Some(ExecuteCommandOptions {
                     commands: vec!["obsidian.createNote".to_string()],
@@ -354,6 +359,36 @@ impl LanguageServer for Backend {
             .compute_request(request, "definition", |request: NavigationRequest| {
                 request.compute_definition()
             })
+            .await
+            .flatten())
+    }
+
+    async fn prepare_rename(&self, params: TextDocumentPositionParams) -> Result<Option<PrepareRenameResponse>> {
+        let request = {
+            let state = self.state.read().await;
+            state.prepare_rename_request(params.text_document.uri, params.position)
+        };
+
+        Ok(self
+            .compute_request(request, "prepareRename", |request: PrepareRenameRequest| {
+                request.compute()
+            })
+            .await
+            .flatten())
+    }
+
+    async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        let request = {
+            let state = self.state.read().await;
+            state.rename_request(
+                params.text_document_position.text_document.uri,
+                params.text_document_position.position,
+                params.new_name,
+            )
+        };
+
+        Ok(self
+            .compute_request(request, "rename", |request: RenameRequest| request.compute())
             .await
             .flatten())
     }
