@@ -694,6 +694,91 @@ fn stdio_session_reports_health_diagnostics_and_hover_metadata() {
                 .unwrap()
                 .contains("Broken link [[missing-note]]"))
     );
+    let duplicate_a_diagnostics_array = duplicate_a_diagnostics["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics should be an array");
+    let duplicate_id_diagnostic = duplicate_a_diagnostics_array
+        .iter()
+        .find(|diagnostic| diagnostic["code"] == "duplicate-id")
+        .expect("duplicate ID diagnostic should be present")
+        .clone();
+    let duplicate_alias_diagnostic = duplicate_a_diagnostics_array
+        .iter()
+        .find(|diagnostic| diagnostic["code"] == "duplicate-alias")
+        .expect("duplicate alias diagnostic should be present")
+        .clone();
+
+    harness.send(request(
+        20,
+        "textDocument/codeAction",
+        Some(json!({
+            "textDocument": { "uri": duplicate_a_uri },
+            "range": duplicate_id_diagnostic["range"],
+            "context": { "diagnostics": [duplicate_id_diagnostic] },
+        })),
+    ));
+    let duplicate_id_actions =
+        harness.expect_message("duplicate ID code action response", |message| message["id"] == 20);
+    let duplicate_id_actions = duplicate_id_actions["result"]
+        .as_array()
+        .expect("duplicate ID code action response should be an array");
+    assert!(duplicate_id_actions.iter().any(|action| {
+        action["title"] == "Assign unique note ID 'duplicate-a'"
+            && action["kind"] == "quickfix"
+            && action["diagnostics"]
+                .as_array()
+                .expect("quick fix should attach diagnostics")
+                .len()
+                == 1
+            && action["edit"]["documentChanges"][0]["edits"][0]["newText"] == "duplicate-a"
+    }));
+
+    harness.send(request(
+        21,
+        "textDocument/codeAction",
+        Some(json!({
+            "textDocument": { "uri": duplicate_a_uri },
+            "range": duplicate_alias_diagnostic["range"],
+            "context": { "diagnostics": [duplicate_alias_diagnostic] },
+        })),
+    ));
+    let duplicate_alias_actions =
+        harness.expect_message("duplicate alias code action response", |message| message["id"] == 21);
+    let duplicate_alias_actions = duplicate_alias_actions["result"]
+        .as_array()
+        .expect("duplicate alias code action response should be an array");
+    assert!(duplicate_alias_actions.iter().any(|action| {
+        action["title"] == "Change duplicate alias 'shared-alias' to 'shared-alias-2'"
+            && action["kind"] == "quickfix"
+            && action["edit"]["documentChanges"][0]["edits"][0]["newText"] == "shared-alias-2"
+    }));
+
+    harness.send(request(
+        22,
+        "textDocument/codeAction",
+        Some(json!({
+            "textDocument": { "uri": duplicate_a_uri },
+            "range": duplicate_alias_diagnostic["range"],
+            "context": { "diagnostics": [] },
+        })),
+    ));
+    let duplicate_alias_actions_without_client_diagnostics = harness.expect_message(
+        "duplicate alias code action response without client diagnostics",
+        |message| message["id"] == 22,
+    );
+    let duplicate_alias_actions_without_client_diagnostics =
+        duplicate_alias_actions_without_client_diagnostics["result"]
+            .as_array()
+            .expect("duplicate alias code action response should be an array");
+    assert!(duplicate_alias_actions_without_client_diagnostics.iter().any(|action| {
+        action["title"] == "Change duplicate alias 'shared-alias' to 'shared-alias-2'"
+            && action["kind"] == "quickfix"
+            && action["diagnostics"]
+                .as_array()
+                .expect("quick fix should attach diagnostics")
+                .len()
+                == 1
+    }));
 
     let duplicate_b_diagnostics = expect_diagnostics(&mut harness, &duplicate_b_uri, None);
     assert_eq!(
@@ -1781,7 +1866,7 @@ fn stdio_session_offers_create_note_code_action_for_broken_links() {
         "new markdown note should use link text as its primary alias and heading"
     );
 
-    // No code action for an existing note.
+    // Existing notes offer refactors, but not create-note quick fixes.
     let existing_path = vault_dir.path().join("existing.md");
     fs::write(&existing_path, "---\nid: existing\n---\n").expect("should write existing note");
 
@@ -1809,9 +1894,19 @@ fn stdio_session_offers_create_note_code_action_for_broken_links() {
     ));
 
     let existing_response = harness.expect_message("existing note code action response", |message| message["id"] == 6);
+    let existing_actions = existing_response["result"]
+        .as_array()
+        .expect("resolved link should return conversion actions");
     assert!(
-        existing_response["result"].is_null(),
-        "should return null for an already-resolved link"
+        existing_actions.iter().any(|action| {
+            action["title"] == "Convert wiki link to markdown" && action["kind"] == "refactor.rewrite"
+        })
+    );
+    assert!(
+        existing_actions
+            .iter()
+            .all(|action| action["command"]["command"] != "obsidian.createNote"),
+        "resolved links should not offer create-note commands"
     );
 
     shutdown_session(&mut harness);

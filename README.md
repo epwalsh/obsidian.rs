@@ -125,6 +125,7 @@ Current functionality:
 - diagnostics clearing and refresh on open/change/close events
 - completion for wiki links (`[[`) and markdown links (`[`) with per-note variants: bare ID, bare title, alias override, and bare alias forms
 - quick fixes for broken note links that create missing notes inside the active vault without overwriting existing files, using wiki aliases or markdown link text as the new note's primary alias and heading when available
+- quick fixes for duplicate IDs and aliases, wiki-only missing-heading creation, and refactors that convert between wiki and markdown note links
 - filename-first note rename via `textDocument/prepareRename` and `textDocument/rename`, with backlink updates and automatic frontmatter ID updates when the current ID matches the old filename stem
 - hover, references, go-to-definition, and rename support for inline and frontmatter tags
 
@@ -135,5 +136,4 @@ Additional explicit refactor modes are still planned.
 Planned LSP work prioritizes Obsidian-specific editing and refactoring features that generic Markdown language servers cannot provide:
 
 1. **Rename/refactor follow-ups**: add explicit commands or code actions for path-only, ID-only, and forced combined rename modes. Standard LSP rename already defaults to renaming the filename/path; it also renames the frontmatter ID when the current ID exactly matches the old filename stem, and otherwise leaves custom IDs unchanged.
-2. **More code actions**: add diagnostic-driven fixes for duplicate IDs and aliases, link format conversion, and fixes for broken heading anchors.
-3. **Performance and freshness**: add file watching or workspace file-operation handling, plus a cache/index layer so diagnostics, completion, hover, navigation, and symbols stay fresh without reparsing the whole vault for every request.
+2. **Performance and freshness**: add file watching or workspace file-operation handling, plus a cache/index layer so diagnostics, completion, hover, navigation, and symbols stay fresh without reparsing the whole vault for every request.

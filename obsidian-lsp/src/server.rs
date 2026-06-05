@@ -425,7 +425,7 @@ impl LanguageServer for Backend {
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         let request = {
             let state = self.state.read().await;
-            state.code_action_request(params.text_document.uri, params.range.start)
+            state.code_action_request(params.text_document.uri, params.range, params.context.diagnostics)
         };
         Ok(self
             .compute_request(request, "codeAction", |request: CodeActionRequest| request.compute())
