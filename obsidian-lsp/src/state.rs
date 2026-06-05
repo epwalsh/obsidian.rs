@@ -10,10 +10,11 @@ use serde_json::{Value, json};
 use thiserror::Error;
 use tower_lsp::lsp_types::{
     CodeAction, CodeActionKind, Command, CompletionItem, CompletionItemKind, CompletionTextEdit, Diagnostic,
-    DiagnosticSeverity, DocumentChangeOperation, DocumentChanges, DocumentLink, GotoDefinitionResponse, Hover,
-    HoverContents, Location, MarkupContent, MarkupKind, NumberOrString, OneOf, OptionalVersionedTextDocumentIdentifier,
-    Position, PrepareRenameResponse, Range, RenameFile, RenameFileOptions, ResourceOp, TextDocumentContentChangeEvent,
-    TextDocumentEdit, TextEdit, Url, WorkspaceEdit,
+    DiagnosticSeverity, DocumentChangeOperation, DocumentChanges, DocumentLink, DocumentSymbol, DocumentSymbolResponse,
+    GotoDefinitionResponse, Hover, HoverContents, Location, MarkupContent, MarkupKind, NumberOrString, OneOf,
+    OptionalVersionedTextDocumentIdentifier, Position, PrepareRenameResponse, Range, RenameFile, RenameFileOptions,
+    ResourceOp, SymbolInformation, SymbolKind, TextDocumentContentChangeEvent, TextDocumentEdit, TextEdit, Url,
+    WorkspaceEdit,
 };
 
 use crate::uri::{UriError, path_to_uri, uri_to_path, vault_relative_path};
@@ -66,6 +67,18 @@ pub struct DocumentLinksRequest {
     snapshot: StateSnapshot,
     path: PathBuf,
     uri: Url,
+}
+
+#[derive(Debug)]
+pub struct DocumentSymbolsRequest {
+    snapshot: StateSnapshot,
+    path: PathBuf,
+}
+
+#[derive(Debug)]
+pub struct WorkspaceSymbolsRequest {
+    snapshot: StateSnapshot,
+    query: String,
 }
 
 #[derive(Debug)]
@@ -164,6 +177,24 @@ struct FrontmatterTagRange {
     range: Range,
 }
 
+#[derive(Clone, Debug)]
+struct FrontmatterKeyRange {
+    key: String,
+    range: Range,
+}
+
+#[derive(Clone, Debug)]
+struct FrontmatterValueRange {
+    value: String,
+    range: Range,
+}
+
+#[derive(Clone, Debug)]
+struct HeadingSymbol {
+    name: String,
+    range: Range,
+}
+
 #[derive(Debug)]
 struct PrimaryDocument {
     path: PathBuf,
@@ -178,6 +209,7 @@ struct DocumentLinkData {
 
 const DOCUMENT_LINK_SOURCE_URI_KEY: &str = "sourceUri";
 const DOCUMENT_LINK_RAW_LINK_KEY: &str = "rawLink";
+const WORKSPACE_SYMBOL_LIMIT: usize = 500;
 
 #[derive(Debug, Error)]
 pub enum StateError {
@@ -283,6 +315,22 @@ impl BackendState {
             path,
             uri,
         })
+    }
+
+    pub fn document_symbols_request(&self, uri: Url) -> Result<DocumentSymbolsRequest, StateError> {
+        let path = self.path_from_uri(&uri)?;
+
+        Ok(DocumentSymbolsRequest {
+            snapshot: self.snapshot(),
+            path,
+        })
+    }
+
+    pub fn workspace_symbols_request(&self, query: String) -> WorkspaceSymbolsRequest {
+        WorkspaceSymbolsRequest {
+            snapshot: self.snapshot(),
+            query,
+        }
     }
 
     pub fn resolve_document_link_request(
@@ -467,6 +515,33 @@ impl DocumentLinksRequest {
             .iter()
             .filter_map(|link| build_document_link(&self.uri, link))
             .collect())
+    }
+}
+
+impl DocumentSymbolsRequest {
+    pub fn compute(self) -> Result<DocumentSymbolResponse, StateError> {
+        let note = self.snapshot.note_for_path(&self.path)?;
+        let text = self.snapshot.text_for_path(&self.path)?;
+        Ok(DocumentSymbolResponse::Nested(document_symbols_for_note(&note, &text)))
+    }
+}
+
+impl WorkspaceSymbolsRequest {
+    pub fn compute(self) -> Result<Vec<SymbolInformation>, StateError> {
+        let vault = self.snapshot.build_vault()?;
+        let notes = self.snapshot.notes_with_content(&vault);
+        let query = self.query.to_lowercase();
+        let mut symbols = Vec::new();
+
+        for note in notes {
+            workspace_symbols_for_note(&self.snapshot, &note, &query, &mut symbols)?;
+            if symbols.len() >= WORKSPACE_SYMBOL_LIMIT {
+                symbols.truncate(WORKSPACE_SYMBOL_LIMIT);
+                break;
+            }
+        }
+
+        Ok(symbols)
     }
 }
 
@@ -904,6 +979,14 @@ impl StateSnapshot {
             .collect()
     }
 
+    fn notes_with_content(&self, vault: &Vault) -> Vec<Note> {
+        vault
+            .notes_filtered_with_content(|_| true)
+            .into_iter()
+            .filter_map(Result::ok)
+            .collect()
+    }
+
     fn note_for_path(&self, path: &Path) -> Result<Note, StateError> {
         if let Some(document) = self.open_documents.get(path) {
             Ok(Note::parse(path, &document.text))
@@ -1136,14 +1219,58 @@ fn find_frontmatter_key_value_range(text: &str, key: &str, expected_value: &str)
     None
 }
 
-fn frontmatter_tag_ranges(text: &str) -> Vec<FrontmatterTagRange> {
+fn frontmatter_key_ranges(text: &str) -> Vec<FrontmatterKeyRange> {
     let mut lines = text.lines();
     if lines.next() != Some("---") {
         return Vec::new();
     }
 
     let mut ranges = Vec::new();
-    let mut in_tags_block = false;
+    for (line_index, line) in text.lines().enumerate().skip(1) {
+        if line == "---" || line == "..." {
+            break;
+        }
+
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('-') || !is_frontmatter_key_line(trimmed) {
+            continue;
+        }
+        let Some((key, _)) = trimmed.split_once(':') else {
+            continue;
+        };
+        let leading_bytes = line.len() - trimmed.len();
+        ranges.push(FrontmatterKeyRange {
+            key: key.to_string(),
+            range: range_for_span(line_index, line[..leading_bytes].chars().count(), key.chars().count()),
+        });
+    }
+
+    ranges
+}
+
+fn frontmatter_tag_ranges(text: &str) -> Vec<FrontmatterTagRange> {
+    frontmatter_sequence_value_ranges(text, "tags", true)
+        .into_iter()
+        .map(|value| FrontmatterTagRange {
+            tag: value.value,
+            range: value.range,
+        })
+        .collect()
+}
+
+fn frontmatter_alias_ranges(text: &str) -> Vec<FrontmatterValueRange> {
+    frontmatter_sequence_value_ranges(text, "aliases", false)
+}
+
+fn frontmatter_sequence_value_ranges(text: &str, key: &str, trim_leading_hash: bool) -> Vec<FrontmatterValueRange> {
+    let mut lines = text.lines();
+    if lines.next() != Some("---") {
+        return Vec::new();
+    }
+
+    let mut ranges = Vec::new();
+    let mut in_value_block = false;
+    let key_prefix = format!("{key}:");
 
     for (line_index, line) in text.lines().enumerate().skip(1) {
         if line == "---" || line == "..." {
@@ -1153,42 +1280,55 @@ fn frontmatter_tag_ranges(text: &str) -> Vec<FrontmatterTagRange> {
         let trimmed = line.trim_start();
         let leading_bytes = line.len() - trimmed.len();
 
-        if in_tags_block {
+        if in_value_block {
             if trimmed.is_empty() {
                 continue;
             }
             if is_frontmatter_key_line(trimmed) && !trimmed.starts_with('-') {
-                in_tags_block = false;
+                in_value_block = false;
             } else if let Some(after_dash) = trimmed.strip_prefix('-') {
                 let segment_start = leading_bytes + 1;
-                ranges.extend(scan_frontmatter_tag_tokens(line, line_index, segment_start, after_dash));
+                ranges.extend(scan_frontmatter_value_tokens(
+                    line,
+                    line_index,
+                    segment_start,
+                    after_dash,
+                    trim_leading_hash,
+                ));
                 continue;
             } else {
                 continue;
             }
         }
 
-        let Some(after_key) = trimmed.strip_prefix("tags:") else {
+        let Some(after_key) = trimmed.strip_prefix(&key_prefix) else {
             continue;
         };
-        let segment_start = leading_bytes + "tags:".len();
+        let segment_start = leading_bytes + key_prefix.len();
         let after_key_trimmed = after_key.trim_start();
         if after_key_trimmed.is_empty() {
-            in_tags_block = true;
+            in_value_block = true;
         } else if after_key_trimmed.starts_with('[') {
-            ranges.extend(scan_frontmatter_tag_tokens(line, line_index, segment_start, after_key));
+            ranges.extend(scan_frontmatter_value_tokens(
+                line,
+                line_index,
+                segment_start,
+                after_key,
+                trim_leading_hash,
+            ));
         }
     }
 
     ranges
 }
 
-fn scan_frontmatter_tag_tokens(
+fn scan_frontmatter_value_tokens(
     line: &str,
     line_index: usize,
     segment_start: usize,
     segment: &str,
-) -> Vec<FrontmatterTagRange> {
+    trim_leading_hash: bool,
+) -> Vec<FrontmatterValueRange> {
     let mut ranges = Vec::new();
     let mut index = 0;
 
@@ -1228,11 +1368,15 @@ fn scan_frontmatter_tag_tokens(
         };
 
         if value_start < value_end {
-            let tag = segment[value_start..value_end].trim_start_matches('#').to_string();
-            if !tag.is_empty() {
+            let value = if trim_leading_hash {
+                segment[value_start..value_end].trim_start_matches('#').to_string()
+            } else {
+                segment[value_start..value_end].to_string()
+            };
+            if !value.is_empty() {
                 let col_start = line[..segment_start + value_start].chars().count();
-                ranges.push(FrontmatterTagRange {
-                    tag,
+                ranges.push(FrontmatterValueRange {
+                    value,
                     range: range_for_span(line_index, col_start, segment[value_start..value_end].chars().count()),
                 });
             }
@@ -1333,6 +1477,279 @@ fn build_document_link(source_uri: &Url, link: &LocatedLink) -> Option<DocumentL
             DOCUMENT_LINK_RAW_LINK_KEY: render_link_text(&link.link)?,
         })),
     })
+}
+
+fn document_symbols_for_note(note: &Note, text: &str) -> Vec<DocumentSymbol> {
+    let mut symbols = Vec::new();
+
+    for key_range in frontmatter_key_ranges(text) {
+        symbols.push(document_symbol(
+            key_range.key,
+            Some("frontmatter".to_string()),
+            SymbolKind::KEY,
+            key_range.range,
+        ));
+    }
+
+    for alias in frontmatter_alias_ranges(text) {
+        symbols.push(document_symbol(
+            alias.value,
+            Some("alias".to_string()),
+            SymbolKind::STRING,
+            alias.range,
+        ));
+    }
+
+    for tag in symbol_tag_ranges(note, text) {
+        symbols.push(document_symbol(
+            format!("#{}", tag.value),
+            Some("tag".to_string()),
+            SymbolKind::ENUM_MEMBER,
+            tag.range,
+        ));
+    }
+
+    for heading in parse_heading_symbols(text) {
+        symbols.push(document_symbol(
+            heading.name,
+            Some("heading".to_string()),
+            SymbolKind::STRING,
+            heading.range,
+        ));
+    }
+
+    for link in &note.links {
+        symbols.push(document_symbol(
+            symbol_link_name(&link.link),
+            Some("outbound link".to_string()),
+            SymbolKind::FILE,
+            location_to_range(&link.location),
+        ));
+    }
+
+    symbols.sort_by(symbol_range_order);
+    symbols
+}
+
+fn workspace_symbols_for_note(
+    snapshot: &StateSnapshot,
+    note: &Note,
+    query: &str,
+    symbols: &mut Vec<SymbolInformation>,
+) -> Result<(), StateError> {
+    let text = snapshot.text_for_path(&note.path)?;
+    let uri = snapshot.uri_for_path(&note.path)?;
+    let container = Some(relative_display(snapshot.vault_path.as_path(), &note.path));
+    let mut seen_names = HashSet::new();
+
+    push_workspace_symbol(
+        symbols,
+        query,
+        workspace_symbol(
+            note.id.clone(),
+            SymbolKind::FILE,
+            uri.clone(),
+            find_frontmatter_key_value_range(&text, "id", &note.id).unwrap_or_else(document_start_range),
+            container.clone(),
+        ),
+    );
+    seen_names.insert(note.id.to_lowercase());
+
+    if let Some(title) = note.title.as_deref()
+        && seen_names.insert(title.to_lowercase())
+    {
+        push_workspace_symbol(
+            symbols,
+            query,
+            workspace_symbol(
+                title.to_string(),
+                SymbolKind::STRING,
+                uri.clone(),
+                find_title_or_heading_range(&text, title).unwrap_or_else(document_start_range),
+                container.clone(),
+            ),
+        );
+    }
+
+    for alias in frontmatter_alias_ranges(&text) {
+        if !seen_names.insert(alias.value.to_lowercase()) {
+            continue;
+        }
+        push_workspace_symbol(
+            symbols,
+            query,
+            workspace_symbol(
+                alias.value,
+                SymbolKind::STRING,
+                uri.clone(),
+                alias.range,
+                container.clone(),
+            ),
+        );
+    }
+
+    let mut seen_tags = HashSet::new();
+    for tag in symbol_tag_ranges(note, &text) {
+        if !seen_tags.insert(tag.value.to_lowercase()) {
+            continue;
+        }
+        push_workspace_symbol(
+            symbols,
+            query,
+            workspace_symbol(
+                format!("#{}", tag.value),
+                SymbolKind::ENUM_MEMBER,
+                uri.clone(),
+                tag.range,
+                container.clone(),
+            ),
+        );
+    }
+
+    for heading in parse_heading_symbols(&text) {
+        push_workspace_symbol(
+            symbols,
+            query,
+            workspace_symbol(
+                heading.name,
+                SymbolKind::STRING,
+                uri.clone(),
+                heading.range,
+                container.clone(),
+            ),
+        );
+    }
+
+    Ok(())
+}
+
+fn push_workspace_symbol(symbols: &mut Vec<SymbolInformation>, query: &str, symbol: SymbolInformation) {
+    if symbol_matches_query(&symbol.name, query) && symbols.len() < WORKSPACE_SYMBOL_LIMIT {
+        symbols.push(symbol);
+    }
+}
+
+fn symbol_matches_query(name: &str, query: &str) -> bool {
+    query.is_empty() || name.to_lowercase().contains(query)
+}
+
+fn symbol_tag_ranges(note: &Note, text: &str) -> Vec<FrontmatterValueRange> {
+    let mut ranges = Vec::new();
+
+    let frontmatter_tags = note
+        .tags
+        .iter()
+        .filter_map(|tag| match tag.location {
+            CoreLocation::Frontmatter => Some(tag.tag.as_str()),
+            CoreLocation::Inline(_) => None,
+        })
+        .collect::<Vec<_>>();
+    let mut used_frontmatter_ranges = Vec::new();
+    for tag_range in frontmatter_tag_ranges(text) {
+        if !frontmatter_tags
+            .iter()
+            .any(|tag| tag.eq_ignore_ascii_case(&tag_range.tag))
+            || used_frontmatter_ranges.contains(&tag_range.range)
+        {
+            continue;
+        }
+        used_frontmatter_ranges.push(tag_range.range);
+        ranges.push(FrontmatterValueRange {
+            value: tag_range.tag,
+            range: tag_range.range,
+        });
+    }
+
+    for tag in &note.tags {
+        if let CoreLocation::Inline(location) = &tag.location {
+            ranges.push(FrontmatterValueRange {
+                value: tag.tag.clone(),
+                range: location_to_range(location),
+            });
+        }
+    }
+
+    ranges.sort_by(|left, right| {
+        left.range
+            .start
+            .line
+            .cmp(&right.range.start.line)
+            .then(left.range.start.character.cmp(&right.range.start.character))
+    });
+    ranges
+}
+
+fn symbol_link_name(link: &Link) -> String {
+    match link {
+        Link::Wiki { target, heading, alias } => {
+            let mut text = format!("[[{target}");
+            if let Some(heading) = heading {
+                text.push('#');
+                text.push_str(heading);
+            }
+            if let Some(alias) = alias {
+                text.push('|');
+                text.push_str(alias);
+            }
+            text.push_str("]]");
+            text
+        }
+        Link::Markdown { text, url } => format!("[{text}]({url})"),
+        Link::Embed { target, heading, alias } => {
+            let mut text = format!("![[{target}");
+            if let Some(heading) = heading {
+                text.push('#');
+                text.push_str(heading);
+            }
+            if let Some(alias) = alias {
+                text.push('|');
+                text.push_str(alias);
+            }
+            text.push_str("]]");
+            text
+        }
+    }
+}
+
+fn symbol_range_order(left: &DocumentSymbol, right: &DocumentSymbol) -> std::cmp::Ordering {
+    left.range
+        .start
+        .line
+        .cmp(&right.range.start.line)
+        .then(left.range.start.character.cmp(&right.range.start.character))
+        .then(left.name.cmp(&right.name))
+}
+
+#[allow(deprecated)]
+fn document_symbol(name: String, detail: Option<String>, kind: SymbolKind, range: Range) -> DocumentSymbol {
+    DocumentSymbol {
+        name,
+        detail,
+        kind,
+        tags: None,
+        deprecated: None,
+        range,
+        selection_range: range,
+        children: None,
+    }
+}
+
+#[allow(deprecated)]
+fn workspace_symbol(
+    name: String,
+    kind: SymbolKind,
+    uri: Url,
+    range: Range,
+    container_name: Option<String>,
+) -> SymbolInformation {
+    SymbolInformation {
+        name,
+        kind,
+        tags: None,
+        deprecated: None,
+        location: Location { uri, range },
+        container_name,
+    }
 }
 
 fn parse_document_link_data(value: &Value) -> Result<DocumentLinkData, StateError> {
@@ -2557,6 +2974,13 @@ fn closing_bracket_len(text_after_cursor: &str, context: &LinkContext) -> usize 
 }
 
 fn parse_headings(text: &str) -> Vec<String> {
+    parse_heading_symbols(text)
+        .into_iter()
+        .map(|heading| heading.name)
+        .collect()
+}
+
+fn parse_heading_symbols(text: &str) -> Vec<HeadingSymbol> {
     let mut in_frontmatter = false;
     let mut headings = Vec::new();
 
@@ -2571,8 +2995,11 @@ fn parse_headings(text: &str) -> Vec<String> {
             }
             continue;
         }
-        if let Some((_, _, heading_text)) = heading_line_parts(line) {
-            headings.push(heading_text.to_string());
+        if let Some((_, col_start, heading_text)) = heading_line_parts(line) {
+            headings.push(HeadingSymbol {
+                name: heading_text.to_string(),
+                range: range_for_span(i, col_start, heading_text.chars().count()),
+            });
         }
     }
 
@@ -2944,6 +3371,53 @@ mod tests {
         (vault_dir, state, source_uri, target_uri, source_text.to_string())
     }
 
+    fn symbol_state() -> (tempfile::TempDir, BackendState, Url, Url) {
+        let vault_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
+
+        let source_path = vault_dir.path().join("source.md");
+        let source_text = concat!(
+            "---\n",
+            "id: symbol-note\n",
+            "title: Symbol Note\n",
+            "aliases:\n",
+            "- Work Alias\n",
+            "tags: [rust, lsp]\n",
+            "---\n",
+            "\n",
+            "# Overview\n",
+            "See [[other-note]] and [Other](other.md). #inline/tag\n",
+            "\n",
+            "## Details\n",
+        );
+        fs::write(&source_path, source_text).unwrap();
+        let source_uri = path_to_uri(&source_path.canonicalize().unwrap()).unwrap();
+
+        let other_path = vault_dir.path().join("other.md");
+        fs::write(
+            &other_path,
+            concat!(
+                "---\n",
+                "id: other-note\n",
+                "aliases: [Other Alias]\n",
+                "tags: [rust]\n",
+                "---\n",
+                "\n",
+                "# Other Heading\n",
+            ),
+        )
+        .unwrap();
+        let other_uri = path_to_uri(&other_path.canonicalize().unwrap()).unwrap();
+
+        let vault = Vault::open(vault_dir.path()).unwrap();
+        let mut state = BackendState::new(vault);
+        state
+            .open_document(source_uri.clone(), 1, source_text.to_string())
+            .unwrap();
+
+        (vault_dir, state, source_uri, other_uri)
+    }
+
     fn document_link_for_raw_link(document_links: &[DocumentLink], raw_link: &str) -> DocumentLink {
         document_links
             .iter()
@@ -2953,6 +3427,13 @@ mod tests {
             })
             .cloned()
             .expect("document link should exist for the requested raw link")
+    }
+
+    fn nested_document_symbols(response: DocumentSymbolResponse) -> Vec<DocumentSymbol> {
+        match response {
+            DocumentSymbolResponse::Nested(symbols) => symbols,
+            DocumentSymbolResponse::Flat(_) => panic!("document symbols should use nested response shape"),
+        }
     }
 
     fn plain_text_edits_for_uri(edit: &WorkspaceEdit, uri: &Url) -> Vec<TextEdit> {
@@ -2990,6 +3471,68 @@ mod tests {
                 _ => None,
             })
             .expect("workspace edit should include a rename file operation")
+    }
+
+    #[test]
+    fn document_symbols_include_note_structure_metadata_tags_and_links() {
+        let (_vault_dir, state, source_uri, _other_uri) = symbol_state();
+
+        let response = state.document_symbols_request(source_uri).unwrap().compute().unwrap();
+        let symbols = nested_document_symbols(response);
+        let names = symbols.iter().map(|symbol| symbol.name.as_str()).collect::<Vec<_>>();
+
+        assert!(names.contains(&"id"));
+        assert!(names.contains(&"title"));
+        assert!(names.contains(&"aliases"));
+        assert!(names.contains(&"tags"));
+        assert!(names.contains(&"Work Alias"));
+        assert!(names.contains(&"#rust"));
+        assert!(names.contains(&"#inline/tag"));
+        assert!(names.contains(&"Overview"));
+        assert!(names.contains(&"Details"));
+        assert!(names.contains(&"[[other-note]]"));
+        assert!(names.contains(&"[Other](other.md)"));
+
+        let overview = symbols
+            .iter()
+            .find(|symbol| symbol.name == "Overview")
+            .expect("heading symbol should be present");
+        assert_eq!(overview.kind, SymbolKind::STRING);
+        assert_eq!(overview.selection_range.start.line, 8);
+
+        let inline_tag = symbols
+            .iter()
+            .find(|symbol| symbol.name == "#inline/tag")
+            .expect("inline tag symbol should be present");
+        assert_eq!(inline_tag.kind, SymbolKind::ENUM_MEMBER);
+        assert_eq!(inline_tag.selection_range.start.line, 9);
+    }
+
+    #[test]
+    fn workspace_symbols_search_note_ids_aliases_tags_and_headings() {
+        let (_vault_dir, state, _source_uri, other_uri) = symbol_state();
+
+        let aliases = state.workspace_symbols_request("work".to_string()).compute().unwrap();
+        assert!(aliases.iter().any(|symbol| symbol.name == "Work Alias"));
+
+        let ids = state
+            .workspace_symbols_request("other-note".to_string())
+            .compute()
+            .unwrap();
+        assert!(ids.iter().any(|symbol| {
+            symbol.name == "other-note" && symbol.kind == SymbolKind::FILE && symbol.location.uri == other_uri
+        }));
+
+        let tags = state.workspace_symbols_request("rust".to_string()).compute().unwrap();
+        assert_eq!(tags.iter().filter(|symbol| symbol.name == "#rust").count(), 2);
+
+        let headings = state
+            .workspace_symbols_request("overview".to_string())
+            .compute()
+            .unwrap();
+        assert_eq!(headings.len(), 1);
+        assert_eq!(headings[0].name, "Overview");
+        assert_eq!(headings[0].location.range.start.line, 8);
     }
 
     #[test]

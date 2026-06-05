@@ -10,18 +10,19 @@ use tower_lsp::lsp_types::{
     CodeActionOrCommand, CodeActionParams, CodeActionProviderCapability, CodeActionResponse, CompletionOptions,
     CompletionParams, CompletionResponse, ConfigurationItem, DidChangeConfigurationParams, DidChangeTextDocumentParams,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentLink, DocumentLinkOptions, DocumentLinkParams,
-    ExecuteCommandOptions, ExecuteCommandParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams,
-    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location, MessageType, OneOf,
-    PrepareRenameResponse, ReferenceParams, RenameOptions, RenameParams, ServerCapabilities, ServerInfo,
-    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, WorkspaceEdit,
-    WorkspaceFoldersServerCapabilities, WorkspaceServerCapabilities,
+    DocumentSymbolParams, DocumentSymbolResponse, ExecuteCommandOptions, ExecuteCommandParams, GotoDefinitionParams,
+    GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
+    InitializedParams, Location, MessageType, OneOf, PrepareRenameResponse, ReferenceParams, RenameOptions,
+    RenameParams, ServerCapabilities, ServerInfo, SymbolInformation, TextDocumentPositionParams,
+    TextDocumentSyncCapability, TextDocumentSyncKind, WorkspaceEdit, WorkspaceFoldersServerCapabilities,
+    WorkspaceServerCapabilities, WorkspaceSymbolParams,
 };
 use tower_lsp::{Client, LanguageServer};
 
 use crate::state::{
     BackendState, CodeActionRequest, CompletionRequest, Config, DiagnosticUpdate, DiagnosticsRequest,
-    DocumentLinksRequest, NavigationRequest, PrepareRenameRequest, RenameRequest, ResolveDocumentLinkRequest,
-    StateError, new_note_content, normalize_new_note_path,
+    DocumentLinksRequest, DocumentSymbolsRequest, NavigationRequest, PrepareRenameRequest, RenameRequest,
+    ResolveDocumentLinkRequest, StateError, WorkspaceSymbolsRequest, new_note_content, normalize_new_note_path,
 };
 
 pub struct Backend {
@@ -187,6 +188,8 @@ impl LanguageServer for Backend {
                 }),
                 references_provider: Some(OneOf::Left(true)),
                 definition_provider: Some(OneOf::Left(true)),
+                document_symbol_provider: Some(OneOf::Left(true)),
+                workspace_symbol_provider: Some(OneOf::Left(true)),
                 rename_provider: Some(OneOf::Right(RenameOptions {
                     prepare_provider: Some(true),
                     work_done_progress_options: Default::default(),
@@ -311,6 +314,32 @@ impl LanguageServer for Backend {
             )
             .await
             .unwrap_or(fallback))
+    }
+
+    async fn document_symbol(&self, params: DocumentSymbolParams) -> Result<Option<DocumentSymbolResponse>> {
+        let request = {
+            let state = self.state.read().await;
+            state.document_symbols_request(params.text_document.uri)
+        };
+
+        Ok(self
+            .compute_request(request, "documentSymbol", |request: DocumentSymbolsRequest| {
+                request.compute()
+            })
+            .await)
+    }
+
+    async fn symbol(&self, params: WorkspaceSymbolParams) -> Result<Option<Vec<SymbolInformation>>> {
+        let request = {
+            let state = self.state.read().await;
+            state.workspace_symbols_request(params.query)
+        };
+
+        Ok(self
+            .compute_request(Ok(request), "workspace/symbol", |request: WorkspaceSymbolsRequest| {
+                request.compute()
+            })
+            .await)
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {

@@ -244,6 +244,8 @@ fn initialize_session(harness: &mut LspHarness, vault_uri: &Url, vault_path: &Pa
     assert_eq!(initialize["result"]["capabilities"]["hoverProvider"], true);
     assert_eq!(initialize["result"]["capabilities"]["referencesProvider"], true);
     assert_eq!(initialize["result"]["capabilities"]["definitionProvider"], true);
+    assert_eq!(initialize["result"]["capabilities"]["documentSymbolProvider"], true);
+    assert_eq!(initialize["result"]["capabilities"]["workspaceSymbolProvider"], true);
     assert_eq!(
         initialize["result"]["capabilities"]["renameProvider"]["prepareProvider"],
         true
@@ -391,6 +393,52 @@ fn create_feature_vault() -> (tempfile::TempDir, Url, Url, Url, Url, String) {
     )
 }
 
+fn create_symbol_vault() -> (tempfile::TempDir, Url, Url) {
+    let vault_dir = tempfile::tempdir().expect("should create temp dir");
+    fs::create_dir(vault_dir.path().join(".obsidian")).expect("should create .obsidian directory");
+
+    let source_path = vault_dir.path().join("source.md");
+    fs::write(
+        &source_path,
+        concat!(
+            "---\n",
+            "id: symbol-note\n",
+            "title: Symbol Note\n",
+            "aliases:\n",
+            "- Work Alias\n",
+            "tags: [rust, lsp]\n",
+            "---\n",
+            "\n",
+            "# Overview\n",
+            "See [[other-note]] and [Other](other.md). #inline/tag\n",
+            "\n",
+            "## Details\n",
+        ),
+    )
+    .expect("should write source note");
+    let source_uri = Url::from_file_path(source_path.canonicalize().expect("source path should canonicalize"))
+        .expect("source path should convert to file URI");
+
+    let other_path = vault_dir.path().join("other.md");
+    fs::write(
+        &other_path,
+        concat!(
+            "---\n",
+            "id: other-note\n",
+            "aliases: [Other Alias]\n",
+            "tags: [rust]\n",
+            "---\n",
+            "\n",
+            "# Other Heading\n",
+        ),
+    )
+    .expect("should write other note");
+    let other_uri = Url::from_file_path(other_path.canonicalize().expect("other path should canonicalize"))
+        .expect("other path should convert to file URI");
+
+    (vault_dir, source_uri, other_uri)
+}
+
 fn create_heading_anchor_vault() -> (tempfile::TempDir, Url, Url, String) {
     let vault_dir = tempfile::tempdir().expect("should create temp dir");
     fs::create_dir(vault_dir.path().join(".obsidian")).expect("should create .obsidian directory");
@@ -528,6 +576,84 @@ fn stdio_session_handles_initialize_and_document_lifecycle() {
 
     let final_body = fs::read_to_string(note_path).expect("should be able to read note after LSP session");
     assert_eq!(final_body, "original body");
+}
+
+#[test]
+fn stdio_session_handles_document_and_workspace_symbols() {
+    let (vault_dir, source_uri, other_uri) = create_symbol_vault();
+    let vault_path = vault_dir.path().canonicalize().expect("vault path should canonicalize");
+    let vault_uri = Url::from_file_path(&vault_path).expect("vault path should convert to file URI");
+
+    let mut harness = LspHarness::spawn(vault_dir.path());
+    initialize_session(&mut harness, &vault_uri, &vault_path);
+
+    harness.send(request(
+        2,
+        "textDocument/documentSymbol",
+        Some(json!({
+            "textDocument": {
+                "uri": source_uri,
+            }
+        })),
+    ));
+
+    let document_symbols = harness.expect_message("document symbols response", |message| message["id"] == 2);
+    let document_symbols = document_symbols["result"]
+        .as_array()
+        .expect("document symbols response should be an array");
+    let document_symbol_names = document_symbols
+        .iter()
+        .filter_map(|symbol| symbol["name"].as_str())
+        .collect::<Vec<_>>();
+    assert!(document_symbol_names.contains(&"id"));
+    assert!(document_symbol_names.contains(&"Work Alias"));
+    assert!(document_symbol_names.contains(&"#inline/tag"));
+    assert!(document_symbol_names.contains(&"Overview"));
+    assert!(document_symbol_names.contains(&"[[other-note]]"));
+    assert!(
+        document_symbols
+            .iter()
+            .any(|symbol| symbol["name"] == "Overview" && symbol["selectionRange"]["start"]["line"] == 8)
+    );
+
+    harness.send(request(
+        3,
+        "workspace/symbol",
+        Some(json!({
+            "query": "other",
+        })),
+    ));
+
+    let workspace_symbols = harness.expect_message("workspace symbols response", |message| message["id"] == 3);
+    let workspace_symbols = workspace_symbols["result"]
+        .as_array()
+        .expect("workspace symbols response should be an array");
+    assert!(
+        workspace_symbols
+            .iter()
+            .any(|symbol| { symbol["name"] == "other-note" && symbol["location"]["uri"] == other_uri.as_str() })
+    );
+    assert!(
+        workspace_symbols
+            .iter()
+            .any(|symbol| { symbol["name"] == "Other Heading" && symbol["location"]["uri"] == other_uri.as_str() })
+    );
+
+    harness.send(request(
+        4,
+        "workspace/symbol",
+        Some(json!({
+            "query": "rust",
+        })),
+    ));
+
+    let tag_symbols = harness.expect_message("workspace tag symbols response", |message| message["id"] == 4);
+    let tag_symbols = tag_symbols["result"]
+        .as_array()
+        .expect("workspace tag symbols response should be an array");
+    assert_eq!(tag_symbols.iter().filter(|symbol| symbol["name"] == "#rust").count(), 2);
+
+    shutdown_session(&mut harness);
 }
 
 #[test]

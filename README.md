@@ -118,6 +118,8 @@ Current functionality:
 - diagnostics for broken links, duplicate IDs, and duplicate aliases across the vault
 - hover on note links with basic target-note metadata
 - document links for wiki and markdown note links, with resolve support
+- document symbols for headings, frontmatter keys, aliases, tags, and outbound links
+- workspace symbol search across note IDs, titles, aliases, tags, and headings
 - references/backlinks for the target of wiki or markdown note links, or for the current note when the cursor is not on a link
 - go-to definition for linked notes, including heading anchors and nested sub-anchors
 - diagnostics clearing and refresh on open/change/close events
@@ -133,6 +135,5 @@ Additional explicit refactor modes are still planned.
 Planned LSP work prioritizes Obsidian-specific editing and refactoring features that generic Markdown language servers cannot provide:
 
 1. **Rename/refactor follow-ups**: add explicit commands or code actions for path-only, ID-only, and forced combined rename modes. Standard LSP rename already defaults to renaming the filename/path; it also renames the frontmatter ID when the current ID exactly matches the old filename stem, and otherwise leaves custom IDs unchanged.
-2. **Document and workspace symbols**: expose headings, frontmatter keys, aliases, tags, links, note IDs, titles, and aliases through `textDocument/documentSymbol` and `workspace/symbol`.
-3. **More code actions**: add diagnostic-driven fixes for duplicate IDs and aliases, link format conversion, and fixes for broken heading anchors.
-4. **Performance and freshness**: add file watching or workspace file-operation handling, plus a cache/index layer so diagnostics, completion, hover, and navigation stay fresh without reparsing the whole vault for every request.
+2. **More code actions**: add diagnostic-driven fixes for duplicate IDs and aliases, link format conversion, and fixes for broken heading anchors.
+3. **Performance and freshness**: add file watching or workspace file-operation handling, plus a cache/index layer so diagnostics, completion, hover, navigation, and symbols stay fresh without reparsing the whole vault for every request.
