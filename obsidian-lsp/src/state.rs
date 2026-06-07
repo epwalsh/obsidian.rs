@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use obsidian_core::{
     BrokenLink, DuplicateAlias, DuplicateId, InlineLocation, Link, LocatedLink, Location as CoreLocation, Note,
@@ -31,6 +31,7 @@ pub struct OpenDocument {
     pub path: PathBuf,
     pub version: i32,
     pub text: String,
+    pub shadows_disk: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -50,6 +51,7 @@ pub struct DiagnosticsBatch {
 #[derive(Clone, Debug)]
 struct StateSnapshot {
     vault_path: PathBuf,
+    vault: Arc<Vault>,
     open_documents: HashMap<PathBuf, OpenDocument>,
     diagnostics_ignore: Vec<String>,
 }
@@ -58,7 +60,7 @@ struct StateSnapshot {
 pub struct DiagnosticsRequest {
     snapshot: StateSnapshot,
     previously_published: HashMap<PathBuf, Url>,
-    primary_document: PrimaryDocument,
+    primary_document: Option<PrimaryDocument>,
     revision: u64,
 }
 
@@ -145,7 +147,6 @@ enum LinkContext {
 
 struct NavigationContext {
     snapshot: StateSnapshot,
-    vault: Vault,
     notes: Vec<Note>,
     source_note: Note,
     selected_link: Option<LocatedLink>,
@@ -234,17 +235,31 @@ pub enum StateError {
 }
 
 pub struct BackendState {
-    vault: Vault,
+    vault: Arc<Vault>,
     open_documents: HashMap<PathBuf, OpenDocument>,
     published_diagnostics: HashMap<PathBuf, Url>,
     diagnostics_revision: u64,
     config: Config,
 }
 
+#[derive(Clone, Debug)]
+pub enum FileChangeKind {
+    Created,
+    Changed,
+    Deleted,
+}
+
+#[derive(Clone, Debug)]
+pub struct FileChange {
+    pub path: PathBuf,
+    pub kind: FileChangeKind,
+}
+
 impl BackendState {
     pub fn new(vault: Vault) -> Self {
+        let vault = Vault::open_cached(vault.path()).expect("opened vault path should be cacheable");
         Self {
-            vault,
+            vault: Arc::new(vault),
             open_documents: HashMap::new(),
             published_diagnostics: HashMap::new(),
             diagnostics_revision: 0,
@@ -256,7 +271,7 @@ impl BackendState {
         if let Some(new_path) = &config.vault_path_override
             && new_path != self.vault.path()
         {
-            self.vault = Vault::open(new_path)?;
+            self.vault = Arc::new(Vault::open_cached(new_path)?);
             self.open_documents.clear();
             self.published_diagnostics.clear();
             self.diagnostics_revision += 1;
@@ -265,10 +280,8 @@ impl BackendState {
         Ok(())
     }
 
-    pub fn global_diagnostics_request(&mut self) -> Option<DiagnosticsRequest> {
-        let doc = self.open_documents.values().next()?;
-        let (path, uri, version) = (doc.path.clone(), doc.uri.clone(), Some(doc.version));
-        Some(self.prepare_diagnostics_request(path, uri, version))
+    pub fn global_diagnostics_request(&mut self) -> DiagnosticsRequest {
+        self.prepare_diagnostics_request(None)
     }
 
     pub fn vault_path(&self) -> &Path {
@@ -304,9 +317,45 @@ impl BackendState {
     pub fn close_document(&mut self, uri: Url) -> Result<DiagnosticsRequest, StateError> {
         let path = self.path_from_uri(&uri)?;
         self.open_documents.remove(&path);
-        self.vault.unload_note(&path);
+        Arc::make_mut(&mut self.vault).refresh_cached_note(&path)?;
 
-        Ok(self.prepare_diagnostics_request(path, uri, None))
+        Ok(self.prepare_diagnostics_request(Some(PrimaryDocument {
+            path,
+            uri,
+            version: None,
+        })))
+    }
+
+    pub fn apply_file_changes(&mut self, changes: Vec<FileChange>) -> Result<Option<DiagnosticsRequest>, StateError> {
+        let mut changed = false;
+
+        for change in changes {
+            let path = self.vault.normalize_path(&change.path);
+            vault_relative_path(self.vault.path(), &path)?;
+            if !Vault::is_note_path(&path) {
+                continue;
+            }
+
+            match change.kind {
+                FileChangeKind::Created | FileChangeKind::Changed => {
+                    if let Some(document) = self.open_documents.get_mut(&path) {
+                        if !document.shadows_disk && path.exists() {
+                            document.shadows_disk = true;
+                        }
+                        changed = true;
+                    } else {
+                        Arc::make_mut(&mut self.vault).refresh_cached_note(&path)?;
+                        changed = true;
+                    }
+                }
+                FileChangeKind::Deleted => {
+                    Arc::make_mut(&mut self.vault).remove_cached_note(&path);
+                    changed = true;
+                }
+            }
+        }
+
+        Ok(changed.then(|| self.prepare_diagnostics_request(None)))
     }
 
     pub fn document_links_request(&self, uri: Url) -> Result<DocumentLinksRequest, StateError> {
@@ -418,14 +467,16 @@ impl BackendState {
 
     fn sync_document(&mut self, uri: Url, version: i32, text: String) -> Result<DiagnosticsRequest, StateError> {
         let path = self.path_from_uri(&uri)?;
+        let shadows_disk = self
+            .open_documents
+            .get(&path)
+            .map(|document| document.shadows_disk)
+            .unwrap_or_else(|| path.exists() || self.vault.has_cached_note(&path));
 
         // Only shadow the on-disk note when the file actually exists. If the file doesn't exist
         // yet, a preview plugin may have opened a temporary buffer (e.g. to show a diff for a
         // "Create note" code action) without the user intending to create the file. Loading a
         // non-existent note into vault memory would prematurely resolve broken-link diagnostics.
-        if path.exists() {
-            self.vault.load_note(Note::parse(&path, &text));
-        }
         self.open_documents.insert(
             path.clone(),
             OpenDocument {
@@ -433,19 +484,24 @@ impl BackendState {
                 path: path.clone(),
                 version,
                 text,
+                shadows_disk,
             },
         );
 
-        Ok(self.prepare_diagnostics_request(path, uri, Some(version)))
+        Ok(self.prepare_diagnostics_request(Some(PrimaryDocument {
+            path,
+            uri,
+            version: Some(version),
+        })))
     }
 
-    fn prepare_diagnostics_request(&mut self, path: PathBuf, uri: Url, version: Option<i32>) -> DiagnosticsRequest {
+    fn prepare_diagnostics_request(&mut self, primary_document: Option<PrimaryDocument>) -> DiagnosticsRequest {
         self.diagnostics_revision += 1;
 
         DiagnosticsRequest {
             snapshot: self.snapshot(),
             previously_published: self.published_diagnostics.clone(),
-            primary_document: PrimaryDocument { path, uri, version },
+            primary_document,
             revision: self.diagnostics_revision,
         }
     }
@@ -453,6 +509,7 @@ impl BackendState {
     fn snapshot(&self) -> StateSnapshot {
         StateSnapshot {
             vault_path: self.vault.path().to_path_buf(),
+            vault: Arc::clone(&self.vault),
             open_documents: self.open_documents.clone(),
             diagnostics_ignore: self.config.diagnostics_ignore.clone(),
         }
@@ -467,30 +524,45 @@ impl BackendState {
 
 impl DiagnosticsRequest {
     pub fn compute(self) -> Result<DiagnosticsBatch, StateError> {
-        let vault = self.snapshot.build_vault()?;
         let ignore_set = build_ignore_set(&self.snapshot.diagnostics_ignore);
-        let report = vault.check(|path| {
-            let rel = path.strip_prefix(vault.path()).unwrap_or(path);
-            !ignore_set.is_match(rel)
-        });
+        let notes = self.snapshot.notes();
+        let visible_notes = notes
+            .into_iter()
+            .filter(|note| {
+                let path = &note.path;
+                let rel = path.strip_prefix(self.snapshot.vault_path.as_path()).unwrap_or(path);
+                !ignore_set.is_match(rel)
+            })
+            .collect::<Vec<_>>();
+        let report = obsidian_core::check_notes(&self.snapshot.vault_path, &visible_notes);
         let mut diagnostics_by_path = build_diagnostics_by_path(&self.snapshot, &report)?;
 
         let mut paths_to_publish = BTreeSet::new();
         paths_to_publish.extend(diagnostics_by_path.keys().cloned());
         paths_to_publish.extend(self.previously_published.keys().cloned());
-        paths_to_publish.insert(self.primary_document.path.clone());
+        if let Some(primary_document) = &self.primary_document {
+            paths_to_publish.insert(primary_document.path.clone());
+        }
 
         let mut published_diagnostics = HashMap::new();
         let mut updates = Vec::with_capacity(paths_to_publish.len());
 
         for path in paths_to_publish {
-            let uri = if path == self.primary_document.path {
-                self.primary_document.uri.clone()
+            let uri = if self
+                .primary_document
+                .as_ref()
+                .is_some_and(|primary_document| path == primary_document.path)
+            {
+                self.primary_document.as_ref().unwrap().uri.clone()
             } else {
                 self.snapshot.uri_for_path(&path)?
             };
-            let version = if path == self.primary_document.path {
-                self.primary_document.version
+            let version = if self
+                .primary_document
+                .as_ref()
+                .is_some_and(|primary_document| path == primary_document.path)
+            {
+                self.primary_document.as_ref().unwrap().version
             } else {
                 self.snapshot.version_for_path(&path)
             };
@@ -537,8 +609,7 @@ impl DocumentSymbolsRequest {
 
 impl WorkspaceSymbolsRequest {
     pub fn compute(self) -> Result<Vec<SymbolInformation>, StateError> {
-        let vault = self.snapshot.build_vault()?;
-        let notes = self.snapshot.notes_with_content(&vault);
+        let notes = self.snapshot.notes_with_content();
         let query = self.query.to_lowercase();
         let mut symbols = Vec::new();
 
@@ -571,9 +642,13 @@ impl ResolveDocumentLinkRequest {
             return Ok(self.document_link);
         }
 
-        let vault = self.snapshot.build_vault()?;
-        let notes = self.snapshot.notes(&vault);
-        let matching_notes = resolve_link_targets(&source_note.path, &link.link, &notes, vault.path());
+        let notes = self.snapshot.notes();
+        let matching_notes = resolve_link_targets(
+            &source_note.path,
+            &link.link,
+            &notes,
+            self.snapshot.vault_path.as_path(),
+        );
 
         match matching_notes.as_slice() {
             [] => {
@@ -656,7 +731,9 @@ impl NavigationRequest {
 
         let mut locations = Vec::new();
         for target in target_notes {
-            for (source_note, links) in context.vault.backlinks_from(&context.notes, target) {
+            for (source_note, links) in
+                obsidian_core::backlinks_from(&context.notes, target, context.snapshot.vault_path.as_path())
+            {
                 let uri = context.snapshot.uri_for_path(&source_note.path)?;
                 locations.extend(links.into_iter().map(|link| Location {
                     uri: uri.clone(),
@@ -736,8 +813,7 @@ impl NavigationRequest {
     }
 
     fn build_context(self) -> Result<NavigationContext, StateError> {
-        let vault = self.snapshot.build_vault()?;
-        let notes = self.snapshot.notes(&vault);
+        let notes = self.snapshot.notes();
         let source_note = self.snapshot.note_for_path(&self.path)?;
         let selected_link = find_link_at_position(&source_note, self.position).cloned();
         let selected_tag = if selected_link.is_none() {
@@ -745,10 +821,8 @@ impl NavigationRequest {
         } else {
             None
         };
-
         Ok(NavigationContext {
             snapshot: self.snapshot,
-            vault,
             notes,
             source_note,
             selected_link,
@@ -761,7 +835,14 @@ impl NavigationContext {
     fn resolve_selected_link_targets(&self) -> Vec<&Note> {
         self.selected_link
             .as_ref()
-            .map(|link| resolve_link_targets(&self.source_note.path, &link.link, &self.notes, self.vault.path()))
+            .map(|link| {
+                resolve_link_targets(
+                    &self.source_note.path,
+                    &link.link,
+                    &self.notes,
+                    self.snapshot.vault_path.as_path(),
+                )
+            })
             .unwrap_or_default()
     }
 }
@@ -840,15 +921,20 @@ fn tag_locations(snapshot: &StateSnapshot, tag: &str) -> Result<Vec<Location>, S
 }
 
 fn tag_occurrences(snapshot: &StateSnapshot, tag: &str) -> Result<Vec<TagOccurrence>, StateError> {
-    let vault = snapshot.build_vault()?;
-    let results = vault.find_tags(&[tag.to_string()])?;
+    let notes = snapshot.notes();
     let mut occurrences = Vec::new();
     let mut frontmatter_cache: HashMap<PathBuf, Vec<FrontmatterTagRange>> = HashMap::new();
     let mut used_frontmatter_ranges: HashMap<PathBuf, Vec<Range>> = HashMap::new();
 
-    for (note, tags) in results {
-        for tag in tags {
-            match tag.location {
+    for note in notes {
+        let matching_tags = note
+            .tags
+            .iter()
+            .filter(|candidate| tag_matches_query_tag(&candidate.tag, tag))
+            .cloned()
+            .collect::<Vec<_>>();
+        for located_tag in matching_tags {
+            match located_tag.location {
                 CoreLocation::Inline(location) => occurrences.push(TagOccurrence {
                     path: note.path.clone(),
                     range: location_to_range(&location),
@@ -865,7 +951,7 @@ fn tag_occurrences(snapshot: &StateSnapshot, tag: &str) -> Result<Vec<TagOccurre
                     };
                     let used = used_frontmatter_ranges.entry(note.path.clone()).or_default();
                     if let Some(tag_range) = ranges.iter().find(|tag_range| {
-                        tag_range.tag.eq_ignore_ascii_case(&tag.tag) && !used.contains(&tag_range.range)
+                        tag_range.tag.eq_ignore_ascii_case(&located_tag.tag) && !used.contains(&tag_range.range)
                     }) {
                         used.push(tag_range.range);
                         occurrences.push(TagOccurrence {
@@ -886,6 +972,13 @@ fn tag_occurrences(snapshot: &StateSnapshot, tag: &str) -> Result<Vec<TagOccurre
             .then(left.range.start.character.cmp(&right.range.start.character))
     });
     Ok(occurrences)
+}
+
+fn tag_matches_query_tag(candidate: &str, query: &str) -> bool {
+    candidate.eq_ignore_ascii_case(query)
+        || candidate
+            .to_lowercase()
+            .starts_with(&format!("{}/", query.to_lowercase()))
 }
 
 impl CompletionRequest {
@@ -912,8 +1005,7 @@ impl CompletionRequest {
                 Position::new(position.line, *tag_start_char as u32),
                 Position::new(position.line, char_pos as u32),
             );
-            let vault = snapshot.build_vault()?;
-            let all_tags = vault.list_tags().map_err(StateError::Vault)?;
+            let all_tags = snapshot.list_tags();
             return Ok(Some(tag_completions(&all_tags, query, prefix_range)));
         }
 
@@ -933,8 +1025,7 @@ impl CompletionRequest {
             Position::new(position.line, (char_pos + close_len) as u32),
         );
 
-        let vault = snapshot.build_vault()?;
-        let notes = snapshot.notes(&vault);
+        let notes = snapshot.notes();
 
         let items: Vec<CompletionItem> = if let Some(hq) = heading_query {
             if note_query.is_empty() {
@@ -956,7 +1047,9 @@ impl CompletionRequest {
                 .filter(|note| note_matches_query(note, note_query))
                 .flat_map(|note| match &context {
                     LinkContext::Wiki { .. } => wiki_completions_for_note(note, prefix_range),
-                    LinkContext::Markdown { .. } => markdown_completions_for_note(note, vault.path(), prefix_range),
+                    LinkContext::Markdown { .. } => {
+                        markdown_completions_for_note(note, snapshot.vault_path.as_path(), prefix_range)
+                    }
                     LinkContext::Tag { .. } => unreachable!(),
                 })
                 .collect()
@@ -968,39 +1061,71 @@ impl CompletionRequest {
 
 impl StateSnapshot {
     fn build_vault(&self) -> Result<Vault, StateError> {
-        let mut vault = Vault::open(&self.vault_path)?;
+        let mut vault = self.vault.as_ref().clone();
         for document in self.open_documents.values() {
-            // Only shadow on-disk notes. If the file doesn't exist yet the buffer was likely
-            // opened by a preview plugin for a "Create note" action; loading it would
-            // prematurely resolve broken-link diagnostics before the file is actually created.
-            if document.path.exists() {
+            // Only buffers that correspond to real indexed/disk notes shadow the index. Preview
+            // buffers for not-yet-created notes stay out of vault-wide diagnostics until a file
+            // creation event marks them as disk-backed.
+            if document.shadows_disk {
                 vault.load_note(Note::parse(&document.path, &document.text));
             }
         }
         Ok(vault)
     }
 
-    fn notes(&self, vault: &Vault) -> Vec<Note> {
-        vault
+    fn notes(&self) -> Vec<Note> {
+        let mut notes = self
+            .vault
             .notes_filtered(|_| true)
             .into_iter()
             .filter_map(Result::ok)
-            .collect()
+            .collect::<Vec<_>>();
+        let overlay_paths = self
+            .open_documents
+            .values()
+            .filter(|document| document.shadows_disk)
+            .map(|document| document.path.clone())
+            .collect::<HashSet<_>>();
+        notes.retain(|note| !overlay_paths.contains(&note.path));
+        notes.extend(
+            self.open_documents
+                .values()
+                .filter(|document| document.shadows_disk)
+                .map(|document| Note::parse(&document.path, &document.text)),
+        );
+        notes.sort_by(|left, right| left.path.cmp(&right.path));
+        notes
     }
 
-    fn notes_with_content(&self, vault: &Vault) -> Vec<Note> {
-        vault
+    fn notes_with_content(&self) -> Vec<Note> {
+        let mut notes = self
+            .vault
             .notes_filtered_with_content(|_| true)
             .into_iter()
             .filter_map(Result::ok)
-            .collect()
+            .collect::<Vec<_>>();
+        let overlay_paths = self
+            .open_documents
+            .values()
+            .filter(|document| document.shadows_disk)
+            .map(|document| document.path.clone())
+            .collect::<HashSet<_>>();
+        notes.retain(|note| !overlay_paths.contains(&note.path));
+        notes.extend(
+            self.open_documents
+                .values()
+                .filter(|document| document.shadows_disk)
+                .map(|document| Note::parse(&document.path, &document.text)),
+        );
+        notes.sort_by(|left, right| left.path.cmp(&right.path));
+        notes
     }
 
     fn note_for_path(&self, path: &Path) -> Result<Note, StateError> {
         if let Some(document) = self.open_documents.get(path) {
             Ok(Note::parse(path, &document.text))
         } else {
-            Ok(Note::from_path(path)?)
+            Ok(self.vault.note_for_path(path)?)
         }
     }
 
@@ -1008,8 +1133,16 @@ impl StateSnapshot {
         if let Some(document) = self.open_documents.get(path) {
             Ok(document.text.clone())
         } else {
-            Ok(fs::read_to_string(path)?)
+            Ok(self.vault.text_for_path(path)?)
         }
+    }
+
+    fn list_tags(&self) -> Vec<String> {
+        let mut tags = BTreeSet::new();
+        for note in self.notes() {
+            tags.extend(note.tags.into_iter().map(|tag| tag.tag.to_lowercase()));
+        }
+        tags.into_iter().collect()
     }
 
     fn uri_for_path(&self, path: &Path) -> Result<Url, StateError> {
@@ -1877,8 +2010,7 @@ impl CodeActionRequest {
             diagnostics,
         } = self;
         let source_note = snapshot.note_for_path(&path)?;
-        let vault = snapshot.build_vault()?;
-        let notes = snapshot.notes(&vault);
+        let notes = snapshot.notes();
         let mut actions = Vec::new();
 
         actions.extend(duplicate_diagnostic_actions(
@@ -1891,10 +2023,12 @@ impl CodeActionRequest {
         )?);
 
         if let Some(located_link) = find_link_at_position(&source_note, position) {
-            let targets = resolve_link_targets(&path, &located_link.link, &notes, vault.path());
+            let targets = resolve_link_targets(&path, &located_link.link, &notes, snapshot.vault_path.as_path());
             match targets.as_slice() {
                 [] => {
-                    if let Some(action) = create_note_code_action(&path, located_link, vault.path(), &diagnostics)? {
+                    if let Some(action) =
+                        create_note_code_action(&path, located_link, snapshot.vault_path.as_path(), &diagnostics)?
+                    {
                         actions.push(action);
                     }
                 }
@@ -2435,9 +2569,13 @@ fn rename_target(
     let source_note = snapshot.note_for_path(path)?;
 
     if let Some(selected_link) = find_link_at_position(&source_note, position) {
-        let vault = snapshot.build_vault()?;
-        let notes = snapshot.notes(&vault);
-        let matching_notes = resolve_link_targets(&source_note.path, &selected_link.link, &notes, vault.path());
+        let notes = snapshot.notes();
+        let matching_notes = resolve_link_targets(
+            &source_note.path,
+            &selected_link.link,
+            &notes,
+            snapshot.vault_path.as_path(),
+        );
         if matching_notes.len() != 1 {
             return Ok(None);
         }
@@ -3821,6 +3959,7 @@ fn heading_completions_for_note(
 mod tests {
     use super::*;
     use crate::uri::path_to_uri;
+    use std::fs;
 
     fn open_state() -> (tempfile::TempDir, BackendState, PathBuf, Url) {
         let vault_dir = tempfile::tempdir().unwrap();
@@ -3836,15 +3975,6 @@ mod tests {
         let uri = path_to_uri(&note_path).unwrap();
 
         (vault_dir, state, note_path, uri)
-    }
-
-    fn note_body(state: &BackendState, note_path: &Path) -> Option<String> {
-        state
-            .vault
-            .notes_filtered_with_content(|candidate| candidate == note_path)
-            .into_iter()
-            .find_map(Result::ok)
-            .and_then(|note| note.body)
     }
 
     fn update_for_uri<'a>(batch: &'a DiagnosticsBatch, uri: &Url) -> &'a DiagnosticUpdate {
@@ -3891,7 +4021,7 @@ mod tests {
     }
 
     #[test]
-    fn open_document_loads_note_into_vault_state() {
+    fn open_document_adds_note_to_lsp_overlay() {
         let (_vault_dir, mut state, note_path, uri) = open_state();
 
         let request = state.open_document(uri.clone(), 1, "buffer body".to_string()).unwrap();
@@ -3901,9 +4031,11 @@ mod tests {
         assert_eq!(update.uri, uri);
         assert_eq!(update.version, Some(1));
         assert!(update.diagnostics.is_empty());
-        assert!(state.vault.note_is_loaded(&note_path));
         assert_eq!(state.open_documents.get(&note_path).unwrap().text, "buffer body");
-        assert_eq!(note_body(&state, &note_path).as_deref(), Some("buffer body"));
+        assert_eq!(
+            state.snapshot().note_for_path(&note_path).unwrap().body.as_deref(),
+            Some("buffer body")
+        );
     }
 
     #[test]
@@ -3927,8 +4059,91 @@ mod tests {
 
         assert_eq!(state.open_documents.get(&note_path).unwrap().version, 2);
         assert_eq!(state.open_documents.get(&note_path).unwrap().text, "changed body");
-        assert_eq!(note_body(&state, &note_path).as_deref(), Some("changed body"));
+        assert_eq!(
+            state.snapshot().note_for_path(&note_path).unwrap().body.as_deref(),
+            Some("changed body")
+        );
         assert_eq!(update_for_uri(&batch, &note_uri).version, Some(2));
+    }
+
+    #[test]
+    fn file_change_create_clears_broken_link_without_open_documents() {
+        let vault_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
+        let source_path = vault_dir.path().join("source.md");
+        fs::write(&source_path, "See [[target]].").unwrap();
+        let source_path = source_path.canonicalize().unwrap();
+        let source_uri = path_to_uri(&source_path).unwrap();
+
+        let mut state = BackendState::new(Vault::open(vault_dir.path()).unwrap());
+        let batch = state.global_diagnostics_request().compute().unwrap();
+        assert_eq!(codes(update_for_uri(&batch, &source_uri)), vec!["broken-link"]);
+        state.set_published_diagnostics(batch.published_diagnostics);
+
+        let target_path = vault_dir.path().join("target.md");
+        fs::write(&target_path, "---\nid: target\n---\n").unwrap();
+        let request = state
+            .apply_file_changes(vec![FileChange {
+                path: target_path,
+                kind: FileChangeKind::Created,
+            }])
+            .unwrap()
+            .expect("created note should trigger diagnostics");
+        let batch = request.compute().unwrap();
+
+        assert!(codes(update_for_uri(&batch, &source_uri)).is_empty());
+    }
+
+    #[test]
+    fn file_change_delete_creates_broken_link_diagnostic() {
+        let vault_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
+        let source_path = vault_dir.path().join("source.md");
+        fs::write(&source_path, "See [[target]].").unwrap();
+        let source_path = source_path.canonicalize().unwrap();
+        let source_uri = path_to_uri(&source_path).unwrap();
+        let target_path = vault_dir.path().join("target.md");
+        fs::write(&target_path, "---\nid: target\n---\n").unwrap();
+        let target_path = target_path.canonicalize().unwrap();
+
+        let mut state = BackendState::new(Vault::open(vault_dir.path()).unwrap());
+        let batch = state.global_diagnostics_request().compute().unwrap();
+        state.set_published_diagnostics(batch.published_diagnostics);
+
+        fs::remove_file(&target_path).unwrap();
+        let request = state
+            .apply_file_changes(vec![FileChange {
+                path: target_path,
+                kind: FileChangeKind::Deleted,
+            }])
+            .unwrap()
+            .expect("deleted note should trigger diagnostics");
+        let batch = request.compute().unwrap();
+
+        assert_eq!(codes(update_for_uri(&batch, &source_uri)), vec!["broken-link"]);
+    }
+
+    #[test]
+    fn open_documents_shadow_external_file_changes_until_close() {
+        let (_vault_dir, mut state, note_path, uri) = open_state();
+        state
+            .open_document(uri.clone(), 1, "---\nid: open-id\n---\n".to_string())
+            .unwrap();
+        fs::write(&note_path, "---\nid: disk-id\n---\n").unwrap();
+
+        state
+            .apply_file_changes(vec![FileChange {
+                path: note_path.clone(),
+                kind: FileChangeKind::Changed,
+            }])
+            .unwrap()
+            .expect("changed note should trigger diagnostics");
+        let snapshot = state.snapshot();
+        assert_eq!(snapshot.note_for_path(&note_path).unwrap().id, "open-id");
+
+        state.close_document(uri).unwrap();
+        let snapshot = state.snapshot();
+        assert_eq!(snapshot.note_for_path(&note_path).unwrap().id, "disk-id");
     }
 
     #[test]
@@ -3941,9 +4156,12 @@ mod tests {
         let update = update_for_uri(&batch, &uri);
 
         assert!(update.diagnostics.is_empty());
-        assert!(!state.vault.note_is_loaded(&note_path));
         assert!(!state.open_documents.contains_key(&note_path));
-        assert_eq!(note_body(&state, &note_path).as_deref(), Some("disk body"));
+        assert_eq!(
+            state.snapshot().note_for_path(&note_path).unwrap().body.as_deref(),
+            None
+        );
+        assert_eq!(state.snapshot().text_for_path(&note_path).unwrap(), "disk body");
     }
 
     #[test]

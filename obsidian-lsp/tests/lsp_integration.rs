@@ -282,6 +282,74 @@ fn shutdown_session(harness: &mut LspHarness) {
     harness.wait_for_exit();
 }
 
+#[test]
+fn stdio_session_registers_markdown_file_watcher_when_supported() {
+    let vault_dir = tempfile::tempdir().expect("should create temp dir");
+    fs::create_dir(vault_dir.path().join(".obsidian")).expect("should create .obsidian directory");
+    let vault_path = vault_dir.path().canonicalize().expect("vault path should canonicalize");
+    let vault_uri = Url::from_file_path(&vault_path).expect("vault path should convert to file URI");
+
+    let mut harness = LspHarness::spawn(vault_dir.path());
+    harness.send(request(
+        1,
+        "initialize",
+        Some(json!({
+            "processId": null,
+            "rootUri": vault_uri,
+            "capabilities": {
+                "workspace": {
+                    "didChangeWatchedFiles": {
+                        "dynamicRegistration": true
+                    }
+                }
+            },
+        })),
+    ));
+
+    let initialize = harness.expect_message("initialize response", |message| message["id"] == 1);
+    assert_eq!(
+        initialize["result"]["capabilities"]["workspace"]["fileOperations"]["didCreate"]["filters"][0]["pattern"]["glob"],
+        "**/*.md"
+    );
+    assert_eq!(
+        initialize["result"]["capabilities"]["workspace"]["fileOperations"]["didRename"]["filters"][0]["pattern"]["glob"],
+        "**/*.md"
+    );
+    assert_eq!(
+        initialize["result"]["capabilities"]["workspace"]["fileOperations"]["didDelete"]["filters"][0]["pattern"]["glob"],
+        "**/*.md"
+    );
+
+    harness.send(notification("initialized", Some(json!({}))));
+    let registration = harness.expect_message("client/registerCapability request", |message| {
+        message["method"] == "client/registerCapability"
+    });
+    assert_eq!(
+        registration["params"]["registrations"][0]["method"],
+        "workspace/didChangeWatchedFiles"
+    );
+    assert_eq!(
+        registration["params"]["registrations"][0]["registerOptions"]["watchers"][0]["globPattern"],
+        "**/*.md"
+    );
+    let registration_id = registration["id"].clone();
+    harness.send(json!({
+        "jsonrpc": "2.0",
+        "id": registration_id,
+        "result": null,
+    }));
+
+    let log_message = harness.expect_message("ready log message", |message| message["method"] == "window/logMessage");
+    assert!(
+        log_message["params"]["message"]
+            .as_str()
+            .expect("log message should be a string")
+            .contains(vault_path.to_string_lossy().as_ref())
+    );
+
+    shutdown_session(&mut harness);
+}
+
 fn expect_diagnostics(harness: &mut LspHarness, uri: &Url, version: Option<i32>) -> Value {
     harness.expect_message("publishDiagnostics notification", |message| {
         if message["method"] != "textDocument/publishDiagnostics" || message["params"]["uri"] != uri.as_str() {
@@ -336,6 +404,60 @@ fn create_test_vault() -> (tempfile::TempDir, PathBuf, Url) {
     let note_uri = Url::from_file_path(&note_path).expect("note path should convert to file URI");
 
     (vault_dir, note_path, note_uri)
+}
+
+#[test]
+fn stdio_session_updates_diagnostics_for_watched_file_changes() {
+    let vault_dir = tempfile::tempdir().expect("should create temp dir");
+    fs::create_dir(vault_dir.path().join(".obsidian")).expect("should create .obsidian directory");
+    let source_path = vault_dir.path().join("source.md");
+    let source_text = "See [[target]].";
+    fs::write(&source_path, source_text).expect("should write source note");
+    let source_uri = Url::from_file_path(source_path.canonicalize().expect("source path should canonicalize"))
+        .expect("source path should convert to URI");
+    let target_path = vault_dir.path().join("target.md");
+    let vault_path = vault_dir.path().canonicalize().expect("vault path should canonicalize");
+    let vault_uri = Url::from_file_path(&vault_path).expect("vault path should convert to URI");
+
+    let mut harness = LspHarness::spawn(vault_dir.path());
+    initialize_session(&mut harness, &vault_uri, &vault_path);
+    harness.send(notification(
+        "textDocument/didOpen",
+        Some(json!({
+            "textDocument": {
+                "uri": source_uri,
+                "languageId": "markdown",
+                "version": 1,
+                "text": source_text,
+            }
+        })),
+    ));
+    let diagnostics = expect_diagnostics(&mut harness, &source_uri, Some(1));
+    assert_eq!(diagnostic_codes(&diagnostics), vec!["broken-link"]);
+
+    fs::write(&target_path, "---\nid: target\n---\n").expect("should write target note");
+    let target_uri = Url::from_file_path(target_path.canonicalize().expect("target path should canonicalize"))
+        .expect("target path should convert to URI");
+    harness.send(notification(
+        "workspace/didChangeWatchedFiles",
+        Some(json!({
+            "changes": [{ "uri": target_uri, "type": 1 }],
+        })),
+    ));
+    let diagnostics = expect_diagnostics(&mut harness, &source_uri, Some(1));
+    assert!(diagnostic_codes(&diagnostics).is_empty());
+
+    fs::remove_file(&target_path).expect("should remove target note");
+    harness.send(notification(
+        "workspace/didChangeWatchedFiles",
+        Some(json!({
+            "changes": [{ "uri": target_uri, "type": 3 }],
+        })),
+    ));
+    let diagnostics = expect_diagnostics(&mut harness, &source_uri, Some(1));
+    assert_eq!(diagnostic_codes(&diagnostics), vec!["broken-link"]);
+
+    shutdown_session(&mut harness);
 }
 
 fn create_feature_vault() -> (tempfile::TempDir, Url, Url, Url, Url, String) {
@@ -1890,6 +2012,7 @@ fn stdio_session_offers_create_note_code_action_for_broken_links() {
         Some(json!({ "command": "obsidian.createNote", "arguments": [md_path_arg, "Missing Markdown"] })),
     ));
     harness.expect_message("markdown executeCommand response", |message| message["id"] == 5);
+    expect_diagnostics(&mut harness, &source_uri, Some(2));
 
     let md_note_content =
         fs::read_to_string(&expected_md_path).expect("markdown note should exist on disk after executeCommand");
@@ -1901,6 +2024,15 @@ fn stdio_session_offers_create_note_code_action_for_broken_links() {
     // Existing notes offer refactors, but not create-note quick fixes.
     let existing_path = vault_dir.path().join("existing.md");
     fs::write(&existing_path, "---\nid: existing\n---\n").expect("should write existing note");
+    let existing_uri = Url::from_file_path(existing_path.canonicalize().expect("existing path should canonicalize"))
+        .expect("existing path should convert to URI");
+    harness.send(notification(
+        "workspace/didChangeWatchedFiles",
+        Some(json!({
+            "changes": [{ "uri": existing_uri, "type": 1 }],
+        })),
+    ));
+    thread::sleep(Duration::from_millis(100));
 
     let source_with_existing = "[[existing]]";
     harness.send(notification(

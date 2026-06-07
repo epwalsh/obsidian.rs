@@ -14,10 +14,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added LSP document symbols for note structure and workspace symbols for vault-wide note, tag, and heading search.
 - Added LSP code actions for duplicate ID/alias fixes, wiki/markdown link conversion, and wiki-link missing-heading creation.
 - Added `Vault::rename_edits()` to expose exact backlink replacement spans for rename previews.
+- Added cached-vault support to `obsidian-core::Vault`, including `open_cached()`, cached note text, incremental note refresh/removal, cached search, and health checks over cached notes.
+- Added LSP handling for watched Markdown file changes and workspace file create/rename/delete notifications.
 
 ### Changed
 
 - LSP create-note quick fixes now use wiki aliases and markdown link text as the new note's primary alias and heading.
+- LSP diagnostics, navigation, completion, symbols, and code actions now use cached vault snapshots with open-document overlays instead of reparsing the whole vault for every request.
+
+### Fixed
+
+- Fixed LSP duplicate-alias diagnostics and quick fixes to attach to the exact frontmatter alias token when available, and to appear for cursor-line code-action requests even when clients omit diagnostics.
+- Fixed stale LSP diagnostics for external note creates, edits, deletes, and renames when clients send watched-file or workspace file-operation notifications.
 
 ## v0.4.0 - 2026-06-05
 
