@@ -2,34 +2,59 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use serde_json::Value;
 use tokio::sync::{Mutex, RwLock};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     CodeActionOrCommand, CodeActionParams, CodeActionProviderCapability, CodeActionResponse, CompletionOptions,
-    CompletionParams, CompletionResponse, ConfigurationItem, DidChangeConfigurationParams, DidChangeTextDocumentParams,
-    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentLink, DocumentLinkOptions, DocumentLinkParams,
-    DocumentSymbolParams, DocumentSymbolResponse, ExecuteCommandOptions, ExecuteCommandParams, GotoDefinitionParams,
-    GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
-    InitializedParams, Location, MessageType, OneOf, PrepareRenameResponse, ReferenceParams, RenameOptions,
+    CompletionParams, CompletionResponse, ConfigurationItem, CreateFilesParams, DeleteFilesParams,
+    DidChangeConfigurationParams, DidChangeTextDocumentParams, DidChangeWatchedFilesParams,
+    DidChangeWatchedFilesRegistrationOptions, DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentLink,
+    DocumentLinkOptions, DocumentLinkParams, DocumentSymbolParams, DocumentSymbolResponse, ExecuteCommandOptions,
+    ExecuteCommandParams, FileChangeType, FileOperationFilter, FileOperationPattern, FileOperationPatternKind,
+    FileOperationRegistrationOptions, FileSystemWatcher, GlobPattern, GotoDefinitionParams, GotoDefinitionResponse,
+    Hover, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location,
+    MessageType, OneOf, PrepareRenameResponse, ReferenceParams, Registration, RenameFilesParams, RenameOptions,
     RenameParams, ServerCapabilities, ServerInfo, SymbolInformation, TextDocumentPositionParams,
-    TextDocumentSyncCapability, TextDocumentSyncKind, WorkspaceEdit, WorkspaceFoldersServerCapabilities,
-    WorkspaceServerCapabilities, WorkspaceSymbolParams,
+    TextDocumentSyncCapability, TextDocumentSyncKind, WatchKind, WorkspaceEdit,
+    WorkspaceFileOperationsServerCapabilities, WorkspaceFoldersServerCapabilities, WorkspaceServerCapabilities,
+    WorkspaceSymbolParams,
 };
 use tower_lsp::{Client, LanguageServer};
 
 use crate::state::{
     BackendState, CodeActionRequest, CompletionRequest, Config, DiagnosticUpdate, DiagnosticsRequest,
-    DocumentLinksRequest, DocumentSymbolsRequest, NavigationRequest, PrepareRenameRequest, RenameRequest,
-    ResolveDocumentLinkRequest, StateError, WorkspaceSymbolsRequest, new_note_content, normalize_new_note_path,
+    DocumentLinksRequest, DocumentSymbolsRequest, FileChange, FileChangeKind, NavigationRequest, PrepareRenameRequest,
+    RenameRequest, ResolveDocumentLinkRequest, StateError, WorkspaceSymbolsRequest, new_note_content,
+    normalize_new_note_path,
 };
+use crate::uri::uri_to_path;
 
 pub struct Backend {
     client: Client,
     state: Arc<RwLock<BackendState>>,
     diagnostics_lock: Arc<Mutex<()>>,
+    pending_file_changes: Arc<Mutex<Vec<FileChange>>>,
+    file_change_debounce_scheduled: AtomicBool,
     supports_pull_config: AtomicBool,
+    supports_watched_file_registration: AtomicBool,
+}
+
+const FILE_CHANGE_DEBOUNCE: Duration = Duration::from_millis(50);
+
+fn markdown_file_operation_registration() -> FileOperationRegistrationOptions {
+    FileOperationRegistrationOptions {
+        filters: vec![FileOperationFilter {
+            scheme: Some("file".to_string()),
+            pattern: FileOperationPattern {
+                glob: "**/*.md".to_string(),
+                matches: Some(FileOperationPatternKind::File),
+                options: None,
+            },
+        }],
+    }
 }
 
 impl Backend {
@@ -38,7 +63,10 @@ impl Backend {
             client,
             state: Arc::new(RwLock::new(BackendState::new(vault))),
             diagnostics_lock: Arc::new(Mutex::new(())),
+            pending_file_changes: Arc::new(Mutex::new(Vec::new())),
+            file_change_debounce_scheduled: AtomicBool::new(false),
             supports_pull_config: AtomicBool::new(false),
+            supports_watched_file_registration: AtomicBool::new(false),
         }
     }
 
@@ -69,9 +97,7 @@ impl Backend {
             state.global_diagnostics_request()
         };
 
-        if let Some(request) = request {
-            self.handle_diagnostics(Ok(request)).await;
-        }
+        self.handle_diagnostics(Ok(request)).await;
     }
 
     async fn publish_diagnostics(&self, updates: &[DiagnosticUpdate]) {
@@ -161,6 +187,75 @@ impl Backend {
             }
         }
     }
+
+    async fn register_watched_files(&self) {
+        let options = DidChangeWatchedFilesRegistrationOptions {
+            watchers: vec![FileSystemWatcher {
+                glob_pattern: GlobPattern::String("**/*.md".to_string()),
+                kind: Some(WatchKind::Create | WatchKind::Change | WatchKind::Delete),
+            }],
+        };
+        let registration = Registration {
+            id: "obsidian-rs-lsp-markdown-watch".to_string(),
+            method: "workspace/didChangeWatchedFiles".to_string(),
+            register_options: serde_json::to_value(options).ok(),
+        };
+
+        if let Err(error) = self.client.register_capability(vec![registration]).await {
+            self.log_error(format!("failed to register markdown file watcher: {error}"))
+                .await;
+        }
+    }
+
+    async fn handle_file_changes(&self, changes: Vec<FileChange>) {
+        if changes.is_empty() {
+            return;
+        }
+
+        self.pending_file_changes.lock().await.extend(changes);
+        if self.file_change_debounce_scheduled.swap(true, Ordering::AcqRel) {
+            return;
+        }
+
+        tokio::time::sleep(FILE_CHANGE_DEBOUNCE).await;
+
+        loop {
+            let changes = {
+                let mut pending = self.pending_file_changes.lock().await;
+                pending.drain(..).collect::<Vec<_>>()
+            };
+
+            if changes.is_empty() {
+                self.file_change_debounce_scheduled.store(false, Ordering::Release);
+
+                let has_pending_changes = !self.pending_file_changes.lock().await.is_empty();
+                if has_pending_changes && !self.file_change_debounce_scheduled.swap(true, Ordering::AcqRel) {
+                    tokio::time::sleep(FILE_CHANGE_DEBOUNCE).await;
+                    continue;
+                }
+                return;
+            }
+
+            self.apply_file_changes_now(changes).await;
+        }
+    }
+
+    async fn apply_file_changes_now(&self, changes: Vec<FileChange>) {
+        let request = {
+            let mut state = self.state.write().await;
+            match state.apply_file_changes(changes) {
+                Ok(request) => request,
+                Err(error) => {
+                    self.log_error(error).await;
+                    return;
+                }
+            }
+        };
+
+        if let Some(request) = request {
+            self.handle_diagnostics(Ok(request)).await;
+        }
+    }
 }
 
 #[tower_lsp::async_trait]
@@ -173,6 +268,15 @@ impl LanguageServer for Backend {
             .and_then(|w| w.configuration)
             .unwrap_or(false);
         self.supports_pull_config.store(supports_config, Ordering::Relaxed);
+        let supports_watched_files = params
+            .capabilities
+            .workspace
+            .as_ref()
+            .and_then(|workspace| workspace.did_change_watched_files.as_ref())
+            .and_then(|capabilities| capabilities.dynamic_registration)
+            .unwrap_or(false);
+        self.supports_watched_file_registration
+            .store(supports_watched_files, Ordering::Relaxed);
 
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
@@ -204,7 +308,12 @@ impl LanguageServer for Backend {
                         supported: Some(false),
                         change_notifications: None,
                     }),
-                    file_operations: None,
+                    file_operations: Some(WorkspaceFileOperationsServerCapabilities {
+                        did_create: Some(markdown_file_operation_registration()),
+                        did_rename: Some(markdown_file_operation_registration()),
+                        did_delete: Some(markdown_file_operation_registration()),
+                        ..Default::default()
+                    }),
                 }),
                 ..Default::default()
             },
@@ -216,6 +325,10 @@ impl LanguageServer for Backend {
     }
 
     async fn initialized(&self, _: InitializedParams) {
+        if self.supports_watched_file_registration.load(Ordering::Relaxed) {
+            self.register_watched_files().await;
+        }
+
         if self.supports_pull_config.load(Ordering::Relaxed) {
             self.pull_and_apply_config().await;
         }
@@ -272,6 +385,87 @@ impl LanguageServer for Backend {
         };
 
         self.handle_diagnostics(request).await;
+    }
+
+    async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
+        let changes = params
+            .changes
+            .into_iter()
+            .filter_map(|event| {
+                let kind = if event.typ == FileChangeType::CREATED {
+                    FileChangeKind::Created
+                } else if event.typ == FileChangeType::CHANGED {
+                    FileChangeKind::Changed
+                } else if event.typ == FileChangeType::DELETED {
+                    FileChangeKind::Deleted
+                } else {
+                    return None;
+                };
+                uri_to_path(&event.uri).ok().map(|path| FileChange { path, kind })
+            })
+            .collect();
+
+        self.handle_file_changes(changes).await;
+    }
+
+    async fn did_create_files(&self, params: CreateFilesParams) {
+        let changes = params
+            .files
+            .into_iter()
+            .filter_map(|file| {
+                tower_lsp::lsp_types::Url::parse(&file.uri)
+                    .ok()
+                    .and_then(|uri| uri_to_path(&uri).ok())
+                    .map(|path| FileChange {
+                        path,
+                        kind: FileChangeKind::Created,
+                    })
+            })
+            .collect();
+
+        self.handle_file_changes(changes).await;
+    }
+
+    async fn did_rename_files(&self, params: RenameFilesParams) {
+        let mut changes = Vec::new();
+        for file in params.files {
+            if let Ok(uri) = tower_lsp::lsp_types::Url::parse(&file.old_uri)
+                && let Ok(path) = uri_to_path(&uri)
+            {
+                changes.push(FileChange {
+                    path,
+                    kind: FileChangeKind::Deleted,
+                });
+            }
+            if let Ok(uri) = tower_lsp::lsp_types::Url::parse(&file.new_uri)
+                && let Ok(path) = uri_to_path(&uri)
+            {
+                changes.push(FileChange {
+                    path,
+                    kind: FileChangeKind::Created,
+                });
+            }
+        }
+
+        self.handle_file_changes(changes).await;
+    }
+
+    async fn did_delete_files(&self, params: DeleteFilesParams) {
+        let changes = params
+            .files
+            .into_iter()
+            .filter_map(|file| {
+                tower_lsp::lsp_types::Url::parse(&file.uri)
+                    .ok()
+                    .and_then(|uri| uri_to_path(&uri).ok())
+                    .map(|path| FileChange {
+                        path,
+                        kind: FileChangeKind::Deleted,
+                    })
+            })
+            .collect();
+
+        self.handle_file_changes(changes).await;
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
@@ -458,6 +652,7 @@ impl LanguageServer for Backend {
         };
         let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("note").to_string();
         let note_title = params.arguments.get(1).and_then(Value::as_str).map(str::to_string);
+        let created_path = path.clone();
 
         match tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             if let Some(parent) = path.parent() {
@@ -483,10 +678,15 @@ impl LanguageServer for Backend {
         // Proactively refresh diagnostics so the broken-link warning clears immediately.
         let request = {
             let mut state = self.state.write().await;
-            state.global_diagnostics_request()
+            state.apply_file_changes(vec![FileChange {
+                path: created_path,
+                kind: FileChangeKind::Created,
+            }])
         };
-        if let Some(request) = request {
-            self.handle_diagnostics(Ok(request)).await;
+        match request {
+            Ok(Some(request)) => self.handle_diagnostics(Ok(request)).await,
+            Ok(None) => {}
+            Err(error) => self.log_error(error).await,
         }
 
         Ok(None)

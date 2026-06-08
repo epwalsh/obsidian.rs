@@ -95,6 +95,18 @@ pub fn sort_notes_by<T>(items: &mut [T], key: impl Fn(&T) -> Option<&Note>, sort
 pub struct SearchQuery<'a> {
     config: SearchQueryConfig,
     loaded_notes: Option<&'a HashMap<PathBuf, Note>>,
+    cached_notes: Option<Vec<CachedSearchNote<'a>>>,
+}
+
+pub(crate) struct CachedSearchNote<'a> {
+    pub(crate) note: &'a Note,
+    pub(crate) text: &'a str,
+}
+
+impl<'a> CachedSearchNote<'a> {
+    pub(crate) fn new(note: &'a Note, text: &'a str) -> Self {
+        Self { note, text }
+    }
 }
 
 /// All owned, non-reference fields of [`SearchQuery`]. Extracted into its own struct so that
@@ -153,6 +165,7 @@ impl SearchQuery<'static> {
                 sort_order: None,
             },
             loaded_notes: None,
+            cached_notes: None,
         }
     }
 
@@ -166,11 +179,17 @@ impl SearchQuery<'static> {
         SearchQuery {
             config: self.config,
             loaded_notes: Some(notes),
+            cached_notes: None,
         }
     }
 }
 
 impl<'a> SearchQuery<'a> {
+    pub(crate) fn with_cached_notes(mut self, notes: Vec<CachedSearchNote<'a>>) -> Self {
+        self.cached_notes = Some(notes);
+        self
+    }
+
     /// Note path must match this glob pattern (matched against the note's path relative to the vault root).
     pub fn and_glob(mut self, pattern: impl Into<String>) -> Self {
         self.config.and_globs.push(pattern.into());
@@ -313,7 +332,11 @@ impl<'a> SearchQuery<'a> {
     /// Returns `Err` if any glob or regex pattern is invalid.
     /// Each inner `Err` represents an I/O failure loading a specific note.
     pub fn execute(self) -> Result<Vec<Result<Note, NoteError>>, SearchError> {
-        let SearchQuery { config, loaded_notes } = self;
+        let SearchQuery {
+            config,
+            loaded_notes,
+            cached_notes,
+        } = self;
         let SearchQueryConfig {
             root,
             and_globs,
@@ -388,17 +411,6 @@ impl<'a> SearchQuery<'a> {
         let override_paths: HashSet<&Path> = loaded_notes
             .map(|m| m.keys().map(|p| p.as_path()).collect())
             .unwrap_or_default();
-
-        let paths: Vec<PathBuf> = find_note_paths(&root)
-            .filter(|path| !override_paths.contains(path.as_path()))
-            .filter(|path| {
-                if and_globs.is_empty() {
-                    return true;
-                }
-                let rel = path.strip_prefix(&root).unwrap_or(path);
-                and_glob_set.is_match(rel)
-            })
-            .collect();
 
         let mut and_regexes: Vec<Regex> = Vec::new();
         for pattern in and_content_matches {
@@ -617,23 +629,54 @@ impl<'a> SearchQuery<'a> {
             None
         };
 
-        // Process disk notes in parallel.
-        let mut results: Vec<Result<Note, NoteError>> = paths
-            .into_par_iter()
-            .filter_map(|path| -> Option<Result<Note, NoteError>> {
-                let rel = path.strip_prefix(&root).unwrap_or(&path);
-                let load = if needs_content {
-                    Note::from_path_with_body(&path)
-                } else {
-                    Note::from_path(&path)
-                };
-                let note = match load {
-                    Ok(n) => n,
-                    Err(e) => return Some(Err(e)),
-                };
-                filter_note(note, rel)
-            })
-            .collect();
+        let mut results: Vec<Result<Note, NoteError>> = if let Some(cached_notes) = cached_notes {
+            cached_notes
+                .into_iter()
+                .filter_map(|cached| {
+                    if override_paths.contains(cached.note.path.as_path()) {
+                        return None;
+                    }
+                    let rel = cached.note.path.strip_prefix(&root).unwrap_or(&cached.note.path);
+                    if !and_globs.is_empty() && !and_glob_set.is_match(rel) {
+                        return None;
+                    }
+                    let note = if needs_content {
+                        Note::parse(&cached.note.path, cached.text)
+                    } else {
+                        cached.note.clone()
+                    };
+                    filter_note(note, rel)
+                })
+                .collect()
+        } else {
+            let paths: Vec<PathBuf> = find_note_paths(&root)
+                .filter(|path| !override_paths.contains(path.as_path()))
+                .filter(|path| {
+                    if and_globs.is_empty() {
+                        return true;
+                    }
+                    let rel = path.strip_prefix(&root).unwrap_or(path);
+                    and_glob_set.is_match(rel)
+                })
+                .collect();
+
+            paths
+                .into_par_iter()
+                .filter_map(|path| -> Option<Result<Note, NoteError>> {
+                    let rel = path.strip_prefix(&root).unwrap_or(&path);
+                    let load = if needs_content {
+                        Note::from_path_with_body(&path)
+                    } else {
+                        Note::from_path(&path)
+                    };
+                    let note = match load {
+                        Ok(n) => n,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    filter_note(note, rel)
+                })
+                .collect()
+        };
 
         // Process in-memory override notes sequentially (typically a small set).
         if let Some(notes) = loaded_notes {
@@ -744,23 +787,37 @@ pub fn find_tags(
     tags: &[String],
     loaded_notes: Option<&HashMap<PathBuf, Note>>,
 ) -> Result<Vec<(Note, Vec<crate::LocatedTag>)>, SearchError> {
-    let tags = tags.iter().map(|t| crate::tag::clean_tag(t)).collect::<Vec<String>>();
     let root_ref = root.as_ref();
-    let notes: Vec<Note> = if let Some(loaded) = loaded_notes {
-        let mut q = SearchQuery::new(root_ref)
-            .include_inline_tags()
-            .with_loaded_notes(loaded);
-        for tag in &tags {
-            q = q.or_has_tag(tag);
-        }
-        q.execute()?.into_iter().filter_map(|r| r.ok()).collect()
+    let query = if let Some(loaded) = loaded_notes {
+        SearchQuery::new(root_ref).with_loaded_notes(loaded)
     } else {
-        let mut q = SearchQuery::new(root_ref).include_inline_tags();
-        for tag in &tags {
-            q = q.or_has_tag(tag);
-        }
-        q.execute()?.into_iter().filter_map(|r| r.ok()).collect()
+        SearchQuery::new(root_ref)
     };
+
+    find_tags_with_query(query, tags)
+}
+
+pub(crate) fn find_tags_with_query(
+    mut query: SearchQuery<'_>,
+    tags: &[String],
+) -> Result<Vec<(Note, Vec<crate::LocatedTag>)>, SearchError> {
+    let tags = tags.iter().map(|t| crate::tag::clean_tag(t)).collect::<Vec<String>>();
+    query = query.include_inline_tags();
+    for tag in &tags {
+        query = query.or_has_tag(tag.clone());
+    }
+
+    let notes = query.execute()?.into_iter().filter_map(Result::ok);
+    Ok(matching_tags_for_notes(notes, &tags))
+}
+
+fn matching_tags_for_notes(
+    notes: impl IntoIterator<Item = Note>,
+    tags: &[String],
+) -> Vec<(Note, Vec<crate::LocatedTag>)> {
+    if tags.is_empty() {
+        return Vec::new();
+    }
 
     // A note tag matches a search term if it equals the term exactly or is a sub-tag of it
     // (e.g. "workout/upper-body" matches search term "workout").
@@ -769,7 +826,7 @@ pub fn find_tags(
             .any(|s| tag.eq_ignore_ascii_case(s) || tag.to_lowercase().starts_with(&format!("{}/", s.to_lowercase())))
     };
 
-    let results: Vec<(Note, Vec<crate::LocatedTag>)> = notes
+    notes
         .into_iter()
         .filter_map(|note| {
             let matched: Vec<crate::LocatedTag> = note
@@ -789,9 +846,7 @@ pub fn find_tags(
                 Some((note, matched))
             }
         })
-        .collect();
-
-    Ok(results)
+        .collect()
 }
 
 /// Like [`find_notes`], but retains body content in each [`Note::content`].

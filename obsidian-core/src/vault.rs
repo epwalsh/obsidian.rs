@@ -1,16 +1,40 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::env::current_dir;
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use gray_matter::Pod;
 use indexmap::IndexMap;
+use rayon::prelude::*;
 
-use crate::health::{BrokenLink, DuplicateAlias, DuplicateId, NoteRef, VaultHealthReport};
+use crate::health::VaultHealthReport;
 use crate::{InlineLocation, Link, LocatedLink, LocatedTag, Location, Note, NoteError, VaultError, common, search};
 
+#[derive(Clone)]
+struct CachedDiskNote {
+    note: Note,
+    text: String,
+}
+
+#[derive(Clone)]
 pub struct Vault {
     path: PathBuf,
-    loaded_notes: HashMap<PathBuf, Note>,
+    note_overrides: HashMap<PathBuf, Note>,
+    cached_disk_notes: Option<HashMap<PathBuf, Arc<CachedDiskNote>>>,
+}
+
+impl std::fmt::Debug for Vault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Vault")
+            .field("path", &self.path)
+            .field("note_override_count", &self.note_overrides.len())
+            .field(
+                "cached_disk_note_count",
+                &self.cached_disk_notes.as_ref().map(HashMap::len),
+            )
+            .finish()
+    }
 }
 
 impl Vault {
@@ -23,8 +47,19 @@ impl Vault {
         }
         Ok(Vault {
             path,
-            loaded_notes: HashMap::new(),
+            note_overrides: HashMap::new(),
+            cached_disk_notes: None,
         })
+    }
+
+    /// Opens a vault and immediately caches all notes in memory.
+    ///
+    /// This is intended for long-lived processes, such as LSP or MCP servers, that repeatedly query
+    /// the same vault and receive explicit file-change notifications to refresh stale entries.
+    pub fn open_cached(path: impl AsRef<Path>) -> Result<Self, VaultError> {
+        let mut vault = Self::open(path)?;
+        vault.cache_notes();
+        Ok(vault)
     }
 
     /// Opens the nearest vault by walking up from the current directory, looking for an
@@ -48,11 +83,100 @@ impl Vault {
         self.path.as_path()
     }
 
+    pub fn is_note_path(path: impl AsRef<Path>) -> bool {
+        path.as_ref().extension().and_then(|ext| ext.to_str()) == Some("md")
+    }
+
+    pub fn normalize_path(&self, path: impl AsRef<Path>) -> PathBuf {
+        common::normalize_path(path, Some(&self.path))
+    }
+
+    pub fn cache_notes(&mut self) {
+        let notes = search::find_note_paths(&self.path)
+            .collect::<Vec<_>>()
+            .into_par_iter()
+            .filter_map(|path| load_cached_disk_note(path).ok())
+            .map(|cached| (cached.note.path.clone(), Arc::new(cached)))
+            .collect();
+        self.cached_disk_notes = Some(notes);
+    }
+
+    pub fn has_cached_note(&self, path: impl AsRef<Path>) -> bool {
+        let path = self.normalize_path(path);
+        self.cached_disk_notes
+            .as_ref()
+            .is_some_and(|notes| notes.contains_key(&path))
+    }
+
+    fn has_known_note_path(&self, path: &Path) -> bool {
+        let path = common::normalize_path(path, None);
+        path.exists()
+            || self.note_overrides.contains_key(&path)
+            || self
+                .cached_disk_notes
+                .as_ref()
+                .is_some_and(|notes| notes.contains_key(&path))
+    }
+
+    pub fn note_for_path(&self, path: impl AsRef<Path>) -> Result<Note, VaultError> {
+        let path = self.normalize_path(path);
+        if let Some(note) = self.note_overrides.get(&path) {
+            return Ok(note.clone());
+        }
+        if let Some(note) = self
+            .cached_disk_notes
+            .as_ref()
+            .and_then(|notes| notes.get(&path))
+            .map(|cached| cached.note.clone())
+        {
+            return Ok(note);
+        }
+        Ok(Note::from_path(path)?)
+    }
+
+    pub fn text_for_path(&self, path: impl AsRef<Path>) -> Result<String, VaultError> {
+        let path = self.normalize_path(path);
+        if let Some(note) = self.note_overrides.get(&path) {
+            return Ok(note.read(true)?);
+        }
+        if let Some(text) = self
+            .cached_disk_notes
+            .as_ref()
+            .and_then(|notes| notes.get(&path))
+            .map(|cached| cached.text.clone())
+        {
+            return Ok(text);
+        }
+        Ok(fs::read_to_string(path)?)
+    }
+
+    pub fn refresh_cached_note(&mut self, path: impl AsRef<Path>) -> Result<bool, VaultError> {
+        let path = self.normalize_path(path);
+        let Some(cached_disk_notes) = self.cached_disk_notes.as_mut() else {
+            return Ok(false);
+        };
+        if !Self::is_note_path(&path) || !path.is_file() {
+            cached_disk_notes.remove(&path);
+            return Ok(false);
+        }
+
+        let cached = load_cached_disk_note(&path)?;
+        cached_disk_notes.insert(cached.note.path.clone(), Arc::new(cached));
+        Ok(true)
+    }
+
+    pub fn remove_cached_note(&mut self, path: impl AsRef<Path>) -> bool {
+        let path = self.normalize_path(path);
+        self.cached_disk_notes
+            .as_mut()
+            .is_some_and(|cached_disk_notes| cached_disk_notes.remove(&path).is_some())
+    }
+
     /// Resolve a note based on a path, filename, ID, title, or alias.
     pub fn resolve_note(&self, note: &str) -> Result<Note, VaultError> {
         // First try as a path.
         if let Ok((path, _)) = self.resolve_note_path(note, true) {
-            return Note::from_path(path).map_err(VaultError::Note);
+            return self.note_for_path(path);
         }
 
         // Then search by ID, aliases, and potentially filename.
@@ -98,7 +222,7 @@ impl Vault {
     ) -> Result<(std::path::PathBuf, Option<std::path::PathBuf>), VaultError> {
         let path = path.as_ref().to_path_buf();
         if path.is_absolute() {
-            if path.exists() || self.loaded_notes.contains_key(&path) || !strict {
+            if self.has_known_note_path(&path) || !strict {
                 return Ok((common::normalize_path(&path, None), None));
             } else {
                 return Err(VaultError::NoteNotFound(path.to_string_lossy().to_string()));
@@ -112,11 +236,11 @@ impl Vault {
         let mut cwd_resolved = common::normalize_path(&path, Some(&cwd));
         if cwd_resolved.starts_with(&self.path) {
             // Return right away if it exists, otherwise check if the extension is missing.
-            if cwd_resolved.exists() || self.loaded_notes.contains_key(&cwd_resolved) {
+            if self.has_known_note_path(&cwd_resolved) {
                 return Ok((cwd_resolved, Some(cwd)));
             } else if cwd_resolved.extension().is_none() {
                 cwd_resolved.set_extension("md");
-                if cwd_resolved.exists() || self.loaded_notes.contains_key(&cwd_resolved) {
+                if self.has_known_note_path(&cwd_resolved) {
                     return Ok((cwd_resolved, Some(cwd)));
                 }
             }
@@ -126,11 +250,11 @@ impl Vault {
             // that's more likely what the user intended than the vault root.
             let mut vault_resolved = common::normalize_path(&path, Some(&self.path));
             if strict {
-                if vault_resolved.exists() || self.loaded_notes.contains_key(&vault_resolved) {
+                if self.has_known_note_path(&vault_resolved) {
                     return Ok((vault_resolved, Some(self.path.clone())));
                 } else if vault_resolved.extension().is_none() {
                     vault_resolved.set_extension("md");
-                    if vault_resolved.exists() || self.loaded_notes.contains_key(&vault_resolved) {
+                    if self.has_known_note_path(&vault_resolved) {
                         return Ok((vault_resolved, Some(self.path.clone())));
                     }
                 }
@@ -139,11 +263,11 @@ impl Vault {
             }
         } else {
             let mut vault_resolved = common::normalize_path(&path, Some(&self.path));
-            if vault_resolved.exists() {
+            if self.has_known_note_path(&vault_resolved) {
                 return Ok((vault_resolved, Some(self.path.clone())));
             } else if vault_resolved.extension().is_none() {
                 vault_resolved.set_extension("md");
-                if vault_resolved.exists() || self.loaded_notes.contains_key(&vault_resolved) {
+                if self.has_known_note_path(&vault_resolved) {
                     return Ok((vault_resolved, Some(self.path.clone())));
                 }
             }
@@ -161,12 +285,12 @@ impl Vault {
     /// Links and inline tags are still extracted and available on each note.
     /// Use [`notes_with_content`](Self::notes_with_content) when body text is needed.
     pub fn notes(&self) -> Vec<Result<Note, NoteError>> {
-        search::find_notes(&self.path)
+        self.notes_filtered(|_| true)
     }
 
     /// Like [`notes`](Self::notes), but retains body content in each [`Note::content`].
     pub fn notes_with_content(&self) -> Vec<Result<Note, NoteError>> {
-        search::find_notes_with_content(&self.path)
+        self.notes_filtered_with_content(|_| true)
     }
 
     /// Inserts or replaces an in-memory note. While present, this note shadows its on-disk
@@ -178,7 +302,7 @@ impl Vault {
             .map(|(n, _)| n)
             .unwrap_or_else(|_| note.path.clone());
         note.path = resolved_path;
-        self.loaded_notes.insert(note.path.clone(), note);
+        self.note_overrides.insert(note.path.clone(), note);
     }
 
     /// Removes a previously loaded in-memory note, restoring the on-disk version for searches.
@@ -188,22 +312,69 @@ impl Vault {
             .resolve_note_path(path, false)
             .map(|(n, _)| n)
             .unwrap_or_else(|_| path.into());
-        self.loaded_notes.remove(&resolved_path);
+        self.note_overrides.remove(&resolved_path);
     }
 
     pub fn note_is_loaded(&self, path: impl AsRef<Path>) -> bool {
-        self.loaded_notes.contains_key(&path.as_ref().to_path_buf())
+        let path = self.normalize_path(path);
+        self.note_overrides.contains_key(&path)
     }
 
     /// Like [`notes`](Self::notes), but skips notes whose path does not satisfy `filter`.
     /// Filtering happens at the filesystem traversal level, before any file is read.
     pub fn notes_filtered(&self, filter: impl Fn(&Path) -> bool) -> Vec<Result<Note, NoteError>> {
-        search::find_notes_filtered(&self.path, filter, Some(&self.loaded_notes))
+        if let Some(cached_disk_notes) = &self.cached_disk_notes {
+            return self.cached_disk_notes_filtered(cached_disk_notes, filter, false);
+        }
+        search::find_notes_filtered(&self.path, filter, Some(&self.note_overrides))
     }
 
     /// Like [`notes_filtered`](Self::notes_filtered), but retains body content in each [`Note::content`].
     pub fn notes_filtered_with_content(&self, filter: impl Fn(&Path) -> bool) -> Vec<Result<Note, NoteError>> {
-        search::find_notes_filtered_with_content(&self.path, filter, Some(&self.loaded_notes))
+        if let Some(cached_disk_notes) = &self.cached_disk_notes {
+            return self.cached_disk_notes_filtered(cached_disk_notes, filter, true);
+        }
+        search::find_notes_filtered_with_content(&self.path, filter, Some(&self.note_overrides))
+    }
+
+    fn cached_disk_notes_filtered(
+        &self,
+        cached_disk_notes: &HashMap<PathBuf, Arc<CachedDiskNote>>,
+        filter: impl Fn(&Path) -> bool,
+        with_body: bool,
+    ) -> Vec<Result<Note, NoteError>> {
+        let override_paths = self.note_overrides.keys().cloned().collect::<HashSet<_>>();
+        let mut results = Vec::new();
+
+        for cached in cached_disk_notes.values() {
+            if override_paths.contains(&cached.note.path) || !filter(&cached.note.path) {
+                continue;
+            }
+            let note = if with_body {
+                Note::parse(&cached.note.path, &cached.text)
+            } else {
+                cached.note.clone()
+            };
+            results.push(Ok(note));
+        }
+
+        for note in self.note_overrides.values() {
+            if !filter(&note.path) {
+                continue;
+            }
+            if with_body && note.body.is_none() {
+                results.push(Err(NoteError::BodyNotLoaded));
+            } else {
+                results.push(Ok(note.clone()));
+            }
+        }
+
+        results.sort_by(|left, right| {
+            let left_path = left.as_ref().ok().map(|note| &note.path);
+            let right_path = right.as_ref().ok().map(|note| &note.path);
+            left_path.cmp(&right_path)
+        });
+        results
     }
 
     /// Scans the vault for health issues: duplicate IDs, duplicate aliases, and broken links.
@@ -215,145 +386,42 @@ impl Vault {
     /// Note-load failures are silently skipped (consistent with other vault scan methods).
     pub fn check(&self, filter: impl Fn(&Path) -> bool) -> VaultHealthReport {
         let notes: Vec<Note> = self.notes_filtered(filter).into_iter().filter_map(|r| r.ok()).collect();
-
-        // --- Duplicate IDs ---
-        let mut id_map: HashMap<String, Vec<PathBuf>> = HashMap::new();
-        for note in notes.iter() {
-            id_map.entry(note.id.clone()).or_default().push(note.path.clone());
-        }
-        let mut dup_ids: Vec<DuplicateId> = id_map
-            .into_iter()
-            .filter(|(_, paths)| paths.len() > 1)
-            .map(|(id, mut paths)| {
-                paths.sort();
-                let note_refs = paths
-                    .into_iter()
-                    .map(|path| {
-                        let note = notes.iter().find(|n| n.path == path).unwrap();
-                        NoteRef {
-                            path: path.clone(),
-                            backlink_count: self.backlinks_from(&notes, note).len(),
-                        }
-                    })
-                    .collect();
-                DuplicateId { id, notes: note_refs }
-            })
-            .collect();
-        dup_ids.sort_by(|a, b| a.id.cmp(&b.id));
-
-        // --- Duplicate aliases ---
-        let mut alias_map: HashMap<String, HashSet<PathBuf>> = HashMap::new();
-        for note in notes.iter() {
-            for alias in &note.aliases {
-                alias_map
-                    .entry(alias.to_lowercase())
-                    .or_default()
-                    .insert(note.path.clone());
-            }
-        }
-        let mut dup_aliases: Vec<DuplicateAlias> = alias_map
-            .into_iter()
-            .filter(|(_, paths)| paths.len() > 1)
-            .map(|(alias, paths)| {
-                let mut sorted_paths: Vec<PathBuf> = paths.into_iter().collect();
-                sorted_paths.sort();
-                let note_refs = sorted_paths
-                    .into_iter()
-                    .map(|path| {
-                        let note = notes.iter().find(|n| n.path == path).unwrap();
-                        NoteRef {
-                            path: path.clone(),
-                            backlink_count: self.backlinks_from(&notes, note).len(),
-                        }
-                    })
-                    .collect();
-                DuplicateAlias {
-                    alias,
-                    notes: note_refs,
-                }
-            })
-            .collect();
-        dup_aliases.sort_by(|a, b| a.alias.cmp(&b.alias));
-
-        // --- Broken links ---
-        let mut valid_wiki_targets: HashSet<String> = HashSet::new();
-        for note in notes.iter() {
-            valid_wiki_targets.insert(note.id.clone());
-            if let Some(stem) = note.path.file_stem().and_then(|s| s.to_str()) {
-                valid_wiki_targets.insert(stem.to_string());
-            }
-            for alias in &note.aliases {
-                valid_wiki_targets.insert(alias.clone());
-                valid_wiki_targets.insert(alias.to_lowercase());
-            }
-        }
-
-        let mut broken: Vec<BrokenLink> = Vec::new();
-        for note in notes.iter() {
-            for ll in &note.links {
-                match &ll.link {
-                    Link::Wiki { target, .. } => {
-                        if !target.is_empty() && !valid_wiki_targets.contains(target.as_str()) {
-                            broken.push(BrokenLink {
-                                source_path: note.path.clone(),
-                                line: ll.location.line,
-                                text: format!("[[{}]]", target),
-                            });
-                        }
-                    }
-                    Link::Markdown { url, .. } => {
-                        // Skip external and absolute links; only check local .md links.
-                        if url.contains("://") || url.starts_with('/') {
-                            continue;
-                        }
-                        let url_path_raw = match url.find('#') {
-                            Some(i) => &url[..i],
-                            None => url.as_str(),
-                        };
-                        let url_path_decoded = common::percent_decode(url_path_raw);
-                        let url_path = url_path_decoded.as_str();
-                        if !url_path.ends_with(".md") {
-                            continue;
-                        }
-                        let source_dirs = [self.path.as_path(), note.path.parent().unwrap_or(self.path.as_path())];
-                        if !source_dirs.iter().any(|dir| dir.join(url_path).exists()) {
-                            broken.push(BrokenLink {
-                                source_path: note.path.clone(),
-                                line: ll.location.line,
-                                text: format!("[...]({})", url),
-                            });
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        broken.sort_by(|a, b| a.source_path.cmp(&b.source_path).then(a.line.cmp(&b.line)));
-
-        VaultHealthReport {
-            note_count: notes.len(),
-            duplicate_ids: dup_ids,
-            duplicate_aliases: dup_aliases,
-            broken_links: broken,
-        }
+        crate::health::check_notes(&self.path, &notes)
     }
 
     /// Returns a [`SearchQuery`](search::SearchQuery) rooted at this vault's path.
     /// Any notes previously registered via [`load_note`](Self::load_note) are automatically
     /// included, shadowing their on-disk counterparts.
     pub fn search(&self) -> search::SearchQuery<'_> {
-        search::SearchQuery::new(&self.path).with_loaded_notes(&self.loaded_notes)
+        let query = search::SearchQuery::new(&self.path).with_loaded_notes(&self.note_overrides);
+        if let Some(cached_disk_notes) = &self.cached_disk_notes {
+            query.with_cached_notes(
+                cached_disk_notes
+                    .values()
+                    .map(|cached| search::CachedSearchNote::new(&cached.note, &cached.text))
+                    .collect(),
+            )
+        } else {
+            query
+        }
     }
 
     /// Returns all unique tags used in the vault, aggregated from frontmatter and inline tags.
     pub fn list_tags(&self) -> Result<Vec<String>, VaultError> {
-        search::find_all_tags(&self.path, Some(&self.loaded_notes)).map_err(VaultError::Note)
+        if self.cached_disk_notes.is_some() {
+            let mut tags = BTreeSet::new();
+            for note in self.notes_filtered(|_| true).into_iter().filter_map(Result::ok) {
+                tags.extend(note.tags.into_iter().map(|tag| tag.tag.to_lowercase()));
+            }
+            return Ok(tags.into_iter().collect());
+        }
+        search::find_all_tags(&self.path, Some(&self.note_overrides)).map_err(VaultError::Note)
     }
 
     /// Find all occurrences of specific tags, grouped by the note they appear in. Tags are matched
     /// case-insensitively, and sub-tags are gathered as well.
     pub fn find_tags(&self, tags: &[String]) -> Result<Vec<(Note, Vec<LocatedTag>)>, VaultError> {
-        search::find_tags(&self.path, tags, Some(&self.loaded_notes)).map_err(VaultError::Search)
+        search::find_tags_with_query(self.search(), tags).map_err(VaultError::Search)
     }
 
     /// Find and replaces all occurrences of `old_tag` with the new `new_tag` and return
@@ -423,6 +491,15 @@ impl Vault {
     /// Only wiki links (`[[target]]`) and markdown links (`[text](target.md)`) are
     /// considered. Embed links are excluded. Notes that fail to load are silently skipped.
     pub fn backlinks(&self, target: &Note) -> Result<Vec<(Note, Vec<LocatedLink>)>, VaultError> {
+        if self.cached_disk_notes.is_some() {
+            let notes: Vec<Note> = self.notes().into_iter().filter_map(Result::ok).collect();
+            return Ok(self
+                .backlinks_from(&notes, target)
+                .into_iter()
+                .map(|(note, links)| (note.clone(), links))
+                .collect());
+        }
+
         let results = self
             .search()
             .and_links_to(target.clone())
@@ -442,17 +519,7 @@ impl Vault {
     /// Like [`backlinks`](Self::backlinks), but operates on an already-loaded slice of notes
     /// instead of reading from disk. Returns references into `notes`.
     pub fn backlinks_from<'a>(&self, notes: &'a [Note], target: &Note) -> Vec<(&'a Note, Vec<LocatedLink>)> {
-        notes
-            .iter()
-            .filter_map(|source| {
-                let matching = search::find_matching_links(source, target, &self.path);
-                if matching.is_empty() {
-                    None
-                } else {
-                    Some((source, matching))
-                }
-            })
-            .collect()
+        crate::health::backlinks_from(notes, target, &self.path)
     }
 
     /// Computes all replacement pairs for a rename without performing any I/O.
@@ -629,7 +696,7 @@ impl Vault {
     /// [`VaultError::StringFoundMultipleTimes`] if it appears more than once. Both checks operate
     /// on the raw file bytes (frontmatter included).
     pub fn patch_note(&mut self, note: &Note, old_string: &str, new_string: &str) -> Result<Note, VaultError> {
-        let raw = if let Some(loaded) = self.loaded_notes.get(&note.path) {
+        let raw = if let Some(loaded) = self.note_overrides.get(&note.path) {
             loaded.read(false)?
         } else {
             note.read(false)?
@@ -881,7 +948,7 @@ impl Vault {
             dest.write()?;
             dest
         } else if op.dest_is_loaded {
-            let dest = self.loaded_notes.get_mut(&dest_path).unwrap();
+            let dest = self.note_overrides.get_mut(&dest_path).unwrap();
             dest.update_content(Some(&op.merged_content), op.merged_frontmatter)?;
             dest.clone()
         } else {
@@ -928,6 +995,14 @@ impl Vault {
             updated_notes,
         })
     }
+}
+
+fn load_cached_disk_note(path: impl AsRef<Path>) -> Result<CachedDiskNote, NoteError> {
+    let path = common::normalize_path(path, None);
+    let text = fs::read_to_string(&path)?;
+    let mut note = Note::parse(&path, &text);
+    note.body = None;
+    Ok(CachedDiskNote { note, text })
 }
 
 struct RenameOp {
@@ -1000,6 +1075,123 @@ mod tests {
         std::env::set_current_dir(original_cwd).unwrap();
 
         assert_eq!(vault.path.canonicalize().unwrap(), dir.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn cached_vault_refresh_path_adds_created_note_and_updates_health() {
+        let vault_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
+        let source_path = vault_dir.path().join("source.md");
+        fs::write(&source_path, "See [[target]].").unwrap();
+
+        let mut vault = Vault::open_cached(vault_dir.path()).unwrap();
+        assert_eq!(vault.notes().len(), 1);
+        assert_eq!(vault.check(|_| true).broken_links.len(), 1);
+
+        let target_path = vault_dir.path().join("target.md");
+        fs::write(&target_path, "---\nid: target\n---\n").unwrap();
+        assert!(vault.refresh_cached_note(&target_path).unwrap());
+
+        assert_eq!(vault.notes().len(), 2);
+        assert!(vault.check(|_| true).broken_links.is_empty());
+    }
+
+    #[test]
+    fn cached_vault_remove_path_removes_note_and_updates_health() {
+        let vault_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
+        let source_path = vault_dir.path().join("source.md");
+        fs::write(&source_path, "See [[target]].").unwrap();
+        let target_path = vault_dir.path().join("target.md");
+        fs::write(&target_path, "---\nid: target\n---\n").unwrap();
+
+        let mut vault = Vault::open_cached(vault_dir.path()).unwrap();
+        assert!(vault.check(|_| true).broken_links.is_empty());
+
+        let target_path = target_path.canonicalize().unwrap();
+        fs::remove_file(&target_path).unwrap();
+        assert!(vault.remove_cached_note(&target_path));
+
+        let report = vault.check(|_| true);
+        assert_eq!(report.note_count, 1);
+        assert_eq!(report.broken_links.len(), 1);
+    }
+
+    #[test]
+    fn cached_vault_health_checks_markdown_links_against_cached_disk_notes() {
+        let vault_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
+        let source_path = vault_dir.path().join("source.md");
+        fs::write(&source_path, "See [target](target.md).").unwrap();
+        let target_path = vault_dir.path().join("target.md");
+        fs::write(&target_path, "---\nid: target\n---\n").unwrap();
+
+        let mut vault = Vault::open_cached(vault_dir.path()).unwrap();
+        let target_path = target_path.canonicalize().unwrap();
+        fs::remove_file(&target_path).unwrap();
+
+        assert!(
+            vault.check(|_| true).broken_links.is_empty(),
+            "cached target should keep markdown link valid until cache is updated"
+        );
+
+        assert!(vault.remove_cached_note(&target_path));
+        assert_eq!(vault.check(|_| true).broken_links.len(), 1);
+    }
+
+    #[test]
+    fn cached_vault_search_uses_cached_disk_notes_until_refresh() {
+        let vault_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
+        let note_path = vault_dir.path().join("note.md");
+        fs::write(
+            &note_path,
+            "---\nid: cached-id\ntags: [cached]\n---\n\ncached body #cached-inline\n",
+        )
+        .unwrap();
+
+        let mut vault = Vault::open_cached(vault_dir.path()).unwrap();
+        fs::write(
+            &note_path,
+            "---\nid: fresh-id\ntags: [fresh]\n---\n\nfresh body #fresh-inline\n",
+        )
+        .unwrap();
+
+        let cached_id_results = vault.search().or_has_id("cached-id").execute().unwrap();
+        assert_eq!(cached_id_results.into_iter().filter_map(Result::ok).count(), 1);
+        assert!(
+            vault
+                .search()
+                .or_has_id("fresh-id")
+                .execute()
+                .unwrap()
+                .into_iter()
+                .filter_map(Result::ok)
+                .next()
+                .is_none()
+        );
+
+        let cached_content_results = vault.search().and_content_contains("cached body").execute().unwrap();
+        assert_eq!(cached_content_results.into_iter().filter_map(Result::ok).count(), 1);
+        assert!(
+            vault
+                .search()
+                .and_content_contains("fresh body")
+                .execute()
+                .unwrap()
+                .into_iter()
+                .filter_map(Result::ok)
+                .next()
+                .is_none()
+        );
+
+        assert_eq!(vault.find_tags(&["cached".to_string()]).unwrap().len(), 1);
+        assert!(vault.find_tags(&["fresh".to_string()]).unwrap().is_empty());
+
+        assert!(vault.refresh_cached_note(&note_path).unwrap());
+        let fresh_id_results = vault.search().or_has_id("fresh-id").execute().unwrap();
+        assert_eq!(fresh_id_results.into_iter().filter_map(Result::ok).count(), 1);
+        assert_eq!(vault.find_tags(&["fresh".to_string()]).unwrap().len(), 1);
     }
 
     #[test]
