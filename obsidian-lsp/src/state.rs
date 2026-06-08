@@ -1076,7 +1076,7 @@ impl StateSnapshot {
     fn notes(&self) -> Vec<Note> {
         let mut notes = self
             .vault
-            .notes_filtered(|_| true)
+            .notes()
             .into_iter()
             .filter_map(Result::ok)
             .collect::<Vec<_>>();
@@ -1100,7 +1100,7 @@ impl StateSnapshot {
     fn notes_with_content(&self) -> Vec<Note> {
         let mut notes = self
             .vault
-            .notes_filtered_with_content(|_| true)
+            .notes_with_content()
             .into_iter()
             .filter_map(Result::ok)
             .collect::<Vec<_>>();
