@@ -10,17 +10,19 @@ use tower_lsp::lsp_types::{
     CodeActionOrCommand, CodeActionParams, CodeActionProviderCapability, CodeActionResponse, CompletionOptions,
     CompletionParams, CompletionResponse, ConfigurationItem, DidChangeConfigurationParams, DidChangeTextDocumentParams,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentLink, DocumentLinkOptions, DocumentLinkParams,
-    ExecuteCommandOptions, ExecuteCommandParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams,
-    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location, MessageType, OneOf,
-    ReferenceParams, ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind,
-    WorkspaceFoldersServerCapabilities, WorkspaceServerCapabilities,
+    DocumentSymbolParams, DocumentSymbolResponse, ExecuteCommandOptions, ExecuteCommandParams, GotoDefinitionParams,
+    GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
+    InitializedParams, Location, MessageType, OneOf, PrepareRenameResponse, ReferenceParams, RenameOptions,
+    RenameParams, ServerCapabilities, ServerInfo, SymbolInformation, TextDocumentPositionParams,
+    TextDocumentSyncCapability, TextDocumentSyncKind, WorkspaceEdit, WorkspaceFoldersServerCapabilities,
+    WorkspaceServerCapabilities, WorkspaceSymbolParams,
 };
 use tower_lsp::{Client, LanguageServer};
 
 use crate::state::{
     BackendState, CodeActionRequest, CompletionRequest, Config, DiagnosticUpdate, DiagnosticsRequest,
-    DocumentLinksRequest, NavigationRequest, ResolveDocumentLinkRequest, StateError, new_note_content,
-    normalize_new_note_path,
+    DocumentLinksRequest, DocumentSymbolsRequest, NavigationRequest, PrepareRenameRequest, RenameRequest,
+    ResolveDocumentLinkRequest, StateError, WorkspaceSymbolsRequest, new_note_content, normalize_new_note_path,
 };
 
 pub struct Backend {
@@ -186,6 +188,12 @@ impl LanguageServer for Backend {
                 }),
                 references_provider: Some(OneOf::Left(true)),
                 definition_provider: Some(OneOf::Left(true)),
+                document_symbol_provider: Some(OneOf::Left(true)),
+                workspace_symbol_provider: Some(OneOf::Left(true)),
+                rename_provider: Some(OneOf::Right(RenameOptions {
+                    prepare_provider: Some(true),
+                    work_done_progress_options: Default::default(),
+                })),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 execute_command_provider: Some(ExecuteCommandOptions {
                     commands: vec!["obsidian.createNote".to_string()],
@@ -308,6 +316,32 @@ impl LanguageServer for Backend {
             .unwrap_or(fallback))
     }
 
+    async fn document_symbol(&self, params: DocumentSymbolParams) -> Result<Option<DocumentSymbolResponse>> {
+        let request = {
+            let state = self.state.read().await;
+            state.document_symbols_request(params.text_document.uri)
+        };
+
+        Ok(self
+            .compute_request(request, "documentSymbol", |request: DocumentSymbolsRequest| {
+                request.compute()
+            })
+            .await)
+    }
+
+    async fn symbol(&self, params: WorkspaceSymbolParams) -> Result<Option<Vec<SymbolInformation>>> {
+        let request = {
+            let state = self.state.read().await;
+            state.workspace_symbols_request(params.query)
+        };
+
+        Ok(self
+            .compute_request(Ok(request), "workspace/symbol", |request: WorkspaceSymbolsRequest| {
+                request.compute()
+            })
+            .await)
+    }
+
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
         let request = {
             let state = self.state.read().await;
@@ -358,10 +392,40 @@ impl LanguageServer for Backend {
             .flatten())
     }
 
+    async fn prepare_rename(&self, params: TextDocumentPositionParams) -> Result<Option<PrepareRenameResponse>> {
+        let request = {
+            let state = self.state.read().await;
+            state.prepare_rename_request(params.text_document.uri, params.position)
+        };
+
+        Ok(self
+            .compute_request(request, "prepareRename", |request: PrepareRenameRequest| {
+                request.compute()
+            })
+            .await
+            .flatten())
+    }
+
+    async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        let request = {
+            let state = self.state.read().await;
+            state.rename_request(
+                params.text_document_position.text_document.uri,
+                params.text_document_position.position,
+                params.new_name,
+            )
+        };
+
+        Ok(self
+            .compute_request(request, "rename", |request: RenameRequest| request.compute())
+            .await
+            .flatten())
+    }
+
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         let request = {
             let state = self.state.read().await;
-            state.code_action_request(params.text_document.uri, params.range.start)
+            state.code_action_request(params.text_document.uri, params.range, params.context.diagnostics)
         };
         Ok(self
             .compute_request(request, "codeAction", |request: CodeActionRequest| request.compute())

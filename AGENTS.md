@@ -8,7 +8,7 @@ This file provides guidance to coding agents when working in this repository.
 - `obsidian-core` (crate name: `obsidian-rs-core`; library name: `obsidian_core`): core API used by the other sub-crates.
 - `obsidian-cli` (crate name: `obsidian-rs-cli`; binary name: `obsidian`): command-line interface exposing `search`, `note`, `tags`, and `check` commands. The `note` subcommand supports `backlinks`, `merge`, `patch`, `rename`, and `update`.
 - `obsidian-mcp` (crate name: `obsidian-rs-mcp`; binary name: `obsidian-mcp`): MCP (Model Context Protocol) server over STDIO transport. Exposes vault operations as MCP tools: `read_note`, `write_note`, `patch_note`, `update_note`, `search_notes`, `rename_note`, `list_tags`, `search_tags`, `check_vault`. Vault path resolved in order: `--vault <PATH>` CLI arg, then `OBSIDIAN_VAULT` env var, then `open_from_cwd()`. Uses the `rmcp` crate with `tokio` for async handling of blocking vault I/O.
-- `obsidian-lsp` (crate name: `obsidian-rs-lsp`; binary name: `obsidian-lsp`): Language Server Protocol server over STDIO transport. Resolves the vault with the same precedence as `obsidian-mcp` and currently provides initialization, full-document sync for open buffers, in-memory note shadowing through `Vault::load_note()` / `unload_note()`, health diagnostics for broken links and duplicate IDs or aliases, hover metadata for note links, document links with resolve support, backlinks-based references, go-to-definition for note links, heading anchors, and nested sub-anchors, and completion for wiki/markdown note links via `tower-lsp` and `tokio`.
+- `obsidian-lsp` (crate name: `obsidian-rs-lsp`; binary name: `obsidian-lsp`): Language Server Protocol server over STDIO transport. Resolves the vault with the same precedence as `obsidian-mcp` and currently provides initialization, full-document sync for open buffers, in-memory note shadowing through `Vault::load_note()` / `unload_note()`, health diagnostics for broken links and duplicate IDs or aliases, hover metadata for note links and tags, document links with resolve support, document symbols for note structure, workspace symbols for vault-wide note/tag/heading search, backlinks-based references, go-to-definition for note links, heading anchors and nested sub-anchors, completion for wiki/markdown note links and tags, create-note quick fixes for broken note links, duplicate ID/alias quick fixes, wiki/markdown link conversion refactors, wiki-link missing-heading quick fixes, filename-first note rename via `textDocument/prepareRename` / `textDocument/rename` with backlink updates, and tag references/definition/rename for inline and frontmatter tags.
 
 ## Workspace Structure
 
@@ -19,7 +19,7 @@ This file provides guidance to coding agents when working in this repository.
   - `src/link.rs` — parsing markdown/wiki/embedded links
   - `src/search.rs` — `find_note_paths()` for recursively finding `.md` files (public)
   - `src/health.rs` — `VaultHealthReport`, `DuplicateId`, `DuplicateAlias`, `BrokenLink`, `NoteRef` types returned by `Vault::check()`
-  - `src/vault.rs` — defines the `Vault` struct; `notes()` loads all notes (no content), `notes_with_content()` loads with body text, `search()` returns a query builder, `backlinks(&Note)` returns notes linking to a given note, `rename(&Note, new_path)` renames a note and updates all backlinks, `merge(&[Note], dest_path)` merges multiple notes (sources must be loaded with content) into a destination and updates all backlinks, `patch_note(&Note, old_string, new_string)` replaces exactly one occurrence of a string in the raw file, `check(filter)` scans for duplicate IDs/aliases and broken links returning a `VaultHealthReport`
+  - `src/vault.rs` — defines the `Vault` struct; `notes()` loads all notes (no content), `notes_with_content()` loads with body text, `search()` returns a query builder, `backlinks(&Note)` returns notes linking to a given note, `rename(&Note, new_path)` renames a note and updates all backlinks, `rename_edits(&Note, new_path)` previews exact backlink replacement spans for rename integrations, `merge(&[Note], dest_path)` merges multiple notes (sources must be loaded with content) into a destination and updates all backlinks, `patch_note(&Note, old_string, new_string)` replaces exactly one occurrence of a string in the raw file, `check(filter)` scans for duplicate IDs/aliases and broken links returning a `VaultHealthReport`
 - `obsidian-cli/` — the CLI binary crate
   - `src/main.rs` — entry point, subcommand dispatch
   - `src/args.rs` — clap argument structs and enums
@@ -35,10 +35,10 @@ This file provides guidance to coding agents when working in this repository.
 - `obsidian-lsp/` — the LSP server binary crate
   - `src/main.rs` — entry point: parses CLI args, initializes error reporting/logging, resolves the vault, and starts the STDIO LSP server
   - `src/args.rs` — clap args and vault resolution helper for `--vault`, `OBSIDIAN_VAULT`, and `open_from_cwd()`
-  - `src/server.rs` — `Backend` implementation of `tower_lsp::LanguageServer` for initialize/open/change/close flows, diagnostics publication, hover, document links, references, definition, and completion requests
-  - `src/state.rs` — shared backend state plus snapshot-based diagnostics, navigation, and completion computation helpers
+  - `src/server.rs` — `Backend` implementation of `tower_lsp::LanguageServer` for initialize/open/change/close flows, diagnostics publication, hover, document links, document symbols, workspace symbols, references, definition, completion, code action, and rename requests
+  - `src/state.rs` — shared backend state plus snapshot-based diagnostics, navigation, completion, code action, rename, tag, and symbol computation helpers
   - `src/uri.rs` — file URI/path conversion helpers and vault-relative path validation
-  - `tests/lsp_integration.rs` — end-to-end stdio JSON-RPC harness covering initialize, diagnostics, hover, document links, references, definition, document sync notifications, shutdown, and exit
+  - `tests/lsp_integration.rs` — end-to-end stdio JSON-RPC harness covering initialize, diagnostics, hover, document links, document symbols, workspace symbols, references, definition, completion, code actions, rename, document sync notifications, shutdown, and exit
 
 ## Development
 

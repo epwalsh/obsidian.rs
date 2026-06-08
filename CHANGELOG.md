@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- Added LSP `prepareRename` / `rename` support for filename-first note renames with backlink updates and stem-matching frontmatter ID updates.
+- Added LSP hover, references, go-to-definition, and rename support for inline and frontmatter tags.
+- Added LSP document symbols for note structure and workspace symbols for vault-wide note, tag, and heading search.
+- Added LSP code actions for duplicate ID/alias fixes, wiki/markdown link conversion, and wiki-link missing-heading creation.
+- Added `Vault::rename_edits()` to expose exact backlink replacement spans for rename previews.
+
 ### Changed
 
 - LSP create-note quick fixes now use wiki aliases and markdown link text as the new note's primary alias and heading.

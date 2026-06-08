@@ -244,6 +244,12 @@ fn initialize_session(harness: &mut LspHarness, vault_uri: &Url, vault_path: &Pa
     assert_eq!(initialize["result"]["capabilities"]["hoverProvider"], true);
     assert_eq!(initialize["result"]["capabilities"]["referencesProvider"], true);
     assert_eq!(initialize["result"]["capabilities"]["definitionProvider"], true);
+    assert_eq!(initialize["result"]["capabilities"]["documentSymbolProvider"], true);
+    assert_eq!(initialize["result"]["capabilities"]["workspaceSymbolProvider"], true);
+    assert_eq!(
+        initialize["result"]["capabilities"]["renameProvider"]["prepareProvider"],
+        true
+    );
     assert_eq!(
         initialize["result"]["capabilities"]["documentLinkProvider"]["resolveProvider"],
         true
@@ -387,6 +393,52 @@ fn create_feature_vault() -> (tempfile::TempDir, Url, Url, Url, Url, String) {
     )
 }
 
+fn create_symbol_vault() -> (tempfile::TempDir, Url, Url) {
+    let vault_dir = tempfile::tempdir().expect("should create temp dir");
+    fs::create_dir(vault_dir.path().join(".obsidian")).expect("should create .obsidian directory");
+
+    let source_path = vault_dir.path().join("source.md");
+    fs::write(
+        &source_path,
+        concat!(
+            "---\n",
+            "id: symbol-note\n",
+            "title: Symbol Note\n",
+            "aliases:\n",
+            "- Work Alias\n",
+            "tags: [rust, lsp]\n",
+            "---\n",
+            "\n",
+            "# Overview\n",
+            "See [[other-note]] and [Other](other.md). #inline/tag\n",
+            "\n",
+            "## Details\n",
+        ),
+    )
+    .expect("should write source note");
+    let source_uri = Url::from_file_path(source_path.canonicalize().expect("source path should canonicalize"))
+        .expect("source path should convert to file URI");
+
+    let other_path = vault_dir.path().join("other.md");
+    fs::write(
+        &other_path,
+        concat!(
+            "---\n",
+            "id: other-note\n",
+            "aliases: [Other Alias]\n",
+            "tags: [rust]\n",
+            "---\n",
+            "\n",
+            "# Other Heading\n",
+        ),
+    )
+    .expect("should write other note");
+    let other_uri = Url::from_file_path(other_path.canonicalize().expect("other path should canonicalize"))
+        .expect("other path should convert to file URI");
+
+    (vault_dir, source_uri, other_uri)
+}
+
 fn create_heading_anchor_vault() -> (tempfile::TempDir, Url, Url, String) {
     let vault_dir = tempfile::tempdir().expect("should create temp dir");
     fs::create_dir(vault_dir.path().join(".obsidian")).expect("should create .obsidian directory");
@@ -527,6 +579,84 @@ fn stdio_session_handles_initialize_and_document_lifecycle() {
 }
 
 #[test]
+fn stdio_session_handles_document_and_workspace_symbols() {
+    let (vault_dir, source_uri, other_uri) = create_symbol_vault();
+    let vault_path = vault_dir.path().canonicalize().expect("vault path should canonicalize");
+    let vault_uri = Url::from_file_path(&vault_path).expect("vault path should convert to file URI");
+
+    let mut harness = LspHarness::spawn(vault_dir.path());
+    initialize_session(&mut harness, &vault_uri, &vault_path);
+
+    harness.send(request(
+        2,
+        "textDocument/documentSymbol",
+        Some(json!({
+            "textDocument": {
+                "uri": source_uri,
+            }
+        })),
+    ));
+
+    let document_symbols = harness.expect_message("document symbols response", |message| message["id"] == 2);
+    let document_symbols = document_symbols["result"]
+        .as_array()
+        .expect("document symbols response should be an array");
+    let document_symbol_names = document_symbols
+        .iter()
+        .filter_map(|symbol| symbol["name"].as_str())
+        .collect::<Vec<_>>();
+    assert!(document_symbol_names.contains(&"id"));
+    assert!(document_symbol_names.contains(&"Work Alias"));
+    assert!(document_symbol_names.contains(&"#inline/tag"));
+    assert!(document_symbol_names.contains(&"Overview"));
+    assert!(document_symbol_names.contains(&"[[other-note]]"));
+    assert!(
+        document_symbols
+            .iter()
+            .any(|symbol| symbol["name"] == "Overview" && symbol["selectionRange"]["start"]["line"] == 8)
+    );
+
+    harness.send(request(
+        3,
+        "workspace/symbol",
+        Some(json!({
+            "query": "other",
+        })),
+    ));
+
+    let workspace_symbols = harness.expect_message("workspace symbols response", |message| message["id"] == 3);
+    let workspace_symbols = workspace_symbols["result"]
+        .as_array()
+        .expect("workspace symbols response should be an array");
+    assert!(
+        workspace_symbols
+            .iter()
+            .any(|symbol| { symbol["name"] == "other-note" && symbol["location"]["uri"] == other_uri.as_str() })
+    );
+    assert!(
+        workspace_symbols
+            .iter()
+            .any(|symbol| { symbol["name"] == "Other Heading" && symbol["location"]["uri"] == other_uri.as_str() })
+    );
+
+    harness.send(request(
+        4,
+        "workspace/symbol",
+        Some(json!({
+            "query": "rust",
+        })),
+    ));
+
+    let tag_symbols = harness.expect_message("workspace tag symbols response", |message| message["id"] == 4);
+    let tag_symbols = tag_symbols["result"]
+        .as_array()
+        .expect("workspace tag symbols response should be an array");
+    assert_eq!(tag_symbols.iter().filter(|symbol| symbol["name"] == "#rust").count(), 2);
+
+    shutdown_session(&mut harness);
+}
+
+#[test]
 fn stdio_session_reports_health_diagnostics_and_hover_metadata() {
     let (vault_dir, duplicate_a_uri, duplicate_b_uri, target_uri, backlink_uri, duplicate_a_text) =
         create_feature_vault();
@@ -563,6 +693,123 @@ fn stdio_session_reports_health_diagnostics_and_hover_metadata() {
                 .as_str()
                 .unwrap()
                 .contains("Broken link [[missing-note]]"))
+    );
+    let duplicate_a_diagnostics_array = duplicate_a_diagnostics["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics should be an array");
+    let duplicate_id_diagnostic = duplicate_a_diagnostics_array
+        .iter()
+        .find(|diagnostic| diagnostic["code"] == "duplicate-id")
+        .expect("duplicate ID diagnostic should be present")
+        .clone();
+    let duplicate_alias_diagnostic = duplicate_a_diagnostics_array
+        .iter()
+        .find(|diagnostic| diagnostic["code"] == "duplicate-alias")
+        .expect("duplicate alias diagnostic should be present")
+        .clone();
+
+    harness.send(request(
+        20,
+        "textDocument/codeAction",
+        Some(json!({
+            "textDocument": { "uri": duplicate_a_uri },
+            "range": duplicate_id_diagnostic["range"],
+            "context": { "diagnostics": [duplicate_id_diagnostic] },
+        })),
+    ));
+    let duplicate_id_actions =
+        harness.expect_message("duplicate ID code action response", |message| message["id"] == 20);
+    let duplicate_id_actions = duplicate_id_actions["result"]
+        .as_array()
+        .expect("duplicate ID code action response should be an array");
+    assert!(duplicate_id_actions.iter().any(|action| {
+        action["title"] == "Assign unique note ID 'duplicate-a'"
+            && action["kind"] == "quickfix"
+            && action["diagnostics"]
+                .as_array()
+                .expect("quick fix should attach diagnostics")
+                .len()
+                == 1
+            && action["edit"]["documentChanges"][0]["edits"][0]["newText"] == "duplicate-a"
+    }));
+
+    harness.send(request(
+        21,
+        "textDocument/codeAction",
+        Some(json!({
+            "textDocument": { "uri": duplicate_a_uri },
+            "range": duplicate_alias_diagnostic["range"],
+            "context": { "diagnostics": [duplicate_alias_diagnostic] },
+        })),
+    ));
+    let duplicate_alias_actions =
+        harness.expect_message("duplicate alias code action response", |message| message["id"] == 21);
+    let duplicate_alias_actions = duplicate_alias_actions["result"]
+        .as_array()
+        .expect("duplicate alias code action response should be an array");
+    assert!(duplicate_alias_actions.iter().any(|action| {
+        action["title"] == "Change duplicate alias 'shared-alias' to 'shared-alias-2'"
+            && action["kind"] == "quickfix"
+            && action["edit"]["documentChanges"][0]["edits"][0]["newText"] == "shared-alias-2"
+    }));
+
+    harness.send(request(
+        22,
+        "textDocument/codeAction",
+        Some(json!({
+            "textDocument": { "uri": duplicate_a_uri },
+            "range": duplicate_alias_diagnostic["range"],
+            "context": { "diagnostics": [] },
+        })),
+    ));
+    let duplicate_alias_actions_without_client_diagnostics = harness.expect_message(
+        "duplicate alias code action response without client diagnostics",
+        |message| message["id"] == 22,
+    );
+    let duplicate_alias_actions_without_client_diagnostics =
+        duplicate_alias_actions_without_client_diagnostics["result"]
+            .as_array()
+            .expect("duplicate alias code action response should be an array");
+    assert!(duplicate_alias_actions_without_client_diagnostics.iter().any(|action| {
+        action["title"] == "Change duplicate alias 'shared-alias' to 'shared-alias-2'"
+            && action["kind"] == "quickfix"
+            && action["diagnostics"]
+                .as_array()
+                .expect("quick fix should attach diagnostics")
+                .len()
+                == 1
+    }));
+
+    let duplicate_alias_line = duplicate_alias_diagnostic["range"]["start"]["line"]
+        .as_u64()
+        .expect("duplicate alias diagnostic line should be a number");
+    harness.send(request(
+        23,
+        "textDocument/codeAction",
+        Some(json!({
+            "textDocument": { "uri": duplicate_a_uri },
+            "range": {
+                "start": { "line": duplicate_alias_line, "character": 0 },
+                "end": { "line": duplicate_alias_line, "character": 0 },
+            },
+            "context": { "diagnostics": [] },
+        })),
+    ));
+    let duplicate_alias_line_actions_without_client_diagnostics = harness.expect_message(
+        "duplicate alias line code action response without client diagnostics",
+        |message| message["id"] == 23,
+    );
+    let duplicate_alias_line_actions_without_client_diagnostics =
+        duplicate_alias_line_actions_without_client_diagnostics["result"]
+            .as_array()
+            .expect("duplicate alias line code action response should be an array");
+    assert!(
+        duplicate_alias_line_actions_without_client_diagnostics
+            .iter()
+            .any(|action| {
+                action["title"] == "Change duplicate alias 'shared-alias' to 'shared-alias-2'"
+                    && action["kind"] == "quickfix"
+            })
     );
 
     let duplicate_b_diagnostics = expect_diagnostics(&mut harness, &duplicate_b_uri, None);
@@ -673,6 +920,44 @@ fn stdio_session_reports_health_diagnostics_and_hover_metadata() {
     );
     assert!(
         link_references
+            .iter()
+            .any(|location| location["uri"] == backlink_uri.as_str())
+    );
+
+    let (markdown_ref_line, markdown_ref_character) =
+        position_for_substring(&duplicate_a_text, "[Target Markdown](target.md)");
+    harness.send(request(
+        60,
+        "textDocument/references",
+        Some(json!({
+            "textDocument": {
+                "uri": duplicate_a_uri,
+            },
+            "position": {
+                "line": markdown_ref_line,
+                "character": markdown_ref_character,
+            },
+            "context": {
+                "includeDeclaration": true,
+            }
+        })),
+    ));
+
+    let markdown_link_references =
+        harness.expect_message("markdown link references response", |message| message["id"] == 60);
+    let markdown_link_references = markdown_link_references["result"]
+        .as_array()
+        .expect("references response should be an array");
+    assert_eq!(markdown_link_references.len(), 3);
+    assert_eq!(
+        markdown_link_references
+            .iter()
+            .filter(|location| location["uri"] == duplicate_a_uri.as_str())
+            .count(),
+        2
+    );
+    assert!(
+        markdown_link_references
             .iter()
             .any(|location| location["uri"] == backlink_uri.as_str())
     );
@@ -905,6 +1190,246 @@ fn stdio_session_definition_jumps_to_nested_heading_anchor() {
     assert_eq!(markdown_definition_uri.fragment(), Some("heading-a#subheading-b"));
     assert_eq!(markdown_definition["result"]["range"]["start"]["line"], 11);
     assert_eq!(markdown_definition["result"]["range"]["start"]["character"], 3);
+
+    shutdown_session(&mut harness);
+}
+
+#[test]
+fn stdio_session_handles_rename_for_note_links() {
+    let vault_dir = tempfile::tempdir().expect("should create temp dir");
+    fs::create_dir(vault_dir.path().join(".obsidian")).expect("should create .obsidian directory");
+
+    let target_path = vault_dir.path().join("old-note.md");
+    fs::write(&target_path, "---\ntitle: Old Note\nid: old-note\n---\n\nBody.\n").expect("should write target note");
+    let target_uri = Url::from_file_path(target_path.canonicalize().expect("target path should canonicalize"))
+        .expect("target path should convert to URI");
+
+    let source_path = vault_dir.path().join("source.md");
+    let source_text = "See [[old-note]] and [Old](old-note.md).";
+    fs::write(&source_path, source_text).expect("should write source note");
+    let source_uri = Url::from_file_path(source_path.canonicalize().expect("source path should canonicalize"))
+        .expect("source path should convert to URI");
+
+    let vault_path = vault_dir.path().canonicalize().expect("vault path should canonicalize");
+    let vault_uri = Url::from_file_path(&vault_path).expect("vault path should convert to URI");
+    let mut harness = LspHarness::spawn(vault_dir.path());
+    initialize_session(&mut harness, &vault_uri, &vault_path);
+
+    harness.send(notification(
+        "textDocument/didOpen",
+        Some(json!({
+            "textDocument": {
+                "uri": source_uri,
+                "languageId": "markdown",
+                "version": 1,
+                "text": source_text,
+            }
+        })),
+    ));
+    expect_diagnostics(&mut harness, &source_uri, Some(1));
+
+    let (line, character) = position_for_substring(source_text, "[[old-note]]");
+    harness.send(request(
+        2,
+        "textDocument/prepareRename",
+        Some(json!({
+            "textDocument": { "uri": source_uri },
+            "position": { "line": line, "character": character },
+        })),
+    ));
+
+    let prepare = harness.expect_message("prepareRename response", |message| message["id"] == 2);
+    assert_eq!(prepare["result"]["placeholder"], "old-note");
+    assert_eq!(prepare["result"]["range"]["start"]["character"], 6);
+    assert_eq!(prepare["result"]["range"]["end"]["character"], 14);
+
+    harness.send(request(
+        3,
+        "textDocument/rename",
+        Some(json!({
+            "textDocument": { "uri": source_uri },
+            "position": { "line": line, "character": character },
+            "newName": "new-note",
+        })),
+    ));
+
+    let rename = harness.expect_message("rename response", |message| message["id"] == 3);
+    let document_changes = rename["result"]["documentChanges"]
+        .as_array()
+        .expect("rename should return documentChanges");
+    assert!(document_changes.iter().any(|change| {
+        change["textDocument"]["uri"] == target_uri.as_str() && change["edits"][0]["newText"] == "new-note"
+    }));
+    assert!(document_changes.iter().any(|change| {
+        change["textDocument"]["uri"] == source_uri.as_str()
+            && change["edits"]
+                .as_array()
+                .expect("source change should have edits")
+                .iter()
+                .any(|edit| edit["newText"] == "[[new-note]]")
+            && change["edits"]
+                .as_array()
+                .expect("source change should have edits")
+                .iter()
+                .any(|edit| edit["newText"] == "[Old](new-note.md)")
+    }));
+    let new_uri = Url::from_file_path(vault_path.join("new-note.md")).expect("new path should convert to URI");
+    assert!(document_changes.iter().any(|change| {
+        change["kind"] == "rename" && change["oldUri"] == target_uri.as_str() && change["newUri"] == new_uri.as_str()
+    }));
+
+    shutdown_session(&mut harness);
+}
+
+#[test]
+fn stdio_session_handles_tag_language_features() {
+    let vault_dir = tempfile::tempdir().expect("should create temp dir");
+    fs::create_dir(vault_dir.path().join(".obsidian")).expect("should create .obsidian directory");
+
+    let tagged_path = vault_dir.path().join("tagged.md");
+    let tagged_text = "---\nid: tagged\ntags: [project, work]\n---\n\nBody #project and #project/task.\n";
+    fs::write(&tagged_path, tagged_text).expect("should write tagged note");
+    let tagged_uri = Url::from_file_path(tagged_path.canonicalize().expect("tagged path should canonicalize"))
+        .expect("tagged path should convert to URI");
+
+    let other_path = vault_dir.path().join("other.md");
+    fs::write(&other_path, "---\nid: other\ntags:\n- project\n---\n\nBody #project.\n")
+        .expect("should write other note");
+    let other_uri = Url::from_file_path(other_path.canonicalize().expect("other path should canonicalize"))
+        .expect("other path should convert to URI");
+
+    let vault_path = vault_dir.path().canonicalize().expect("vault path should canonicalize");
+    let vault_uri = Url::from_file_path(&vault_path).expect("vault path should convert to URI");
+    let mut harness = LspHarness::spawn(vault_dir.path());
+    initialize_session(&mut harness, &vault_uri, &vault_path);
+
+    harness.send(notification(
+        "textDocument/didOpen",
+        Some(json!({
+            "textDocument": {
+                "uri": tagged_uri,
+                "languageId": "markdown",
+                "version": 1,
+                "text": tagged_text,
+            }
+        })),
+    ));
+    expect_diagnostics(&mut harness, &tagged_uri, Some(1));
+
+    let (line, character) = position_for_substring(tagged_text, "#project and");
+    harness.send(request(
+        2,
+        "textDocument/hover",
+        Some(json!({
+            "textDocument": { "uri": tagged_uri },
+            "position": { "line": line, "character": character },
+        })),
+    ));
+    let hover = harness.expect_message("tag hover response", |message| message["id"] == 2);
+    let hover_text = hover["result"]["contents"]["value"]
+        .as_str()
+        .expect("hover should contain markdown text");
+    assert!(hover_text.contains("**#project**"));
+    assert!(hover_text.contains("Occurrences: 5"));
+
+    harness.send(request(
+        3,
+        "textDocument/references",
+        Some(json!({
+            "textDocument": { "uri": tagged_uri },
+            "position": { "line": line, "character": character },
+            "context": { "includeDeclaration": true },
+        })),
+    ));
+    let references = harness.expect_message("tag references response", |message| message["id"] == 3);
+    let references = references["result"]
+        .as_array()
+        .expect("references response should be an array");
+    assert_eq!(references.len(), 5);
+    assert_eq!(
+        references
+            .iter()
+            .filter(|location| location["uri"] == tagged_uri.as_str())
+            .count(),
+        3
+    );
+    assert_eq!(
+        references
+            .iter()
+            .filter(|location| location["uri"] == other_uri.as_str())
+            .count(),
+        2
+    );
+
+    harness.send(request(
+        4,
+        "textDocument/definition",
+        Some(json!({
+            "textDocument": { "uri": tagged_uri },
+            "position": { "line": line, "character": character },
+        })),
+    ));
+    let definition = harness.expect_message("tag definition response", |message| message["id"] == 4);
+    assert_eq!(
+        definition["result"]
+            .as_array()
+            .expect("definition response should be an array")
+            .len(),
+        5
+    );
+
+    harness.send(request(
+        5,
+        "textDocument/prepareRename",
+        Some(json!({
+            "textDocument": { "uri": tagged_uri },
+            "position": { "line": line, "character": character },
+        })),
+    ));
+    let prepare = harness.expect_message("tag prepareRename response", |message| message["id"] == 5);
+    assert_eq!(prepare["result"]["placeholder"], "#project");
+
+    harness.send(request(
+        6,
+        "textDocument/rename",
+        Some(json!({
+            "textDocument": { "uri": tagged_uri },
+            "position": { "line": line, "character": character },
+            "newName": "#area",
+        })),
+    ));
+    let rename = harness.expect_message("tag rename response", |message| message["id"] == 6);
+    let document_changes = rename["result"]["documentChanges"]
+        .as_array()
+        .expect("rename should return documentChanges");
+    assert!(document_changes.iter().any(|change| {
+        change["textDocument"]["uri"] == tagged_uri.as_str()
+            && change["edits"]
+                .as_array()
+                .expect("tagged change should include edits")
+                .iter()
+                .any(|edit| edit["newText"] == "area")
+            && change["edits"]
+                .as_array()
+                .expect("tagged change should include edits")
+                .iter()
+                .filter(|edit| edit["newText"] == "#area")
+                .count()
+                == 2
+    }));
+    assert!(document_changes.iter().any(|change| {
+        change["textDocument"]["uri"] == other_uri.as_str()
+            && change["edits"]
+                .as_array()
+                .expect("other change should include edits")
+                .iter()
+                .any(|edit| edit["newText"] == "area")
+            && change["edits"]
+                .as_array()
+                .expect("other change should include edits")
+                .iter()
+                .any(|edit| edit["newText"] == "#area")
+    }));
 
     shutdown_session(&mut harness);
 }
@@ -1373,7 +1898,7 @@ fn stdio_session_offers_create_note_code_action_for_broken_links() {
         "new markdown note should use link text as its primary alias and heading"
     );
 
-    // No code action for an existing note.
+    // Existing notes offer refactors, but not create-note quick fixes.
     let existing_path = vault_dir.path().join("existing.md");
     fs::write(&existing_path, "---\nid: existing\n---\n").expect("should write existing note");
 
@@ -1401,9 +1926,19 @@ fn stdio_session_offers_create_note_code_action_for_broken_links() {
     ));
 
     let existing_response = harness.expect_message("existing note code action response", |message| message["id"] == 6);
+    let existing_actions = existing_response["result"]
+        .as_array()
+        .expect("resolved link should return conversion actions");
     assert!(
-        existing_response["result"].is_null(),
-        "should return null for an already-resolved link"
+        existing_actions.iter().any(|action| {
+            action["title"] == "Convert wiki link to markdown" && action["kind"] == "refactor.rewrite"
+        })
+    );
+    assert!(
+        existing_actions
+            .iter()
+            .all(|action| action["command"]["command"] != "obsidian.createNote"),
+        "resolved links should not offer create-note commands"
     );
 
     shutdown_session(&mut harness);

@@ -118,10 +118,22 @@ Current functionality:
 - diagnostics for broken links, duplicate IDs, and duplicate aliases across the vault
 - hover on note links with basic target-note metadata
 - document links for wiki and markdown note links, with resolve support
-- references/backlinks for linked notes, or for the current note when the cursor is not on a link
+- document symbols for headings, frontmatter keys, aliases, tags, and outbound links
+- workspace symbol search across note IDs, titles, aliases, tags, and headings
+- references/backlinks for the target of wiki or markdown note links, or for the current note when the cursor is not on a link
 - go-to definition for linked notes, including heading anchors and nested sub-anchors
 - diagnostics clearing and refresh on open/change/close events
 - completion for wiki links (`[[`) and markdown links (`[`) with per-note variants: bare ID, bare title, alias override, and bare alias forms
 - quick fixes for broken note links that create missing notes inside the active vault without overwriting existing files, using wiki aliases or markdown link text as the new note's primary alias and heading when available
+- quick fixes for duplicate IDs and aliases, wiki-only missing-heading creation, and refactors that convert between wiki and markdown note links
+- filename-first note rename via `textDocument/prepareRename` and `textDocument/rename`, with backlink updates and automatic frontmatter ID updates when the current ID matches the old filename stem
+- hover, references, go-to-definition, and rename support for inline and frontmatter tags
 
-Advanced editor features such as rename are not implemented yet.
+Additional explicit refactor modes are still planned.
+
+### LSP roadmap
+
+Planned LSP work prioritizes Obsidian-specific editing and refactoring features that generic Markdown language servers cannot provide:
+
+1. **Rename/refactor follow-ups**: add explicit commands or code actions for path-only, ID-only, and forced combined rename modes. Standard LSP rename already defaults to renaming the filename/path; it also renames the frontmatter ID when the current ID exactly matches the old filename stem, and otherwise leaves custom IDs unchanged.
+2. **Performance and freshness**: add file watching or workspace file-operation handling, plus a cache/index layer so diagnostics, completion, hover, navigation, and symbols stay fresh without reparsing the whole vault for every request.
