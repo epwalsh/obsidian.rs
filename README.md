@@ -93,6 +93,7 @@ When initialized by an MCP client, the server describes the vault as a collectio
 |---|---|
 | `check_vault` | Report duplicate IDs, duplicate aliases, and broken links in the vault |
 | `list_notes` | List all notes in the vault |
+| `list_backlinks` | List notes that link to a given note, including matching link locations |
 | `read_note` | Read the body and frontmatter of a note |
 | `write_note` | Write a new note |
 | `patch_note` | Replace one exact string in a note |

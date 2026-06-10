@@ -44,6 +44,16 @@ pub struct ListNotesParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListBacklinksParams {
+    #[schemars(description = "Note identifier: a file path (absolute or vault-relative), note ID, or alias")]
+    pub note: String,
+    #[schemars(
+        description = "Sort order for results by source note. One of: path-asc, path-desc, modified-asc, modified-desc, created-asc, created-desc"
+    )]
+    pub sort: Option<SortOrder>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct WriteNoteParams {
     #[schemars(description = "Path for the note, relative to the vault root. Extension .md is added if omitted.")]
     pub path: String,

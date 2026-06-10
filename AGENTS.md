@@ -7,7 +7,7 @@ This file provides guidance to coding agents when working in this repository.
 `obsidian.rs` is a Rust library and CLI for working with Obsidian vaults. It is structured as a Cargo workspace with sub-crates for various features:
 - `obsidian-core` (crate name: `obsidian-rs-core`; library name: `obsidian_core`): core API used by the other sub-crates.
 - `obsidian-cli` (crate name: `obsidian-rs-cli`; binary name: `obsidian`): command-line interface exposing `search`, `note`, `tags`, and `check` commands. The `note` subcommand supports `backlinks`, `merge`, `patch`, `rename`, and `update`.
-- `obsidian-mcp` (crate name: `obsidian-rs-mcp`; binary name: `obsidian-mcp`): MCP (Model Context Protocol) server over STDIO transport. Exposes vault operations as MCP tools: `read_note`, `write_note`, `patch_note`, `update_note`, `search_notes`, `rename_note`, `list_tags`, `search_tags`, `check_vault`. Vault path resolved in order: `--vault <PATH>` CLI arg, then `OBSIDIAN_VAULT` env var, then `open_from_cwd()`. Uses the `rmcp` crate with `tokio` for async handling of blocking vault I/O.
+- `obsidian-mcp` (crate name: `obsidian-rs-mcp`; binary name: `obsidian-mcp`): MCP (Model Context Protocol) server over STDIO transport. Exposes vault operations as MCP tools: `read_note`, `list_notes`, `list_backlinks`, `write_note`, `patch_note`, `update_note`, `search_notes`, `rename_note`, `list_tags`, `search_tags`, `check_vault`. Vault path resolved in order: `--vault <PATH>` CLI arg, then `OBSIDIAN_VAULT` env var, then `open_from_cwd()`. Uses the `rmcp` crate with `tokio` for async handling of blocking vault I/O.
 - `obsidian-lsp` (crate name: `obsidian-rs-lsp`; binary name: `obsidian-lsp`): Language Server Protocol server over STDIO transport. Resolves the vault with the same precedence as `obsidian-mcp` and currently provides initialization, full-document sync for open buffers, cached vault state through `obsidian_core::Vault::open_cached()` with open-buffer overlays, watched Markdown file and workspace file-operation refreshes, health diagnostics for broken links and duplicate IDs or aliases, hover metadata for note links and tags, document links with resolve support, document symbols for note structure, workspace symbols for vault-wide note/tag/heading search, backlinks-based references, go-to-definition for note links, heading anchors and nested sub-anchors, completion for wiki/markdown note links and tags, create-note quick fixes for broken note links, duplicate ID/alias quick fixes, wiki/markdown link conversion refactors, wiki-link missing-heading quick fixes, filename-first note rename via `textDocument/prepareRename` / `textDocument/rename` with backlink updates, and tag references/definition/rename for inline and frontmatter tags.
 
 ## Workspace Structure
@@ -29,8 +29,8 @@ This file provides guidance to coding agents when working in this repository.
   - `tests/cli.rs` — integration tests via `assert_cmd`
 - `obsidian-mcp/` — the MCP server binary crate
   - `src/main.rs` — entry point: reads `OBSIDIAN_VAULT`, opens vault, starts STDIO server
-  - `src/server.rs` — `VaultServer` struct with `#[tool_router]` impl (9 tools) and `#[tool_handler]` `ServerHandler` impl
-  - `src/tools.rs` — parameter structs (`Deserialize + JsonSchema`) for all 9 tools
+  - `src/server.rs` — `VaultServer` struct with `#[tool_router]` impl (11 tools) and `#[tool_handler]` `ServerHandler` impl
+  - `src/tools.rs` — parameter structs (`Deserialize + JsonSchema`) for all 11 tools
   - `src/error.rs` — `vault_err`, `note_err`, `search_err`, `other_err` helpers converting core errors to `rmcp::ErrorData`
 - `obsidian-lsp/` — the LSP server binary crate
   - `src/main.rs` — entry point: parses CLI args, initializes error reporting/logging, resolves the vault, and starts the STDIO LSP server

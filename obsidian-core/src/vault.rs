@@ -110,7 +110,7 @@ impl Vault {
 
     fn has_known_note_path(&self, path: &Path) -> bool {
         let path = common::normalize_path(path, None);
-        path.exists()
+        path.is_file()
             || self.note_overrides.contains_key(&path)
             || self
                 .cached_disk_notes
