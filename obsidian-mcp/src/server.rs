@@ -13,6 +13,21 @@ use crate::tools::{
     SearchByTagParams, SearchNotesParams, UpdateNoteParams, WriteNoteParams,
 };
 
+const SERVER_INSTRUCTIONS: &str = r#"Use this MCP server to work with an Obsidian vault as a collection of Markdown notes.
+
+Capabilities:
+- Discover notes by path, title, alias, ID, tag, content substring, regex, or glob.
+- Read note bodies and YAML frontmatter; list notes and tags.
+- Create notes, update frontmatter, patch exact body text, and rename notes while updating backlinks.
+- Check vault health for broken links and duplicate IDs or aliases.
+
+Operational guidance:
+- Note identifiers can be vault-relative paths, current-working-directory-relative paths, absolute paths, frontmatter IDs, or aliases when a tool accepts `note`.
+- Prefer read-only tools (`search_notes`, `read_note`, `list_notes`, `list_tags`, `search_tags`, `check_vault`) before modifying content.
+- Use `patch_note` only when `old_string` appears exactly once; use `write_note` with `force=true` only when intentionally replacing a whole note.
+- Prefer vault-relative paths for writes and renames; tool results use vault-relative paths when possible.
+"#;
+
 fn build_ignore_set(patterns: &[String]) -> Result<globset::GlobSet, rmcp::ErrorData> {
     let mut builder = globset::GlobSetBuilder::new();
     for pattern in patterns {
@@ -457,9 +472,32 @@ impl VaultServer {
 #[tool_handler]
 impl ServerHandler for VaultServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "MCP server for Obsidian vaults. Provides tools to read, write, search, \
-                 and manage notes in an Obsidian vault.",
-        )
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(SERVER_INSTRUCTIONS)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SERVER_INSTRUCTIONS;
+
+    #[test]
+    fn server_instructions_describe_capabilities_and_safe_usage() {
+        for expected in [
+            "Obsidian vault",
+            "Markdown notes",
+            "Discover notes",
+            "Read note bodies",
+            "Create notes",
+            "rename notes while updating backlinks",
+            "Check vault health",
+            "Prefer read-only tools",
+            "patch_note",
+            "vault-relative paths",
+        ] {
+            assert!(
+                SERVER_INSTRUCTIONS.contains(expected),
+                "server instructions should mention {expected:?}"
+            );
+        }
     }
 }

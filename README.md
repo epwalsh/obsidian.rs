@@ -85,6 +85,8 @@ cargo install obsidian-rs-mcp
 claude mcp add obsidian --scope project obsidian-mcp --vault .
 ```
 
+When initialized by an MCP client, the server describes the vault as a collection of Markdown notes and summarizes the safe workflow for consuming agents: discover/read before writing, use exact-match patching for surgical edits, rely on rename tools for backlink updates, and prefer vault-relative paths for writes and renames.
+
 ### Tools exposed
 
 | Tool | Description |

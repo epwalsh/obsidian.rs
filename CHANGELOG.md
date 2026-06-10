@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Expanded the MCP server initialization instructions so consuming agents see a richer overview of vault capabilities and safe tool usage.
 - LSP create-note quick fixes now use wiki aliases and markdown link text as the new note's primary alias and heading.
 - LSP diagnostics, navigation, completion, symbols, and code actions now use cached vault snapshots with open-document overlays instead of reparsing the whole vault for every request.
 
