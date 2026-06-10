@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added `list_backlinks` MCP tool: returns notes linking to a given note plus the matching wiki/markdown link metadata and source locations.
 - Added LSP `prepareRename` / `rename` support for filename-first note renames with backlink updates and stem-matching frontmatter ID updates.
 - Added LSP hover, references, go-to-definition, and rename support for inline and frontmatter tags.
 - Added LSP document symbols for note structure and workspace symbols for vault-wide note, tag, and heading search.

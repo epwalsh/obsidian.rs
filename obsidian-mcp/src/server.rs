@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use obsidian_core::{Location, Note, Vault};
+use obsidian_core::{Link, LocatedLink, Location, Note, Vault};
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
 use rmcp::model::{CallToolResult, Content, ServerCapabilities, ServerInfo};
 use rmcp::{ServerHandler, tool, tool_handler, tool_router};
@@ -9,21 +9,21 @@ use serde_json::json;
 
 use crate::error::{note_err, other_err, search_err, vault_err};
 use crate::tools::{
-    CheckVaultParams, ListNotesParams, ListTagsParams, PatchNoteParams, ReadNoteParams, RenameNoteParams,
-    SearchByTagParams, SearchNotesParams, UpdateNoteParams, WriteNoteParams,
+    CheckVaultParams, ListBacklinksParams, ListNotesParams, ListTagsParams, PatchNoteParams, ReadNoteParams,
+    RenameNoteParams, SearchByTagParams, SearchNotesParams, UpdateNoteParams, WriteNoteParams,
 };
 
 const SERVER_INSTRUCTIONS: &str = r#"Use this MCP server to work with an Obsidian vault as a collection of Markdown notes.
 
 Capabilities:
 - Discover notes by path, title, alias, ID, tag, content substring, regex, or glob.
-- Read note bodies and YAML frontmatter; list notes and tags.
+- Read note bodies and YAML frontmatter; list notes, tags, and backlinks.
 - Create notes, update frontmatter, patch exact body text, and rename notes while updating backlinks.
 - Check vault health for broken links and duplicate IDs or aliases.
 
 Operational guidance:
 - Note identifiers can be vault-relative paths, current-working-directory-relative paths, absolute paths, frontmatter IDs, or aliases when a tool accepts `note`.
-- Prefer read-only tools (`search_notes`, `read_note`, `list_notes`, `list_tags`, `search_tags`, `check_vault`) before modifying content.
+- Prefer read-only tools (`search_notes`, `read_note`, `list_notes`, `list_backlinks`, `list_tags`, `search_tags`, `check_vault`) before modifying content.
 - Use `patch_note` only when `old_string` appears exactly once; use `write_note` with `force=true` only when intentionally replacing a whole note.
 - Prefer vault-relative paths for writes and renames; tool results use vault-relative paths when possible.
 "#;
@@ -66,6 +66,64 @@ fn note_to_json(note: &Note, vault_path: &Path) -> Result<serde_json::Value, rmc
         serde_json::Value::String(vault_rel_path(&note.path, vault_path)),
     );
     Ok(serde_json::Value::Object(map))
+}
+
+fn backlink_link_to_json(link: &LocatedLink) -> serde_json::Value {
+    let (kind, mut target, heading, display) = match &link.link {
+        Link::Wiki {
+            target, heading, alias, ..
+        } => (
+            "wiki",
+            target.clone(),
+            heading.clone(),
+            alias.clone().unwrap_or(target.clone()),
+        ),
+        Link::Markdown { text, url, .. } => ("markdown", url.clone(), None, text.clone()),
+        Link::Embed {
+            target, heading, alias, ..
+        } => (
+            "embed",
+            target.clone(),
+            heading.clone(),
+            alias.clone().unwrap_or(target.clone()),
+        ),
+    };
+    if let Some(heading) = heading {
+        target = format!("{}#{}", target, heading);
+    }
+
+    json!({
+        "kind": kind,
+        "target": target,
+        "display": display,
+        "line": link.location.line,
+        "col_start": link.location.col_start,
+        "col_end": link.location.col_end,
+    })
+}
+
+fn backlinks_to_json(results: &[(Note, Vec<LocatedLink>)], vault_path: &Path) -> serde_json::Value {
+    serde_json::Value::Array(
+        results
+            .iter()
+            .map(|(note, links)| {
+                json!({
+                    "source_path": vault_rel_path(&note.path, vault_path),
+                    "source_id": &note.id,
+                    "links": links.iter().map(backlink_link_to_json).collect::<Vec<_>>(),
+                })
+            })
+            .collect(),
+    )
+}
+
+fn list_backlinks_json(vault: &Vault, p: ListBacklinksParams) -> Result<serde_json::Value, rmcp::ErrorData> {
+    let target = vault.resolve_note(&p.note).map_err(vault_err)?;
+    let mut backlinks = vault.backlinks(&target).map_err(vault_err)?;
+    if let Some(sort) = p.sort {
+        obsidian_core::search::sort_notes_by(&mut backlinks, |(note, _)| Some(note), &sort.into());
+    }
+    Ok(backlinks_to_json(&backlinks, vault.path()))
 }
 
 #[tool_router]
@@ -121,6 +179,25 @@ impl VaultServer {
             let items: Result<Vec<serde_json::Value>, rmcp::ErrorData> =
                 notes.iter().map(|n| note_to_json(n, vault.path())).collect();
             Ok(serde_json::Value::Array(items?))
+        })
+        .await
+        .map_err(|e| other_err(e.to_string()))??;
+
+        Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+    }
+
+    #[tool(
+        description = "List notes that link to a given note, including the matching links and their locations",
+        annotations(read_only_hint = true, destructive_hint = false, open_world_hint = false)
+    )]
+    async fn list_backlinks(
+        &self,
+        Parameters(p): Parameters<ListBacklinksParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let vault = Arc::clone(&self.vault);
+        let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, rmcp::ErrorData> {
+            let vault = vault.lock().unwrap();
+            list_backlinks_json(&vault, p)
         })
         .await
         .map_err(|e| other_err(e.to_string()))??;
@@ -478,7 +555,23 @@ impl ServerHandler for VaultServer {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::Path;
+
+    use serde_json::Value;
+
     use super::SERVER_INSTRUCTIONS;
+    use super::list_backlinks_json;
+    use crate::tools::{ListBacklinksParams, SortOrder};
+    use obsidian_core::Vault;
+
+    fn write_note(vault_path: &Path, rel_path: &str, content: &str) {
+        let path = vault_path.join(rel_path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, content).unwrap();
+    }
 
     #[test]
     fn server_instructions_describe_capabilities_and_safe_usage() {
@@ -487,6 +580,7 @@ mod tests {
             "Markdown notes",
             "Discover notes",
             "Read note bodies",
+            "backlinks",
             "Create notes",
             "rename notes while updating backlinks",
             "Check vault health",
@@ -499,5 +593,78 @@ mod tests {
                 "server instructions should mention {expected:?}"
             );
         }
+    }
+
+    #[test]
+    fn list_backlinks_json_returns_backlink_matches() {
+        let vault_dir = tempfile::tempdir().unwrap();
+        write_note(
+            vault_dir.path(),
+            "target.md",
+            "---\nid: target-id\naliases:\n  - Target Alias\n---\nTarget.\n",
+        );
+        write_note(
+            vault_dir.path(),
+            "source.md",
+            "See [[target-id|Shown]] and [Target](target.md#section).\n",
+        );
+
+        let vault = Vault::open(vault_dir.path()).unwrap();
+        let result = list_backlinks_json(
+            &vault,
+            ListBacklinksParams {
+                note: "target-id".to_string(),
+                sort: Some(SortOrder::PathAsc),
+            },
+        )
+        .unwrap();
+
+        let items = result.as_array().unwrap();
+        assert_eq!(items.len(), 1);
+
+        let item = &items[0];
+        assert_eq!(item["source_path"], Value::String("source.md".to_string()));
+        assert_eq!(item["source_id"], Value::String("source".to_string()));
+
+        let links = item["links"].as_array().unwrap();
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0]["kind"], Value::String("wiki".to_string()));
+        assert_eq!(links[0]["target"], Value::String("target-id".to_string()));
+        assert_eq!(links[0]["display"], Value::String("Shown".to_string()));
+        assert_eq!(links[0]["line"], Value::from(1));
+
+        assert_eq!(links[1]["kind"], Value::String("markdown".to_string()));
+        assert_eq!(links[1]["target"], Value::String("target.md#section".to_string()));
+        assert_eq!(links[1]["display"], Value::String("Target".to_string()));
+        assert_eq!(links[1]["line"], Value::from(1));
+    }
+
+    #[test]
+    fn list_backlinks_json_applies_sorting() {
+        let vault_dir = tempfile::tempdir().unwrap();
+        write_note(
+            vault_dir.path(),
+            "target.md",
+            "---\naliases:\n  - Target Alias\n---\nTarget.\n",
+        );
+        write_note(vault_dir.path(), "a.md", "See [[Target Alias]].\n");
+        write_note(vault_dir.path(), "z.md", "See [Target](target.md).\n");
+
+        let vault = Vault::open(vault_dir.path()).unwrap();
+        let result = list_backlinks_json(
+            &vault,
+            ListBacklinksParams {
+                note: "Target Alias".to_string(),
+                sort: Some(SortOrder::PathDesc),
+            },
+        )
+        .unwrap();
+
+        let items = result.as_array().unwrap();
+        let source_paths: Vec<_> = items
+            .iter()
+            .map(|item| item["source_path"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(source_paths, vec!["z.md".to_string(), "a.md".to_string()]);
     }
 }
