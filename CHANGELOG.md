@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Fixed LSP duplicate-alias diagnostics and quick fixes to attach to the exact frontmatter alias token when available, and to appear for cursor-line code-action requests even when clients omit diagnostics.
 - Fixed stale LSP diagnostics for external note creates, edits, deletes, and renames when clients send watched-file or workspace file-operation notifications.
+- Fixed a bug with resolving notes to `index.md` files from the name of their parent directory.
 
 ## v0.4.0 - 2026-06-05
 
