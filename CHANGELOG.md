@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## v0.5.0 - 2026-06-12
+
 ### Added
 
 - Added `list_backlinks` MCP tool: returns notes linking to a given note plus the matching wiki/markdown link metadata and source locations.
