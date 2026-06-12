@@ -11,15 +11,15 @@ pub(in crate::state) enum LinkContext {
     Wiki {
         note_query: String,
         heading_query: Option<String>,
-        link_start_char: usize,
+        link_start_byte: usize,
     },
     Markdown {
         query: String,
-        link_start_char: usize,
+        link_start_byte: usize,
     },
     Tag {
         query: String,
-        tag_start_char: usize,
+        tag_start_byte: usize,
     },
 }
 
@@ -33,38 +33,42 @@ impl CompletionRequest {
         let text = snapshot.text_for_path(&path)?;
 
         let line = text.lines().nth(position.line as usize).unwrap_or("");
-        let char_pos = (position.character as usize).min(line.len());
-        let line_prefix = &line[..char_pos];
-        let text_after_cursor = &line[char_pos..];
+        let cursor_byte = lsp_character_to_byte_index(line, position.character);
+        let cursor_character = byte_index_to_lsp_character(line, cursor_byte);
+        let line_prefix = &line[..cursor_byte];
+        let text_after_cursor = &line[cursor_byte..];
 
         let context = match detect_link_context(line_prefix) {
             Some(ctx) => ctx,
             None => return Ok(None),
         };
 
-        if let LinkContext::Tag { query, tag_start_char } = &context {
+        if let LinkContext::Tag { query, tag_start_byte } = &context {
             let prefix_range = Range::new(
-                Position::new(position.line, *tag_start_char as u32),
-                Position::new(position.line, char_pos as u32),
+                Position::new(position.line, byte_index_to_lsp_character(line, *tag_start_byte)),
+                Position::new(position.line, cursor_character),
             );
             let all_tags = snapshot.list_tags();
             return Ok(Some(tag_completions(&all_tags, query, prefix_range)));
         }
 
-        let (note_query, heading_query, link_start_char) = match &context {
+        let (note_query, heading_query, link_start_byte) = match &context {
             LinkContext::Wiki {
                 note_query,
                 heading_query,
-                link_start_char,
-            } => (note_query.as_str(), heading_query.as_deref(), *link_start_char),
-            LinkContext::Markdown { query, link_start_char } => (query.as_str(), None, *link_start_char),
+                link_start_byte,
+            } => (note_query.as_str(), heading_query.as_deref(), *link_start_byte),
+            LinkContext::Markdown { query, link_start_byte } => (query.as_str(), None, *link_start_byte),
             LinkContext::Tag { .. } => unreachable!(),
         };
 
-        let close_len = closing_bracket_len(text_after_cursor, &context);
+        let close_len_bytes = closing_bracket_len(text_after_cursor, &context);
         let prefix_range = Range::new(
-            Position::new(position.line, link_start_char as u32),
-            Position::new(position.line, (char_pos + close_len) as u32),
+            Position::new(position.line, byte_index_to_lsp_character(line, link_start_byte)),
+            Position::new(
+                position.line,
+                byte_index_to_lsp_character(line, cursor_byte + close_len_bytes),
+            ),
         );
 
         let notes = snapshot.notes();
@@ -113,7 +117,7 @@ pub(in crate::state) fn detect_link_context(line_prefix: &str) -> Option<LinkCon
             return Some(LinkContext::Wiki {
                 note_query: note_query.to_string(),
                 heading_query,
-                link_start_char: start,
+                link_start_byte: start,
             });
         }
     }
@@ -137,7 +141,7 @@ pub(in crate::state) fn detect_link_context(line_prefix: &str) -> Option<LinkCon
         if !after_open.contains(']') {
             return Some(LinkContext::Markdown {
                 query: after_open.to_string(),
-                link_start_char: i,
+                link_start_byte: i,
             });
         }
         break;
@@ -160,7 +164,7 @@ pub(in crate::state) fn detect_link_context(line_prefix: &str) -> Option<LinkCon
         if first_ok && rest_ok {
             return Some(LinkContext::Tag {
                 query: after_hash.to_string(),
-                tag_start_char: i,
+                tag_start_byte: i,
             });
         }
         break;

@@ -76,3 +76,37 @@ pub(in crate::state) fn range_for_span(line: usize, col_start: usize, width: usi
         Position::new(line as u32, (col_start + width) as u32),
     )
 }
+
+pub(in crate::state) fn lsp_character_to_byte_index(line: &str, character: u32) -> usize {
+    let target = character as usize;
+    let mut utf16_units = 0;
+
+    for (byte_index, ch) in line.char_indices() {
+        if utf16_units >= target {
+            return byte_index;
+        }
+
+        let next_utf16_units = utf16_units + ch.len_utf16();
+        if next_utf16_units > target {
+            return byte_index;
+        }
+
+        utf16_units = next_utf16_units;
+    }
+
+    line.len()
+}
+
+pub(in crate::state) fn byte_index_to_lsp_character(line: &str, byte_index: usize) -> u32 {
+    let byte_index = byte_index.min(line.len());
+    let byte_index = if line.is_char_boundary(byte_index) {
+        byte_index
+    } else {
+        (0..byte_index)
+            .rev()
+            .find(|index| line.is_char_boundary(*index))
+            .unwrap_or(0)
+    };
+
+    line[..byte_index].encode_utf16().count() as u32
+}

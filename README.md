@@ -126,7 +126,7 @@ Current functionality:
 - references/backlinks for the target of wiki or markdown note links, or for the current note when the cursor is not on a link
 - go-to definition for linked notes, including heading anchors and nested sub-anchors
 - diagnostics clearing and refresh on open/change/close events, watched Markdown file changes, and workspace file create/rename/delete notifications
-- completion for wiki links (`[[`) and markdown links (`[`) with per-note variants: bare ID, bare title, alias override, and bare alias forms
+- completion for wiki links (`[[`) and markdown links (`[`) with per-note variants (bare ID/title, alias override, and bare alias), plus inline tag completion (`#`)
 - quick fixes for broken note links that create missing notes inside the active vault without overwriting existing files, using wiki aliases or markdown link text as the new note's primary alias and heading when available
 - quick fixes for duplicate IDs and aliases, wiki-only missing-heading creation, and refactors that convert between wiki and markdown note links
 - filename-first note rename via `textDocument/prepareRename` and `textDocument/rename`, with backlink updates and automatic frontmatter ID updates when the current ID matches the old filename stem

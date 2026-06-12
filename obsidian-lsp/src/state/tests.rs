@@ -1361,6 +1361,25 @@ fn completion_labels(items: &[CompletionItem]) -> Vec<&str> {
     items.iter().map(|item| item.label.as_str()).collect()
 }
 
+fn completion_text_edit(item: &CompletionItem) -> &TextEdit {
+    match item.text_edit.as_ref().expect("completion item should have text edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        _ => panic!("expected a plain TextEdit"),
+    }
+}
+
+fn completion_text_edit_for_label<'a>(items: &'a [CompletionItem], label: &str) -> &'a TextEdit {
+    let item = items
+        .iter()
+        .find(|item| item.label == label)
+        .expect("completion item should exist");
+    completion_text_edit(item)
+}
+
+fn utf16_len(text: &str) -> u32 {
+    text.encode_utf16().count() as u32
+}
+
 #[test]
 fn detect_link_context_returns_wiki_for_open_double_bracket() {
     let ctx = detect_link_context("See [[tar").unwrap();
@@ -1431,6 +1450,28 @@ fn completion_request_returns_wiki_completions_for_partial_wiki_link() {
 }
 
 #[test]
+fn completion_request_uses_lsp_ranges_for_wiki_completion_after_non_ascii_character() {
+    let (_vault_dir, mut state, _target_uri, _other_uri) = completion_state();
+    let source_path = _vault_dir.path().join("source.md");
+    let text = "Intro — [[tar";
+    fs::write(&source_path, text).unwrap();
+    let source_path = source_path.canonicalize().unwrap();
+    let source_uri = path_to_uri(&source_path).unwrap();
+    state.open_document(source_uri.clone(), 1, text.to_string()).unwrap();
+
+    let items = state
+        .completion_request(source_uri, Position::new(0, utf16_len(text)))
+        .unwrap()
+        .compute()
+        .unwrap()
+        .unwrap();
+
+    let edit = completion_text_edit_for_label(&items, "[[target-id]]");
+    assert_eq!(edit.range.start.character, utf16_len("Intro — "));
+    assert_eq!(edit.range.end.character, utf16_len(text));
+}
+
+#[test]
 fn completion_request_returns_markdown_completions_for_partial_markdown_link() {
     let (_vault_dir, mut state, _target_uri, _other_uri) = completion_state();
     let source_path = _vault_dir.path().join("source.md");
@@ -1461,6 +1502,64 @@ fn completion_request_returns_markdown_completions_for_partial_markdown_link() {
             .any(|l| l.starts_with("[Target Alias](") && l.ends_with(')'))
     );
     assert!(!labels.iter().any(|l| l.starts_with("[other-note](")));
+}
+
+#[test]
+fn completion_request_uses_lsp_ranges_for_markdown_completion_after_non_ascii_character() {
+    let (_vault_dir, mut state, _target_uri, _other_uri) = completion_state();
+    let source_path = _vault_dir.path().join("source.md");
+    let text = "Intro — [tar";
+    fs::write(&source_path, text).unwrap();
+    let source_path = source_path.canonicalize().unwrap();
+    let source_uri = path_to_uri(&source_path).unwrap();
+    state.open_document(source_uri.clone(), 1, text.to_string()).unwrap();
+
+    let items = state
+        .completion_request(source_uri, Position::new(0, utf16_len(text)))
+        .unwrap()
+        .compute()
+        .unwrap()
+        .unwrap();
+
+    let item = items
+        .iter()
+        .find(|item| item.label.starts_with("[target-id]("))
+        .expect("completion item should exist");
+    let edit = completion_text_edit(item);
+    assert_eq!(edit.range.start.character, utf16_len("Intro — "));
+    assert_eq!(edit.range.end.character, utf16_len(text));
+}
+
+#[test]
+fn completion_request_uses_lsp_ranges_for_tag_completion_after_non_ascii_character() {
+    let vault_dir = tempfile::tempdir().unwrap();
+    fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
+
+    let tagged_path = vault_dir.path().join("tagged.md");
+    fs::write(&tagged_path, "---\nid: tagged\ntags: [project, work]\n---\n").unwrap();
+
+    let source_path = vault_dir.path().join("source.md");
+    let text = "Intro — #pro";
+    fs::write(&source_path, text).unwrap();
+    let source_path = source_path.canonicalize().unwrap();
+    let source_uri = path_to_uri(&source_path).unwrap();
+
+    let vault = Vault::open(vault_dir.path()).unwrap();
+    let mut state = BackendState::new(vault);
+    state.open_document(source_uri.clone(), 1, text.to_string()).unwrap();
+
+    let items = state
+        .completion_request(source_uri, Position::new(0, utf16_len(text)))
+        .unwrap()
+        .compute()
+        .unwrap()
+        .unwrap();
+
+    let labels = completion_labels(&items);
+    assert!(labels.contains(&"#project"), "missing #project");
+    let edit = completion_text_edit_for_label(&items, "#project");
+    assert_eq!(edit.range.start.character, utf16_len("Intro — "));
+    assert_eq!(edit.range.end.character, utf16_len(text));
 }
 
 #[test]
