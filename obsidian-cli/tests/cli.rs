@@ -667,6 +667,23 @@ fn backlinks_nonexistent_note_exits_with_error() {
         .stderr(predicate::str::contains("note not found"));
 }
 
+#[test]
+fn check_reports_stranded_notes_but_ignores_readmes() {
+    let vault = make_vault();
+    write_note(vault.path(), "source.md", "See [[target]].");
+    write_note(vault.path(), "target.md", "Target.");
+    write_note(vault.path(), "isolated.md", "No note links here.");
+    write_note(vault.path(), "README.md", "Project overview.");
+
+    obsidian()
+        .args(["--vault", vault.path().to_str().unwrap(), "check"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("Stranded notes"))
+        .stdout(predicate::str::contains("isolated.md"))
+        .stdout(predicate::str::contains("README.md").not());
+}
+
 // --- tags list tests ---
 
 #[test]

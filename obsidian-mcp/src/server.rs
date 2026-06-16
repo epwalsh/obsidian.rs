@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use obsidian_core::{Link, LocatedLink, Location, Note, Vault};
+use obsidian_core::{Link, LocatedLink, Location, Note, Vault, VaultHealthReport};
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
 use rmcp::model::{CallToolResult, Content, ServerCapabilities, ServerInfo};
 use rmcp::{ServerHandler, tool, tool_handler, tool_router};
@@ -19,7 +19,7 @@ Capabilities:
 - Discover notes by path, title, alias, ID, tag, content substring, regex, or glob.
 - Read note bodies and YAML frontmatter; list notes, tags, and backlinks.
 - Create notes, update frontmatter, patch exact body text, and rename notes while updating backlinks.
-- Check vault health for broken links and duplicate IDs or aliases.
+- Check vault health for duplicate IDs or aliases, broken links, and stranded notes.
 
 Operational guidance:
 - Note identifiers can be vault-relative paths, current-working-directory-relative paths, absolute paths, frontmatter IDs, or aliases when a tool accepts `note`.
@@ -115,6 +115,67 @@ fn backlinks_to_json(results: &[(Note, Vec<LocatedLink>)], vault_path: &Path) ->
             })
             .collect(),
     )
+}
+
+fn health_report_to_json(report: &VaultHealthReport, vault_path: &Path) -> serde_json::Value {
+    let dup_ids: Vec<serde_json::Value> = report
+        .duplicate_ids
+        .iter()
+        .map(|d| {
+            json!({
+                "id": d.id,
+                "notes": d.notes.iter().map(|n| json!({
+                    "path": vault_rel_path(&n.path, vault_path),
+                    "backlink_count": n.backlink_count,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+
+    let dup_aliases: Vec<serde_json::Value> = report
+        .duplicate_aliases
+        .iter()
+        .map(|d| {
+            json!({
+                "alias": d.alias,
+                "notes": d.notes.iter().map(|n| json!({
+                    "path": vault_rel_path(&n.path, vault_path),
+                    "backlink_count": n.backlink_count,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+
+    let broken_links: Vec<serde_json::Value> = report
+        .broken_links
+        .iter()
+        .map(|b| {
+            json!({
+                "source_path": vault_rel_path(&b.source_path, vault_path),
+                "line": b.line,
+                "text": b.text,
+            })
+        })
+        .collect();
+
+    let stranded_notes: Vec<serde_json::Value> = report
+        .stranded_notes
+        .iter()
+        .map(|note| {
+            json!({
+                "path": vault_rel_path(&note.path, vault_path),
+            })
+        })
+        .collect();
+
+    json!({
+        "note_count": report.note_count,
+        "has_issues": report.has_issues(),
+        "duplicate_ids": dup_ids,
+        "duplicate_aliases": dup_aliases,
+        "broken_links": broken_links,
+        "stranded_notes": stranded_notes,
+    })
 }
 
 fn list_backlinks_json(vault: &Vault, p: ListBacklinksParams) -> Result<serde_json::Value, rmcp::ErrorData> {
@@ -424,7 +485,7 @@ impl VaultServer {
     }
 
     #[tool(
-        description = "Check vault health: report duplicate IDs, duplicate aliases, and broken links",
+        description = "Check vault health: report duplicate IDs, duplicate aliases, broken links, and stranded notes",
         annotations(read_only_hint = true, destructive_hint = false, open_world_hint = false)
     )]
     async fn check_vault(
@@ -445,55 +506,7 @@ impl VaultServer {
                 !ignore_set.is_match(rel)
             });
 
-            let vault_path = vault.path();
-
-            let dup_ids: Vec<serde_json::Value> = report
-                .duplicate_ids
-                .iter()
-                .map(|d| {
-                    json!({
-                        "id": d.id,
-                        "notes": d.notes.iter().map(|n| json!({
-                            "path": vault_rel_path(&n.path, vault_path),
-                            "backlink_count": n.backlink_count,
-                        })).collect::<Vec<_>>(),
-                    })
-                })
-                .collect();
-
-            let dup_aliases: Vec<serde_json::Value> = report
-                .duplicate_aliases
-                .iter()
-                .map(|d| {
-                    json!({
-                        "alias": d.alias,
-                        "notes": d.notes.iter().map(|n| json!({
-                            "path": vault_rel_path(&n.path, vault_path),
-                            "backlink_count": n.backlink_count,
-                        })).collect::<Vec<_>>(),
-                    })
-                })
-                .collect();
-
-            let broken_links: Vec<serde_json::Value> = report
-                .broken_links
-                .iter()
-                .map(|b| {
-                    json!({
-                        "source_path": vault_rel_path(&b.source_path, vault_path),
-                        "line": b.line,
-                        "text": b.text,
-                    })
-                })
-                .collect();
-
-            Ok(json!({
-                "note_count": report.note_count,
-                "has_issues": report.has_issues(),
-                "duplicate_ids": dup_ids,
-                "duplicate_aliases": dup_aliases,
-                "broken_links": broken_links,
-            }))
+            Ok(health_report_to_json(&report, vault.path()))
         })
         .await
         .map_err(|e| other_err(e.to_string()))??;
@@ -516,6 +529,7 @@ impl VaultServer {
             if let Some(sort) = p.sort {
                 obsidian_core::search::sort_notes_by(&mut results, |(n, _)| Some(n), &sort.into());
             }
+
             let mut items: Vec<serde_json::Value> = Vec::new();
             for (n, nt) in results {
                 if !nt.is_empty() {
@@ -556,12 +570,11 @@ impl ServerHandler for VaultServer {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
-    use serde_json::Value;
+    use serde_json::{Value, json};
 
-    use super::SERVER_INSTRUCTIONS;
-    use super::list_backlinks_json;
+    use super::{SERVER_INSTRUCTIONS, VaultHealthReport, health_report_to_json, list_backlinks_json};
     use crate::tools::{ListBacklinksParams, SortOrder};
     use obsidian_core::Vault;
 
@@ -593,6 +606,23 @@ mod tests {
                 "server instructions should mention {expected:?}"
             );
         }
+    }
+
+    #[test]
+    fn health_report_json_includes_stranded_notes() {
+        let report = VaultHealthReport {
+            note_count: 1,
+            duplicate_ids: Vec::new(),
+            duplicate_aliases: Vec::new(),
+            broken_links: Vec::new(),
+            stranded_notes: vec![obsidian_core::StrandedNote {
+                path: PathBuf::from("/vault/isolated.md"),
+            }],
+        };
+
+        let value = health_report_to_json(&report, Path::new("/vault"));
+        assert_eq!(value["has_issues"], json!(true));
+        assert_eq!(value["stranded_notes"], json!([{ "path": "isolated.md" }]));
     }
 
     #[test]

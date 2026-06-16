@@ -44,7 +44,7 @@ pub enum Command {
     Note(NoteArgs),
     /// Work with tags across the vault
     Tags(TagsArgs),
-    /// Check vault health: report duplicate IDs/aliases and broken links
+    /// Check vault health: report duplicate IDs/aliases, broken links, and stranded notes
     Check(CheckArgs),
 }
 

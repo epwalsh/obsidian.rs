@@ -921,44 +921,60 @@ pub fn find_notes_filtered_with_content(
     results
 }
 
+pub(crate) fn link_targets_note(source: &Note, link: &Link, target: &Note, vault_path: &Path) -> bool {
+    let target_stem = target.path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string());
+    match link {
+        Link::Wiki {
+            target: wiki_target, ..
+        } => {
+            wiki_target == &target.id
+                || target_stem.as_deref().is_some_and(|s| wiki_target == s)
+                || target.aliases.iter().any(|a| wiki_target == a)
+        }
+        Link::Markdown { url, .. } => {
+            if url.contains("://") || url.starts_with('/') {
+                return false;
+            }
+            let url_path_raw = match url.find('#') {
+                Some(i) => &url[..i],
+                None => url.as_str(),
+            };
+            let url_path_decoded = common::percent_decode(url_path_raw);
+            let url_path = url_path_decoded.as_str();
+            if !url_path.ends_with(".md") {
+                return false;
+            }
+            let source_dir = source.path.parent().unwrap_or(&source.path);
+            (common::normalize_path(source_dir.join(url_path), Some(vault_path)) == target.path)
+                || (url_path == common::relative_path(vault_path, &target.path).to_string_lossy())
+        }
+        _ => false,
+    }
+}
+
+pub(crate) fn has_matching_link(source: &Note, target: &Note, vault_path: &Path) -> bool {
+    if source.path == target.path {
+        return false;
+    }
+
+    source
+        .links
+        .iter()
+        .any(|ll| link_targets_note(source, &ll.link, target, vault_path))
+}
+
 /// Returns all links in `source` that point to `target`, using the vault root `vault_path`
 /// for resolving relative markdown URLs. Returns an empty vec if `source` is `target`.
 pub fn find_matching_links(source: &Note, target: &Note, vault_path: &std::path::Path) -> Vec<LocatedLink> {
     if source.path == target.path {
         return Vec::new();
     }
-    let target_stem = target.path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string());
+
     source
         .links
-        .clone()
-        .into_iter()
-        .filter(|ll| match &ll.link {
-            Link::Wiki {
-                target: wiki_target, ..
-            } => {
-                wiki_target == &target.id
-                    || target_stem.as_deref().is_some_and(|s| wiki_target == s)
-                    || target.aliases.iter().any(|a| wiki_target == a)
-            }
-            Link::Markdown { url, .. } => {
-                if url.contains("://") || url.starts_with('/') {
-                    return false;
-                }
-                let url_path_raw = match url.find('#') {
-                    Some(i) => &url[..i],
-                    None => url.as_str(),
-                };
-                let url_path_decoded = common::percent_decode(url_path_raw);
-                let url_path = url_path_decoded.as_str();
-                if !url_path.ends_with(".md") {
-                    return false;
-                }
-                let source_dir = source.path.parent().unwrap_or(&source.path);
-                (common::normalize_path(source_dir.join(url_path), Some(vault_path)) == target.path)
-                    || (url_path == common::relative_path(vault_path, &target.path).to_string_lossy())
-            }
-            _ => false,
-        })
+        .iter()
+        .filter(|ll| link_targets_note(source, &ll.link, target, vault_path))
+        .cloned()
         .collect()
 }
 

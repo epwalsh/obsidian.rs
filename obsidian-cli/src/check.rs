@@ -89,6 +89,17 @@ pub fn cmd_check(vault: Vault, args: CheckArgs) -> eyre::Result<()> {
         }
     }
 
+    // --- Stranded notes ---
+    if report.stranded_notes.is_empty() {
+        println!("{}", "✓ No stranded notes".green());
+    } else {
+        println!("{}", "✘ Stranded notes:".red().bold());
+        for stranded in &report.stranded_notes {
+            let rel = stranded.path.strip_prefix(&vault_path).unwrap_or(&stranded.path);
+            println!("  {}", rel.display().to_string().cyan());
+        }
+    }
+
     if report.has_issues() {
         std::process::exit(1);
     }
