@@ -684,7 +684,41 @@ fn code_action_request_converts_links_and_adds_missing_wiki_heading() {
         .unwrap();
     let convert = action_by_title(&markdown_actions, "Convert markdown link to wiki");
     let source_edits = plain_text_edits_for_uri(convert.edit.as_ref().unwrap(), &source_uri);
-    assert_eq!(source_edits[0].new_text, "[[target note#Existing Heading|Existing]]");
+    assert_eq!(source_edits[0].new_text, "[[target-id#Existing Heading|Existing]]");
+}
+
+#[test]
+fn code_action_request_converts_markdown_links_to_wiki_using_note_ids() {
+    let vault_dir = tempfile::tempdir().unwrap();
+    fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
+
+    let target_path = vault_dir.path().join("projects/mai-infra-scaling/index.md");
+    fs::create_dir_all(target_path.parent().unwrap()).unwrap();
+    fs::write(&target_path, "---\nid: mai-infra-scaling\n---\n\n# MAI Infra Scaling\n").unwrap();
+
+    let source_path = vault_dir.path().join("source.md");
+    let source_text = "See [mai-infra-scaling](projects/mai-infra-scaling/index.md).";
+    fs::write(&source_path, source_text).unwrap();
+    let source_path = source_path.canonicalize().unwrap();
+    let source_uri = path_to_uri(&source_path).unwrap();
+
+    let state = BackendState::new(Vault::open(vault_dir.path()).unwrap());
+    let markdown_position =
+        position_for_substring(source_text, "[mai-infra-scaling](projects/mai-infra-scaling/index.md)");
+    let markdown_actions = state
+        .code_action_request(
+            source_uri.clone(),
+            Range::new(markdown_position, markdown_position),
+            Vec::new(),
+        )
+        .unwrap()
+        .compute()
+        .unwrap()
+        .unwrap();
+
+    let convert = action_by_title(&markdown_actions, "Convert markdown link to wiki");
+    let source_edits = plain_text_edits_for_uri(convert.edit.as_ref().unwrap(), &source_uri);
+    assert_eq!(source_edits[0].new_text, "[[mai-infra-scaling]]");
 }
 
 #[test]

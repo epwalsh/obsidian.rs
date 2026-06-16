@@ -24,7 +24,11 @@ pub(in crate::state) fn wiki_link_text(
     let Link::Markdown { text, .. } = link else {
         unreachable!("wiki_link_text should only be called for markdown links");
     };
-    let target_name = note_file_stem(target);
+    let target_name = if target.id.trim().is_empty() {
+        note_file_stem(target)
+    } else {
+        target.id.trim().to_string()
+    };
     let mut wiki = format!("[[{target_name}");
     if let Some(fragment) = link_fragment(link) {
         let target_text = snapshot.text_for_path(&target.path)?;

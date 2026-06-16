@@ -130,7 +130,7 @@ Current functionality:
 - diagnostics clearing and refresh on open/change/close events, watched Markdown file changes, and workspace file create/rename/delete notifications
 - completion for wiki links (`[[`) and markdown links (`[`) with per-note variants (bare ID/title, alias override, and bare alias), plus inline tag completion (`#`)
 - quick fixes for broken note links that create missing notes inside the active vault without overwriting existing files, using wiki aliases or markdown link text as the new note's primary alias and heading when available
-- quick fixes for duplicate IDs and aliases, wiki-only missing-heading creation, and refactors that convert between wiki and markdown note links
+- quick fixes for duplicate IDs and aliases, wiki-only missing-heading creation, and refactors that convert between wiki and markdown note links while preserving resolved note IDs in generated wiki targets
 - filename-first note rename via `textDocument/prepareRename` and `textDocument/rename`, with backlink updates and automatic frontmatter ID updates when the current ID matches the old filename stem
 - hover, references, go-to-definition, and rename support for inline and frontmatter tags
 
