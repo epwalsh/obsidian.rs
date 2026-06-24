@@ -33,17 +33,31 @@ pub(in crate::state) struct PrimaryDocument {
 impl DiagnosticsRequest {
     pub fn compute(self) -> Result<DiagnosticsBatch, StateError> {
         let ignore_set = build_ignore_set(&self.snapshot.diagnostics_ignore);
+        let is_visible_path = |path: &Path| {
+            let rel = path.strip_prefix(self.snapshot.vault_path.as_path()).unwrap_or(path);
+            !ignore_set.is_match(rel)
+        };
         let notes = self.snapshot.notes();
         let visible_notes = notes
             .into_iter()
-            .filter(|note| {
-                let path = &note.path;
-                let rel = path.strip_prefix(self.snapshot.vault_path.as_path()).unwrap_or(path);
-                !ignore_set.is_match(rel)
-            })
+            .filter(|note| is_visible_path(&note.path))
             .collect::<Vec<_>>();
         let report = obsidian_core::check_notes(&self.snapshot.vault_path, &visible_notes);
         let mut diagnostics_by_path = build_diagnostics_by_path(&self.snapshot, &report)?;
+        let mut trailing_whitespace_paths = visible_notes
+            .iter()
+            .map(|note| note.path.clone())
+            .collect::<BTreeSet<_>>();
+        trailing_whitespace_paths.extend(
+            self.snapshot
+                .open_documents
+                .values()
+                .map(|document| document.path.clone())
+                .filter(|path| Vault::is_note_path(path))
+                .filter(|path| is_visible_path(path)),
+        );
+        add_trailing_whitespace_diagnostics(&self.snapshot, &mut diagnostics_by_path, trailing_whitespace_paths)?;
+        sort_diagnostics_by_path(&mut diagnostics_by_path);
 
         let mut paths_to_publish = BTreeSet::new();
         paths_to_publish.extend(diagnostics_by_path.keys().cloned());
@@ -112,6 +126,10 @@ pub(in crate::state) fn build_diagnostics_by_path(
     add_broken_link_diagnostics(snapshot, &mut diagnostics_by_path, &report.broken_links)?;
     add_stranded_note_diagnostics(&mut diagnostics_by_path, &report.stranded_notes);
 
+    Ok(diagnostics_by_path)
+}
+
+pub(in crate::state) fn sort_diagnostics_by_path(diagnostics_by_path: &mut HashMap<PathBuf, Vec<Diagnostic>>) {
     for diagnostics in diagnostics_by_path.values_mut() {
         diagnostics.sort_by(|left, right| {
             left.range
@@ -122,8 +140,43 @@ pub(in crate::state) fn build_diagnostics_by_path(
                 .then(left.message.cmp(&right.message))
         });
     }
+}
 
-    Ok(diagnostics_by_path)
+pub(in crate::state) fn add_trailing_whitespace_diagnostics(
+    snapshot: &StateSnapshot,
+    diagnostics_by_path: &mut HashMap<PathBuf, Vec<Diagnostic>>,
+    paths: impl IntoIterator<Item = PathBuf>,
+) -> Result<(), StateError> {
+    for path in paths {
+        let text = snapshot.text_for_path(&path)?;
+        for (line_index, line) in text.lines().enumerate() {
+            let Some(range) = trailing_whitespace_range(line_index, line) else {
+                continue;
+            };
+            diagnostics_by_path
+                .entry(path.clone())
+                .or_default()
+                .push(make_diagnostic(
+                    range,
+                    "trailing-whitespace",
+                    "Trailing whitespace.".to_string(),
+                ));
+        }
+    }
+
+    Ok(())
+}
+
+pub(in crate::state) fn trailing_whitespace_range(line_index: usize, line: &str) -> Option<Range> {
+    let trimmed_len = line.trim_end_matches(char::is_whitespace).len();
+    if trimmed_len == line.len() {
+        return None;
+    }
+
+    Some(Range::new(
+        Position::new(line_index as u32, byte_index_to_lsp_character(line, trimmed_len)),
+        Position::new(line_index as u32, byte_index_to_lsp_character(line, line.len())),
+    ))
 }
 
 pub(in crate::state) fn add_duplicate_id_diagnostics(

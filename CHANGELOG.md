@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- LSP diagnostics now warn on trailing whitespace, including unsaved open buffers inside the vault.
+
 ### Changed
 
 - Vault health checks in the CLI, MCP server, and LSP now report stranded notes (notes with no incoming or outgoing note links) and ignore `README.md`-style notes by default.

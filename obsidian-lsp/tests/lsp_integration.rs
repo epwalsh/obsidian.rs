@@ -714,6 +714,62 @@ fn stdio_session_handles_initialize_and_document_lifecycle() {
 }
 
 #[test]
+fn stdio_session_reports_and_clears_trailing_whitespace_diagnostics() {
+    let (vault_dir, _note_path, note_uri) = create_test_vault();
+    let vault_path = vault_dir.path().canonicalize().expect("vault path should canonicalize");
+    let vault_uri = Url::from_file_path(&vault_path).expect("vault path should convert to file URI");
+
+    let mut harness = LspHarness::spawn(vault_dir.path());
+    initialize_session(&mut harness, &vault_uri, &vault_path);
+
+    harness.send(notification(
+        "textDocument/didOpen",
+        Some(json!({
+            "textDocument": {
+                "uri": note_uri,
+                "languageId": "markdown",
+                "version": 1,
+                "text": "opened🙂  \nclean",
+            }
+        })),
+    ));
+
+    let open_diagnostics = expect_diagnostics(&mut harness, &note_uri, Some(1));
+    assert_eq!(diagnostic_codes(&open_diagnostics), vec!["trailing-whitespace"]);
+    assert_eq!(
+        open_diagnostics["params"]["diagnostics"][0]["message"],
+        json!("Trailing whitespace.")
+    );
+    assert_eq!(
+        open_diagnostics["params"]["diagnostics"][0]["range"],
+        json!({
+            "start": { "line": 0, "character": 8 },
+            "end": { "line": 0, "character": 10 },
+        })
+    );
+
+    harness.send(notification(
+        "textDocument/didChange",
+        Some(json!({
+            "textDocument": {
+                "uri": note_uri,
+                "version": 2,
+            },
+            "contentChanges": [
+                {
+                    "text": "opened🙂\nclean",
+                }
+            ],
+        })),
+    ));
+
+    let change_diagnostics = expect_diagnostics(&mut harness, &note_uri, Some(2));
+    assert!(diagnostic_codes(&change_diagnostics).is_empty());
+
+    shutdown_session(&mut harness);
+}
+
+#[test]
 fn stdio_session_handles_document_and_workspace_symbols() {
     let (vault_dir, source_uri, other_uri) = create_symbol_vault();
     let vault_path = vault_dir.path().canonicalize().expect("vault path should canonicalize");

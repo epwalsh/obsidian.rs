@@ -109,6 +109,44 @@ fn change_document_updates_in_memory_note_body() {
 }
 
 #[test]
+fn open_document_reports_trailing_whitespace_ranges() {
+    let (_vault_dir, mut state, _note_path, uri) = open_state();
+
+    let batch = state
+        .open_document(uri.clone(), 1, "Body🙂  \n\t \nclean".to_string())
+        .unwrap()
+        .compute()
+        .unwrap();
+    let update = update_for_uri(&batch, &uri);
+
+    assert_eq!(codes(update), vec!["trailing-whitespace", "trailing-whitespace"]);
+    assert_eq!(update.diagnostics[0].range.start, Position::new(0, 6));
+    assert_eq!(update.diagnostics[0].range.end, Position::new(0, 8));
+    assert_eq!(update.diagnostics[1].range.start, Position::new(1, 0));
+    assert_eq!(update.diagnostics[1].range.end, Position::new(1, 2));
+}
+
+#[test]
+fn open_preview_document_reports_trailing_whitespace_diagnostics() {
+    let vault_dir = tempfile::tempdir().unwrap();
+    fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
+
+    let preview_path = vault_dir.path().join("draft.md");
+    let preview_uri = path_to_uri(&preview_path).unwrap();
+    let mut state = BackendState::new(Vault::open(vault_dir.path()).unwrap());
+    let batch = state
+        .open_document(preview_uri.clone(), 1, "Draft  \n".to_string())
+        .unwrap()
+        .compute()
+        .unwrap();
+    let update = update_for_uri(&batch, &preview_uri);
+
+    assert_eq!(codes(update), vec!["trailing-whitespace"]);
+    assert_eq!(update.diagnostics[0].range.start, Position::new(0, 5));
+    assert_eq!(update.diagnostics[0].range.end, Position::new(0, 7));
+}
+
+#[test]
 fn file_change_create_clears_broken_link_without_open_documents() {
     let vault_dir = tempfile::tempdir().unwrap();
     fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
