@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+
+- Vault health checks in the CLI, MCP server, and LSP now report stranded notes (notes with no incoming or outgoing note links) and ignore `README.md`-style notes by default.
+
+### Fixed
+
+- LSP markdown-to-wiki link refactors now use the resolved note ID for generated wiki targets instead of the filename stem, which fixes incorrect suggestions for notes like nested `index.md` files.
+
 ## v0.5.0 - 2026-06-12
 
 ### Added

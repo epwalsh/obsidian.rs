@@ -1,4 +1,5 @@
 use super::*;
+use obsidian_core::StrandedNote;
 
 #[derive(Clone, Debug)]
 pub struct DiagnosticUpdate {
@@ -109,6 +110,7 @@ pub(in crate::state) fn build_diagnostics_by_path(
     }
 
     add_broken_link_diagnostics(snapshot, &mut diagnostics_by_path, &report.broken_links)?;
+    add_stranded_note_diagnostics(&mut diagnostics_by_path, &report.stranded_notes);
 
     for diagnostics in diagnostics_by_path.values_mut() {
         diagnostics.sort_by(|left, right| {
@@ -182,6 +184,22 @@ pub(in crate::state) fn add_duplicate_alias_diagnostics(
     }
 
     Ok(())
+}
+
+pub(in crate::state) fn add_stranded_note_diagnostics(
+    diagnostics_by_path: &mut HashMap<PathBuf, Vec<Diagnostic>>,
+    stranded_notes: &[StrandedNote],
+) {
+    for stranded in stranded_notes {
+        diagnostics_by_path
+            .entry(stranded.path.clone())
+            .or_default()
+            .push(make_diagnostic(
+                document_start_range(),
+                "stranded-note",
+                "Stranded note has no incoming or outgoing note links.".to_string(),
+            ));
+    }
 }
 
 pub(in crate::state) fn add_broken_link_diagnostics(

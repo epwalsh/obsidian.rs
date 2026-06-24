@@ -45,7 +45,7 @@ obsidian note       Work with individual notes
 obsidian tags       Work with tags
   list              List all tags used across the vault
   search            Find all occurrences of given tags
-obsidian check      Vault health check (broken links, duplicate IDs/aliases)
+obsidian check      Vault health check (broken links, duplicate IDs/aliases, stranded notes)
 ```
 
 ### Examples
@@ -72,9 +72,11 @@ obsidian note backlinks "My Note"
 # List all tags, sorted alphabetically
 obsidian tags list --sort path-asc
 
-# Check the vault for broken links and duplicate IDs
+# Check the vault for broken links, duplicate IDs, and stranded notes
 obsidian check
 ```
+
+Stranded-note health checks ignore `README.md`-style notes by default; use the existing ignore options to exclude additional vault-relative paths.
 
 ## MCP Server
 
@@ -91,7 +93,7 @@ When initialized by an MCP client, the server describes the vault as a collectio
 
 | Tool | Description |
 |---|---|
-| `check_vault` | Report duplicate IDs, duplicate aliases, and broken links in the vault |
+| `check_vault` | Report duplicate IDs, duplicate aliases, broken links, and stranded notes in the vault |
 | `list_notes` | List all notes in the vault |
 | `list_backlinks` | List notes that link to a given note, including matching link locations |
 | `read_note` | Read the body and frontmatter of a note |
@@ -118,7 +120,7 @@ Current functionality:
 - clean LSP initialization and shutdown
 - full-document text sync for open buffers
 - cached vault state via `obsidian_core::Vault::open_cached()`, with open buffers layered on top as authoritative in-memory shadows
-- diagnostics for broken links, duplicate IDs, and duplicate aliases across the vault
+- diagnostics for broken links, duplicate IDs, duplicate aliases, and stranded notes across the vault
 - hover on note links with basic target-note metadata
 - document links for wiki and markdown note links, with resolve support
 - document symbols for headings, frontmatter keys, aliases, tags, and outbound links
@@ -128,7 +130,7 @@ Current functionality:
 - diagnostics clearing and refresh on open/change/close events, watched Markdown file changes, and workspace file create/rename/delete notifications
 - completion for wiki links (`[[`) and markdown links (`[`) with per-note variants (bare ID/title, alias override, and bare alias), plus inline tag completion (`#`)
 - quick fixes for broken note links that create missing notes inside the active vault without overwriting existing files, using wiki aliases or markdown link text as the new note's primary alias and heading when available
-- quick fixes for duplicate IDs and aliases, wiki-only missing-heading creation, and refactors that convert between wiki and markdown note links
+- quick fixes for duplicate IDs and aliases, wiki-only missing-heading creation, and refactors that convert between wiki and markdown note links while preserving resolved note IDs in generated wiki targets
 - filename-first note rename via `textDocument/prepareRename` and `textDocument/rename`, with backlink updates and automatic frontmatter ID updates when the current ID matches the old filename stem
 - hover, references, go-to-definition, and rename support for inline and frontmatter tags
 

@@ -9,6 +9,7 @@ fn open_state() -> (tempfile::TempDir, BackendState, PathBuf, Url) {
     let note_path = vault_dir.path().join("notes/today.md");
     fs::create_dir_all(note_path.parent().unwrap()).unwrap();
     fs::write(&note_path, "disk body").unwrap();
+    fs::write(vault_dir.path().join("notes/linked.md"), "See [[today]].").unwrap();
     let note_path = note_path.canonicalize().unwrap();
 
     let vault = Vault::open(vault_dir.path()).unwrap();
@@ -206,6 +207,26 @@ fn close_document_unloads_the_in_memory_override() {
 }
 
 #[test]
+fn global_diagnostics_reports_stranded_notes_but_ignores_readmes() {
+    let vault_dir = tempfile::tempdir().unwrap();
+    fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
+
+    let isolated_path = vault_dir.path().join("isolated.md");
+    fs::write(&isolated_path, "No note links here.").unwrap();
+    let isolated_uri = path_to_uri(&isolated_path.canonicalize().unwrap()).unwrap();
+
+    let readme_path = vault_dir.path().join("README.md");
+    fs::write(&readme_path, "Project overview.").unwrap();
+    let readme_uri = path_to_uri(&readme_path.canonicalize().unwrap()).unwrap();
+
+    let mut state = BackendState::new(Vault::open(vault_dir.path()).unwrap());
+    let batch = state.global_diagnostics_request().compute().unwrap();
+
+    assert_eq!(codes(update_for_uri(&batch, &isolated_uri)), vec!["stranded-note"]);
+    assert!(batch.updates.iter().all(|update| update.uri != readme_uri));
+}
+
+#[test]
 fn open_document_rejects_paths_outside_the_vault() {
     let (_vault_dir, mut state, _note_path, _uri) = open_state();
     let external_path = tempfile::tempdir().unwrap().path().join("external.md");
@@ -279,7 +300,10 @@ fn open_document_reports_health_diagnostics_for_all_affected_notes() {
 
     let note_b_update = update_for_uri(&batch, &note_b_uri);
     assert_eq!(note_b_update.version, None);
-    assert_eq!(codes(note_b_update), vec!["duplicate-id", "duplicate-alias"]);
+    assert_eq!(
+        codes(note_b_update),
+        vec!["stranded-note", "duplicate-id", "duplicate-alias"]
+    );
 }
 
 #[test]
@@ -660,7 +684,41 @@ fn code_action_request_converts_links_and_adds_missing_wiki_heading() {
         .unwrap();
     let convert = action_by_title(&markdown_actions, "Convert markdown link to wiki");
     let source_edits = plain_text_edits_for_uri(convert.edit.as_ref().unwrap(), &source_uri);
-    assert_eq!(source_edits[0].new_text, "[[target note#Existing Heading|Existing]]");
+    assert_eq!(source_edits[0].new_text, "[[target-id#Existing Heading|Existing]]");
+}
+
+#[test]
+fn code_action_request_converts_markdown_links_to_wiki_using_note_ids() {
+    let vault_dir = tempfile::tempdir().unwrap();
+    fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
+
+    let target_path = vault_dir.path().join("projects/mai-infra-scaling/index.md");
+    fs::create_dir_all(target_path.parent().unwrap()).unwrap();
+    fs::write(&target_path, "---\nid: mai-infra-scaling\n---\n\n# MAI Infra Scaling\n").unwrap();
+
+    let source_path = vault_dir.path().join("source.md");
+    let source_text = "See [mai-infra-scaling](projects/mai-infra-scaling/index.md).";
+    fs::write(&source_path, source_text).unwrap();
+    let source_path = source_path.canonicalize().unwrap();
+    let source_uri = path_to_uri(&source_path).unwrap();
+
+    let state = BackendState::new(Vault::open(vault_dir.path()).unwrap());
+    let markdown_position =
+        position_for_substring(source_text, "[mai-infra-scaling](projects/mai-infra-scaling/index.md)");
+    let markdown_actions = state
+        .code_action_request(
+            source_uri.clone(),
+            Range::new(markdown_position, markdown_position),
+            Vec::new(),
+        )
+        .unwrap()
+        .compute()
+        .unwrap()
+        .unwrap();
+
+    let convert = action_by_title(&markdown_actions, "Convert markdown link to wiki");
+    let source_edits = plain_text_edits_for_uri(convert.edit.as_ref().unwrap(), &source_uri);
+    assert_eq!(source_edits[0].new_text, "[[mai-infra-scaling]]");
 }
 
 #[test]

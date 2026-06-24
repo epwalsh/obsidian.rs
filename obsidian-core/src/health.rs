@@ -13,12 +13,17 @@ pub struct VaultHealthReport {
     pub duplicate_aliases: Vec<DuplicateAlias>,
     /// Broken links found across the vault, sorted by source path then line.
     pub broken_links: Vec<BrokenLink>,
+    /// Notes with no incoming or outgoing note links, sorted by path.
+    pub stranded_notes: Vec<StrandedNote>,
 }
 
 impl VaultHealthReport {
     /// Returns `true` if any health issues were found.
     pub fn has_issues(&self) -> bool {
-        !self.duplicate_ids.is_empty() || !self.duplicate_aliases.is_empty() || !self.broken_links.is_empty()
+        !self.duplicate_ids.is_empty()
+            || !self.duplicate_aliases.is_empty()
+            || !self.broken_links.is_empty()
+            || !self.stranded_notes.is_empty()
     }
 }
 
@@ -51,14 +56,26 @@ pub struct BrokenLink {
     pub text: String,
 }
 
+/// A note with no incoming or outgoing note links.
+pub struct StrandedNote {
+    pub path: PathBuf,
+}
+
+#[derive(Default)]
+struct NoteConnectivity {
+    backlink_count: usize,
+    has_outgoing_note_link: bool,
+}
+
 /// Scans an already-loaded note set for health issues.
 ///
-/// This is the same duplicate ID, duplicate alias, and broken-link logic used by
+/// This is the same duplicate ID, duplicate alias, broken-link, and stranded-note logic used by
 /// [`Vault::check`](crate::Vault::check), but it lets callers reuse cached note
 /// snapshots instead of walking the filesystem for every check.
 pub fn check_notes(vault_path: impl AsRef<Path>, notes: &[Note]) -> VaultHealthReport {
     let vault_path = vault_path.as_ref();
     let note_paths: HashSet<PathBuf> = notes.iter().map(|note| note.path.clone()).collect();
+    let connectivity = build_connectivity_by_path(notes, vault_path);
 
     // --- Duplicate IDs ---
     let mut id_map: HashMap<String, Vec<PathBuf>> = HashMap::new();
@@ -72,12 +89,9 @@ pub fn check_notes(vault_path: impl AsRef<Path>, notes: &[Note]) -> VaultHealthR
             paths.sort();
             let note_refs = paths
                 .into_iter()
-                .map(|path| {
-                    let note = notes.iter().find(|n| n.path == path).unwrap();
-                    NoteRef {
-                        path: path.clone(),
-                        backlink_count: backlinks_from(notes, note, vault_path).len(),
-                    }
+                .map(|path| NoteRef {
+                    backlink_count: connectivity.get(path.as_path()).map_or(0, |info| info.backlink_count),
+                    path,
                 })
                 .collect();
             DuplicateId { id, notes: note_refs }
@@ -103,12 +117,9 @@ pub fn check_notes(vault_path: impl AsRef<Path>, notes: &[Note]) -> VaultHealthR
             sorted_paths.sort();
             let note_refs = sorted_paths
                 .into_iter()
-                .map(|path| {
-                    let note = notes.iter().find(|n| n.path == path).unwrap();
-                    NoteRef {
-                        path: path.clone(),
-                        backlink_count: backlinks_from(notes, note, vault_path).len(),
-                    }
+                .map(|path| NoteRef {
+                    backlink_count: connectivity.get(path.as_path()).map_or(0, |info| info.backlink_count),
+                    path,
                 })
                 .collect();
             DuplicateAlias {
@@ -177,12 +188,85 @@ pub fn check_notes(vault_path: impl AsRef<Path>, notes: &[Note]) -> VaultHealthR
     }
     broken_links.sort_by(|a, b| a.source_path.cmp(&b.source_path).then(a.line.cmp(&b.line)));
 
+    // --- Stranded notes ---
+    let mut stranded_notes: Vec<StrandedNote> = notes
+        .iter()
+        .filter(|note| !is_stranded_note_exempt(&note.path))
+        .filter(|note| {
+            let Some(connectivity) = connectivity.get(note.path.as_path()) else {
+                return false;
+            };
+            connectivity.backlink_count == 0 && !connectivity.has_outgoing_note_link
+        })
+        .map(|note| StrandedNote {
+            path: note.path.clone(),
+        })
+        .collect();
+    stranded_notes.sort_by(|a, b| a.path.cmp(&b.path));
+
     VaultHealthReport {
         note_count: notes.len(),
         duplicate_ids,
         duplicate_aliases,
         broken_links,
+        stranded_notes,
     }
+}
+
+fn build_connectivity_by_path(notes: &[Note], vault_path: &Path) -> HashMap<PathBuf, NoteConnectivity> {
+    let mut connectivity_by_path: HashMap<PathBuf, NoteConnectivity> = notes
+        .iter()
+        .map(|note| {
+            (
+                note.path.clone(),
+                NoteConnectivity {
+                    backlink_count: 0,
+                    has_outgoing_note_link: has_outgoing_note_link(note),
+                },
+            )
+        })
+        .collect();
+
+    for source in notes {
+        for target in notes {
+            if search::has_matching_link(source, target, vault_path) {
+                connectivity_by_path
+                    .get_mut(target.path.as_path())
+                    .expect("all notes should have connectivity entries")
+                    .backlink_count += 1;
+            }
+        }
+    }
+
+    connectivity_by_path
+}
+
+fn has_outgoing_note_link(note: &Note) -> bool {
+    note.links.iter().any(|link| match &link.link {
+        Link::Wiki { target, .. } => !target.is_empty(),
+        Link::Markdown { url, .. } => is_local_markdown_note_url(url),
+        Link::Embed { .. } => false,
+    })
+}
+
+fn is_local_markdown_note_url(url: &str) -> bool {
+    if url.contains("://") || url.starts_with('/') {
+        return false;
+    }
+    let url_path_raw = match url.find('#') {
+        Some(i) => &url[..i],
+        None => url,
+    };
+    !url_path_raw.is_empty() && common::percent_decode(url_path_raw).ends_with(".md")
+}
+
+fn is_stranded_note_exempt(path: &Path) -> bool {
+    path.file_stem().and_then(|stem| stem.to_str()).is_some_and(|stem| {
+        stem.eq_ignore_ascii_case("README")
+            || stem.eq_ignore_ascii_case("CLAUDE")
+            || stem.eq_ignore_ascii_case("AGENTS")
+            || stem.eq_ignore_ascii_case("CHANGELOG")
+    })
 }
 
 /// Returns all notes in `notes` that link to `target`, paired with the specific
@@ -203,4 +287,43 @@ pub fn backlinks_from<'a>(
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_notes_reports_stranded_notes_but_ignores_readmes() {
+        let vault_dir = tempfile::tempdir().unwrap();
+        let notes = vec![
+            Note::parse(vault_dir.path().join("linked-source.md"), "See [[linked-target]].\n"),
+            Note::parse(vault_dir.path().join("linked-target.md"), "Body.\n"),
+            Note::parse(vault_dir.path().join("isolated.md"), "No note links here.\n"),
+            Note::parse(vault_dir.path().join("README.md"), "Project overview.\n"),
+        ];
+
+        let report = check_notes(vault_dir.path(), &notes);
+        let stranded_paths: Vec<_> = report
+            .stranded_notes
+            .iter()
+            .map(|note| note.path.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+
+        assert_eq!(stranded_paths, vec!["isolated.md"]);
+        assert!(report.has_issues());
+    }
+
+    #[test]
+    fn check_notes_treats_broken_and_self_links_as_outgoing_links() {
+        let vault_dir = tempfile::tempdir().unwrap();
+        let notes = vec![
+            Note::parse(vault_dir.path().join("broken.md"), "See [[missing-note]].\n"),
+            Note::parse(vault_dir.path().join("self-link.md"), "See [[self-link]].\n"),
+        ];
+
+        let report = check_notes(vault_dir.path(), &notes);
+        assert_eq!(report.broken_links.len(), 1);
+        assert!(report.stranded_notes.is_empty());
+    }
 }

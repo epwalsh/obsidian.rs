@@ -399,6 +399,7 @@ fn create_test_vault() -> (tempfile::TempDir, PathBuf, Url) {
     let note_path = vault_dir.path().join("notes/today.md");
     fs::create_dir_all(note_path.parent().expect("note should have a parent")).expect("should create note directory");
     fs::write(&note_path, "original body").expect("should write test note");
+    fs::write(vault_dir.path().join("notes/linked.md"), "See [[today]].").expect("should write linked note");
 
     let note_path = note_path.canonicalize().expect("note path should canonicalize");
     let note_uri = Url::from_file_path(&note_path).expect("note path should convert to file URI");
@@ -460,7 +461,7 @@ fn stdio_session_updates_diagnostics_for_watched_file_changes() {
     shutdown_session(&mut harness);
 }
 
-fn create_feature_vault() -> (tempfile::TempDir, Url, Url, Url, Url, String) {
+fn create_feature_vault() -> (tempfile::TempDir, Url, Url, Url, Url, Url, String) {
     let vault_dir = tempfile::tempdir().expect("should create temp dir");
     fs::create_dir(vault_dir.path().join(".obsidian")).expect("should create .obsidian directory");
 
@@ -505,12 +506,24 @@ fn create_feature_vault() -> (tempfile::TempDir, Url, Url, Url, Url, String) {
     )
     .expect("backlink note path should convert to file URI");
 
+    let isolated_path = vault_dir.path().join("isolated.md");
+    fs::write(&isolated_path, "No note links here.\n").expect("should write isolated note");
+    let isolated_uri = Url::from_file_path(
+        isolated_path
+            .canonicalize()
+            .expect("isolated note path should canonicalize"),
+    )
+    .expect("isolated note path should convert to file URI");
+
+    fs::write(vault_dir.path().join("README.md"), "Project overview.\n").expect("should write README note");
+
     (
         vault_dir,
         duplicate_a_uri,
         duplicate_b_uri,
         target_uri,
         backlink_uri,
+        isolated_uri,
         duplicate_a_text.to_string(),
     )
 }
@@ -780,7 +793,7 @@ fn stdio_session_handles_document_and_workspace_symbols() {
 
 #[test]
 fn stdio_session_reports_health_diagnostics_and_hover_metadata() {
-    let (vault_dir, duplicate_a_uri, duplicate_b_uri, target_uri, backlink_uri, duplicate_a_text) =
+    let (vault_dir, duplicate_a_uri, duplicate_b_uri, target_uri, backlink_uri, isolated_uri, duplicate_a_text) =
         create_feature_vault();
     let vault_path = vault_dir.path().canonicalize().expect("vault path should canonicalize");
     let vault_uri = Url::from_file_path(&vault_path).expect("vault path should convert to file URI");
@@ -937,8 +950,11 @@ fn stdio_session_reports_health_diagnostics_and_hover_metadata() {
     let duplicate_b_diagnostics = expect_diagnostics(&mut harness, &duplicate_b_uri, None);
     assert_eq!(
         diagnostic_codes(&duplicate_b_diagnostics),
-        vec!["duplicate-id", "duplicate-alias"]
+        vec!["stranded-note", "duplicate-id", "duplicate-alias"]
     );
+
+    let isolated_diagnostics = expect_diagnostics(&mut harness, &isolated_uri, None);
+    assert_eq!(diagnostic_codes(&isolated_diagnostics), vec!["stranded-note"]);
 
     harness.send(request(
         2,

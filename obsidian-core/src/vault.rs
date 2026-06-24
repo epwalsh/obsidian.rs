@@ -377,7 +377,7 @@ impl Vault {
         results
     }
 
-    /// Scans the vault for health issues: duplicate IDs, duplicate aliases, and broken links.
+    /// Scans the vault for health issues: duplicate IDs, duplicate aliases, broken links, and stranded notes.
     ///
     /// Only notes whose path satisfies `filter` are included. Pass `|_| true` to scan
     /// everything, or use a glob-based closure (see [`notes_filtered`](Self::notes_filtered))
