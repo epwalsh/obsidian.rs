@@ -9,8 +9,8 @@ use serde_json::json;
 
 use crate::error::{note_err, other_err, search_err, vault_err};
 use crate::tools::{
-    CheckVaultParams, ListBacklinksParams, ListNotesParams, ListTagsParams, PatchNoteParams, ReadNoteParams,
-    RenameNoteParams, SearchByTagParams, SearchNotesParams, UpdateNoteParams, WriteNoteParams,
+    AppendToNoteParams, CheckVaultParams, ListBacklinksParams, ListNotesParams, ListTagsParams, PatchNoteParams,
+    ReadNoteParams, RenameNoteParams, SearchByTagParams, SearchNotesParams, UpdateNoteParams, WriteNoteParams,
 };
 
 const SERVER_INSTRUCTIONS: &str = r#"Use this MCP server to work with an Obsidian vault as a collection of Markdown notes.
@@ -18,13 +18,13 @@ const SERVER_INSTRUCTIONS: &str = r#"Use this MCP server to work with an Obsidia
 Capabilities:
 - Discover notes by path, title, alias, ID, tag, content substring, regex, or glob.
 - Read note bodies and YAML frontmatter; list notes, tags, and backlinks.
-- Create notes, update frontmatter, patch exact body text without rewriting frontmatter, and rename notes while updating backlinks.
+- Create notes, append to note bodies, update frontmatter, patch exact body text without rewriting frontmatter, and rename notes while updating backlinks.
 - Check vault health for duplicate IDs or aliases, broken links, and stranded notes.
 
 Operational guidance:
 - Note identifiers can be vault-relative paths, current-working-directory-relative paths, absolute paths, frontmatter IDs, or aliases when a tool accepts `note`.
 - Prefer read-only tools (`search_notes`, `read_note`, `list_notes`, `list_backlinks`, `list_tags`, `search_tags`, `check_vault`) before modifying content.
-- Use `patch_note` only when `old_string` appears exactly once; use `write_note` with `force=true` only when intentionally replacing a whole note.
+- Use `append_to_note` for additive body updates, `patch_note` only when `old_string` appears exactly once, and `write_note` with `force=true` only when intentionally replacing a whole note.
 - Prefer vault-relative paths for writes and renames; tool results use vault-relative paths when possible.
 "#;
 
@@ -318,6 +318,27 @@ impl VaultServer {
     }
 
     #[tool(
+        description = "Append content exactly to the end of a note's body without rewriting frontmatter",
+        annotations(read_only_hint = false, destructive_hint = false, open_world_hint = false)
+    )]
+    async fn append_to_note(
+        &self,
+        Parameters(p): Parameters<AppendToNoteParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let vault = Arc::clone(&self.vault);
+        let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, rmcp::ErrorData> {
+            let mut vault = vault.lock().unwrap();
+            let note = vault.resolve_note(&p.note).map_err(vault_err)?;
+            let appended = vault.append_to_note(&note, &p.content).map_err(vault_err)?;
+            note_to_json(&appended, vault.path())
+        })
+        .await
+        .map_err(|e| other_err(e.to_string()))??;
+
+        Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+    }
+
+    #[tool(
         description = "Replace an exact body-text occurrence in a note (must appear exactly once)",
         annotations(read_only_hint = false, destructive_hint = true, open_world_hint = false)
     )]
@@ -594,6 +615,7 @@ mod tests {
             "Read note bodies",
             "backlinks",
             "Create notes",
+            "append_to_note",
             "rename notes while updating backlinks",
             "Check vault health",
             "Prefer read-only tools",

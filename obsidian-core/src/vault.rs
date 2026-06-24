@@ -690,6 +690,32 @@ impl Vault {
         })
     }
 
+    fn raw_note_sections<'a>(note_path: &Path, raw: &'a str) -> (&'a str, &'a str) {
+        let parsed = Note::parse(note_path, raw);
+        let body_start = raw
+            .split_inclusive('\n')
+            .take(parsed.frontmatter_line_count)
+            .map(str::len)
+            .sum();
+        raw.split_at(body_start)
+    }
+
+    fn apply_raw_note_update(&mut self, note_path: &Path, raw: String) -> Result<Note, VaultError> {
+        let note_path = self.normalize_path(note_path);
+        let updated = Note::parse(&note_path, &raw);
+
+        if self.note_is_loaded(&note_path) {
+            self.load_note(updated.clone());
+        } else {
+            let parent = note_path.parent().unwrap_or_else(|| Path::new("."));
+            let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+            tmp.write_all(raw.as_bytes())?;
+            tmp.persist(&note_path).map_err(|e| e.error)?;
+        }
+
+        Ok(updated)
+    }
+
     /// Replaces the first (and only) occurrence of `old_string` in the body text of `note`
     /// with `new_string`, preserving the rest of the raw note text unchanged.
     ///
@@ -698,13 +724,7 @@ impl Vault {
     /// on the raw body text only (frontmatter excluded).
     pub fn patch_note(&mut self, note: &Note, old_string: &str, new_string: &str) -> Result<Note, VaultError> {
         let raw = self.text_for_path(&note.path)?;
-        let parsed = Note::parse(&note.path, &raw);
-        let body_start = raw
-            .split_inclusive('\n')
-            .take(parsed.frontmatter_line_count)
-            .map(str::len)
-            .sum();
-        let (raw_frontmatter, raw_body) = raw.split_at(body_start);
+        let (raw_frontmatter, raw_body) = Self::raw_note_sections(&note.path, &raw);
 
         let count = raw_body.matches(old_string).count();
         if count == 0 {
@@ -716,18 +736,16 @@ impl Vault {
 
         let patched_body = raw_body.replacen(old_string, new_string, 1);
         let patched_raw = format!("{raw_frontmatter}{patched_body}");
-        let patched_note = Note::parse(&note.path, &patched_raw);
+        self.apply_raw_note_update(&note.path, patched_raw)
+    }
 
-        if self.note_is_loaded(&note.path) {
-            self.load_note(patched_note.clone());
-            Ok(patched_note)
-        } else {
-            let parent = note.path.parent().unwrap_or_else(|| Path::new("."));
-            let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
-            tmp.write_all(patched_raw.as_bytes())?;
-            tmp.persist(&note.path).map_err(|e| e.error)?;
-            Ok(patched_note)
-        }
+    /// Appends `content` exactly as provided to the end of `note`'s body text, preserving the raw
+    /// frontmatter block unchanged.
+    pub fn append_to_note(&mut self, note: &Note, content: &str) -> Result<Note, VaultError> {
+        let raw = self.text_for_path(&note.path)?;
+        let (raw_frontmatter, raw_body) = Self::raw_note_sections(&note.path, &raw);
+        let appended_raw = format!("{raw_frontmatter}{raw_body}{content}");
+        self.apply_raw_note_update(&note.path, appended_raw)
     }
 
     /// Computes all changes required to merge `sources` into `dest_path` without performing I/O.
@@ -1604,6 +1622,61 @@ mod tests {
         let patched = vault.patch_note(&note, "Before", "After").unwrap();
 
         assert_eq!(patched.body, Some("# After\nBody.".to_string()));
+    }
+
+    // --- append_to_note tests ---
+
+    #[test]
+    fn append_to_note_appends_content_and_returns_reloaded_note() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("note.md"), "Hello.").unwrap();
+
+        let mut vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("note.md")).unwrap();
+        let appended = vault.append_to_note(&note, "\nWorld.").unwrap();
+
+        let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
+        assert_eq!(content, "Hello.\nWorld.");
+        assert_eq!(appended.body, Some("Hello.\nWorld.".to_string()));
+    }
+
+    #[test]
+    fn append_to_note_preserves_explicit_empty_frontmatter_arrays() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("note.md"), "---\ntags: []\naliases: []\n---\n\nHello.").unwrap();
+
+        let mut vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("note.md")).unwrap();
+        let appended = vault.append_to_note(&note, "\nWorld.").unwrap();
+
+        let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
+        assert_eq!(content, "---\ntags: []\naliases: []\n---\n\nHello.\nWorld.");
+        assert_eq!(
+            appended.frontmatter_json().unwrap().get("tags"),
+            Some(&serde_json::json!([]))
+        );
+        assert_eq!(
+            appended.frontmatter_json().unwrap().get("aliases"),
+            Some(&serde_json::json!([]))
+        );
+    }
+
+    #[test]
+    fn append_to_note_reparses_inline_links_and_tags() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("note.md"), "Start.").unwrap();
+
+        let mut vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(dir.path().join("note.md")).unwrap();
+        let appended = vault.append_to_note(&note, "\nSee [[target]]. #new-tag").unwrap();
+
+        assert_eq!(appended.links.len(), 1);
+        assert!(
+            appended
+                .tags
+                .iter()
+                .any(|tag| { tag.tag == "new-tag" && matches!(tag.location, Location::Inline(_)) })
+        );
     }
 
     // --- rename tests ---

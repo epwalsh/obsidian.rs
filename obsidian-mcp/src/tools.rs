@@ -70,6 +70,16 @@ pub struct WriteNoteParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct AppendToNoteParams {
+    #[schemars(description = "Note identifier: a file path (absolute or vault-relative), note ID, or alias")]
+    pub note: String,
+    #[schemars(
+        description = "Content to append exactly to the end of the note body. Include any leading newlines or separators you want preserved."
+    )]
+    pub content: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct PatchNoteParams {
     #[schemars(description = "Note identifier: a file path (absolute or vault-relative), note ID, or alias")]
     pub note: String,

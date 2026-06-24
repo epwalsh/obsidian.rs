@@ -87,7 +87,7 @@ cargo install obsidian-rs-mcp
 claude mcp add obsidian --scope project obsidian-mcp --vault .
 ```
 
-When initialized by an MCP client, the server describes the vault as a collection of Markdown notes and summarizes the safe workflow for consuming agents: discover/read before writing, use exact-match patching for surgical edits, rely on rename tools for backlink updates, and prefer vault-relative paths for writes and renames.
+When initialized by an MCP client, the server describes the vault as a collection of Markdown notes and summarizes the safe workflow for consuming agents: discover/read before writing, use `append_to_note` for additive body updates, use exact-match patching for surgical edits, rely on rename tools for backlink updates, and prefer vault-relative paths for writes and renames.
 
 ### Tools exposed
 
@@ -98,6 +98,7 @@ When initialized by an MCP client, the server describes the vault as a collectio
 | `list_backlinks` | List notes that link to a given note, including matching link locations |
 | `read_note` | Read the body and frontmatter of a note |
 | `write_note` | Write a new note |
+| `append_to_note` | Append content exactly to the end of a note's body without rewriting frontmatter |
 | `patch_note` | Replace one exact string in a note's body without rewriting frontmatter |
 | `update_note` | Update frontmatter fields of a note |
 | `search_notes` | Search for notes with filters (tag, title, content, glob, regex) |
