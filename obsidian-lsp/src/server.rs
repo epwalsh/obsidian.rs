@@ -11,14 +11,14 @@ use tower_lsp::lsp_types::{
     CodeActionOrCommand, CodeActionParams, CodeActionProviderCapability, CodeActionResponse, CompletionOptions,
     CompletionParams, CompletionResponse, ConfigurationItem, CreateFilesParams, DeleteFilesParams,
     DidChangeConfigurationParams, DidChangeTextDocumentParams, DidChangeWatchedFilesParams,
-    DidChangeWatchedFilesRegistrationOptions, DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentLink,
-    DocumentLinkOptions, DocumentLinkParams, DocumentSymbolParams, DocumentSymbolResponse, ExecuteCommandOptions,
-    ExecuteCommandParams, FileChangeType, FileOperationFilter, FileOperationPattern, FileOperationPatternKind,
-    FileOperationRegistrationOptions, FileSystemWatcher, GlobPattern, GotoDefinitionParams, GotoDefinitionResponse,
-    Hover, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location,
-    MessageType, OneOf, PrepareRenameResponse, ReferenceParams, Registration, RenameFilesParams, RenameOptions,
-    RenameParams, ServerCapabilities, ServerInfo, SymbolInformation, TextDocumentPositionParams,
-    TextDocumentSyncCapability, TextDocumentSyncKind, WatchKind, WorkspaceEdit,
+    DidChangeWatchedFilesRegistrationOptions, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    DocumentFormattingParams, DocumentLink, DocumentLinkOptions, DocumentLinkParams, DocumentSymbolParams,
+    DocumentSymbolResponse, ExecuteCommandOptions, ExecuteCommandParams, FileChangeType, FileOperationFilter,
+    FileOperationPattern, FileOperationPatternKind, FileOperationRegistrationOptions, FileSystemWatcher, GlobPattern,
+    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams,
+    InitializeResult, InitializedParams, Location, MessageType, OneOf, PrepareRenameResponse, ReferenceParams,
+    Registration, RenameFilesParams, RenameOptions, RenameParams, ServerCapabilities, ServerInfo, SymbolInformation,
+    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, WatchKind, WorkspaceEdit,
     WorkspaceFileOperationsServerCapabilities, WorkspaceFoldersServerCapabilities, WorkspaceServerCapabilities,
     WorkspaceSymbolParams,
 };
@@ -26,9 +26,9 @@ use tower_lsp::{Client, LanguageServer};
 
 use crate::state::{
     BackendState, CodeActionRequest, CompletionRequest, Config, DiagnosticUpdate, DiagnosticsRequest,
-    DocumentLinksRequest, DocumentSymbolsRequest, FileChange, FileChangeKind, NavigationRequest, PrepareRenameRequest,
-    RenameRequest, ResolveDocumentLinkRequest, StateError, WorkspaceSymbolsRequest, new_note_content,
-    normalize_new_note_path,
+    DocumentLinksRequest, DocumentSymbolsRequest, FileChange, FileChangeKind, FormattingRequest, NavigationRequest,
+    PrepareRenameRequest, RenameRequest, ResolveDocumentLinkRequest, StateError, WorkspaceSymbolsRequest,
+    new_note_content, normalize_new_note_path,
 };
 use crate::uri::uri_to_path;
 
@@ -290,6 +290,7 @@ impl LanguageServer for Backend {
                     trigger_characters: Some(vec!["[".to_string(), "#".to_string()]),
                     ..Default::default()
                 }),
+                document_formatting_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(true)),
                 definition_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
@@ -520,6 +521,17 @@ impl LanguageServer for Backend {
             .compute_request(request, "documentSymbol", |request: DocumentSymbolsRequest| {
                 request.compute()
             })
+            .await)
+    }
+
+    async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+        let request = {
+            let state = self.state.read().await;
+            state.formatting_request(params.text_document.uri)
+        };
+
+        Ok(self
+            .compute_request(request, "formatting", |request: FormattingRequest| request.compute())
             .await)
     }
 

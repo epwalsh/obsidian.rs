@@ -1,3 +1,4 @@
+use super::formatting_request;
 use super::*;
 use crate::uri::path_to_uri;
 use std::fs;
@@ -144,6 +145,47 @@ fn open_preview_document_reports_trailing_whitespace_diagnostics() {
     assert_eq!(codes(update), vec!["trailing-whitespace"]);
     assert_eq!(update.diagnostics[0].range.start, Position::new(0, 5));
     assert_eq!(update.diagnostics[0].range.end, Position::new(0, 7));
+}
+
+#[test]
+fn normalize_document_text_reorders_frontmatter_and_trims_trailing_whitespace() {
+    let text = concat!(
+        "---\n",
+        "zebra: last  \n",
+        "tags: [work, rust]  \n",
+        "aliases: [Work Alias]  \n",
+        "title: Work Alias\n",
+        "---\n",
+        "\n",
+        "Body🙂  \n",
+    );
+
+    assert_eq!(
+        formatting_request::normalize_document_text(text),
+        concat!(
+            "---\n",
+            "title: Work Alias\n",
+            "aliases:\n",
+            "- Work Alias\n",
+            "tags:\n",
+            "- work\n",
+            "- rust\n",
+            "zebra: last\n",
+            "---\n",
+            "\n",
+            "Body🙂\n",
+        )
+    );
+}
+
+#[test]
+fn normalize_document_text_preserves_non_mapping_frontmatter() {
+    let text = concat!("---\n", "- odd  \n", "- frontmatter\n", "---\n", "\n", "Body  \n",);
+
+    assert_eq!(
+        formatting_request::normalize_document_text(text),
+        concat!("---\n", "- odd\n", "- frontmatter\n", "---\n", "\n", "Body\n",)
+    );
 }
 
 #[test]

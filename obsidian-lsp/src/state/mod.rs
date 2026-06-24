@@ -27,6 +27,7 @@ mod document_link_data;
 mod document_links_request;
 mod document_symbols_request;
 mod edits;
+mod formatting_request;
 mod frontmatter;
 mod headings;
 mod links;
@@ -44,6 +45,7 @@ pub use self::completion_request::CompletionRequest;
 pub use self::diagnostics_request::{DiagnosticUpdate, DiagnosticsRequest};
 pub use self::document_links_request::DocumentLinksRequest;
 pub use self::document_symbols_request::DocumentSymbolsRequest;
+pub use self::formatting_request::FormattingRequest;
 pub(crate) use self::links::normalize_new_note_path;
 pub use self::navigation_request::NavigationRequest;
 pub use self::prepare_rename_request::PrepareRenameRequest;
@@ -247,6 +249,15 @@ impl BackendState {
         let path = self.path_from_uri(&uri)?;
 
         Ok(DocumentSymbolsRequest {
+            snapshot: self.snapshot(),
+            path,
+        })
+    }
+
+    pub fn formatting_request(&self, uri: Url) -> Result<FormattingRequest, StateError> {
+        let path = self.path_from_uri(&uri)?;
+
+        Ok(FormattingRequest {
             snapshot: self.snapshot(),
             path,
         })

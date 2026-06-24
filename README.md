@@ -121,6 +121,7 @@ Current functionality:
 - full-document text sync for open buffers
 - cached vault state via `obsidian_core::Vault::open_cached()`, with open buffers layered on top as authoritative in-memory shadows
 - diagnostics for broken links, duplicate IDs, duplicate aliases, stranded notes, and trailing whitespace across the vault and open buffers
+- document formatting that removes trailing whitespace and normalizes parseable YAML frontmatter blocks
 - hover on note links with basic target-note metadata
 - document links for wiki and markdown note links, with resolve support
 - document symbols for headings, frontmatter keys, aliases, tags, and outbound links

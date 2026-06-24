@@ -245,6 +245,7 @@ fn initialize_session(harness: &mut LspHarness, vault_uri: &Url, vault_path: &Pa
     assert_eq!(initialize["result"]["capabilities"]["referencesProvider"], true);
     assert_eq!(initialize["result"]["capabilities"]["definitionProvider"], true);
     assert_eq!(initialize["result"]["capabilities"]["documentSymbolProvider"], true);
+    assert_eq!(initialize["result"]["capabilities"]["documentFormattingProvider"], true);
     assert_eq!(initialize["result"]["capabilities"]["workspaceSymbolProvider"], true);
     assert_eq!(
         initialize["result"]["capabilities"]["renameProvider"]["prepareProvider"],
@@ -758,6 +759,103 @@ fn stdio_session_reports_and_clears_trailing_whitespace_diagnostics() {
             "contentChanges": [
                 {
                     "text": "opened🙂\nclean",
+                }
+            ],
+        })),
+    ));
+
+    let change_diagnostics = expect_diagnostics(&mut harness, &note_uri, Some(2));
+    assert!(diagnostic_codes(&change_diagnostics).is_empty());
+
+    shutdown_session(&mut harness);
+}
+
+#[test]
+fn stdio_session_formats_documents() {
+    let (vault_dir, _note_path, note_uri) = create_test_vault();
+    let vault_path = vault_dir.path().canonicalize().expect("vault path should canonicalize");
+    let vault_uri = Url::from_file_path(&vault_path).expect("vault path should convert to file URI");
+
+    let mut harness = LspHarness::spawn(vault_dir.path());
+    initialize_session(&mut harness, &vault_uri, &vault_path);
+
+    let opened_text = concat!(
+        "---\n",
+        "zebra: last  \n",
+        "tags: [work, rust]  \n",
+        "aliases: [Work Alias]  \n",
+        "title: Work Alias\n",
+        "---\n",
+        "\n",
+        "Body🙂  \n",
+    );
+    let formatted_text = concat!(
+        "---\n",
+        "title: Work Alias\n",
+        "aliases:\n",
+        "- Work Alias\n",
+        "tags:\n",
+        "- work\n",
+        "- rust\n",
+        "zebra: last\n",
+        "---\n",
+        "\n",
+        "Body🙂\n",
+    );
+
+    harness.send(notification(
+        "textDocument/didOpen",
+        Some(json!({
+            "textDocument": {
+                "uri": note_uri,
+                "languageId": "markdown",
+                "version": 1,
+                "text": opened_text,
+            }
+        })),
+    ));
+
+    let open_diagnostics = expect_diagnostics(&mut harness, &note_uri, Some(1));
+    assert!(diagnostic_codes(&open_diagnostics).contains(&"trailing-whitespace"));
+
+    harness.send(request(
+        2,
+        "textDocument/formatting",
+        Some(json!({
+            "textDocument": {
+                "uri": note_uri,
+            },
+            "options": {
+                "tabSize": 2,
+                "insertSpaces": true,
+            }
+        })),
+    ));
+
+    let formatting = harness.expect_message("document formatting response", |message| message["id"] == 2);
+    let edits = formatting["result"]
+        .as_array()
+        .expect("formatting response should be an array");
+    assert_eq!(edits.len(), 1);
+    assert_eq!(
+        edits[0]["range"],
+        json!({
+            "start": { "line": 0, "character": 0 },
+            "end": { "line": 8, "character": 0 },
+        })
+    );
+    assert_eq!(edits[0]["newText"], json!(formatted_text));
+
+    harness.send(notification(
+        "textDocument/didChange",
+        Some(json!({
+            "textDocument": {
+                "uri": note_uri,
+                "version": 2,
+            },
+            "contentChanges": [
+                {
+                    "text": formatted_text,
                 }
             ],
         })),

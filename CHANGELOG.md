@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - LSP diagnostics now warn on trailing whitespace, including unsaved open buffers inside the vault.
+- Added LSP `textDocument/formatting` support for trimming trailing whitespace and normalizing parseable YAML frontmatter blocks.
 
 ### Changed
 
