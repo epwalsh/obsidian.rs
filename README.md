@@ -39,7 +39,7 @@ obsidian note       Work with individual notes
   write             Write a new note
   backlinks         Find notes that link to a given note
   merge             Merge multiple notes into one
-  patch             Replace one exact string in a note's content
+  patch             Replace one exact string in a note's body
   rename            Rename a note and update all backlinks
   update            Update frontmatter metadata fields
 obsidian tags       Work with tags
@@ -98,7 +98,7 @@ When initialized by an MCP client, the server describes the vault as a collectio
 | `list_backlinks` | List notes that link to a given note, including matching link locations |
 | `read_note` | Read the body and frontmatter of a note |
 | `write_note` | Write a new note |
-| `patch_note` | Replace one exact string in a note |
+| `patch_note` | Replace one exact string in a note's body without rewriting frontmatter |
 | `update_note` | Update frontmatter fields of a note |
 | `search_notes` | Search for notes with filters (tag, title, content, glob, regex) |
 | `rename_note` | Rename a note and update all backlinks |

@@ -73,7 +73,7 @@ pub struct WriteNoteParams {
 pub struct PatchNoteParams {
     #[schemars(description = "Note identifier: a file path (absolute or vault-relative), note ID, or alias")]
     pub note: String,
-    #[schemars(description = "The exact string to find in the note. Must appear exactly once.")]
+    #[schemars(description = "The exact string to find in the note body. Must appear exactly once.")]
     pub old_string: String,
     #[schemars(description = "The string to replace old_string with")]
     pub new_string: String,

@@ -1,6 +1,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::env::current_dir;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -689,20 +690,23 @@ impl Vault {
         })
     }
 
-    /// Replaces the first (and only) occurrence of `old_string` in the raw file content of `note`
-    /// with `new_string`, writing the result back to disk.
+    /// Replaces the first (and only) occurrence of `old_string` in the body text of `note`
+    /// with `new_string`, preserving the rest of the raw note text unchanged.
     ///
-    /// Returns [`VaultError::StringNotFound`] if `old_string` does not appear in the file, and
+    /// Returns [`VaultError::StringNotFound`] if `old_string` does not appear in the body, and
     /// [`VaultError::StringFoundMultipleTimes`] if it appears more than once. Both checks operate
-    /// on the raw file bytes (frontmatter included).
+    /// on the raw body text only (frontmatter excluded).
     pub fn patch_note(&mut self, note: &Note, old_string: &str, new_string: &str) -> Result<Note, VaultError> {
-        let raw = if let Some(loaded) = self.note_overrides.get(&note.path) {
-            loaded.read(false)?
-        } else {
-            note.read(false)?
-        };
+        let raw = self.text_for_path(&note.path)?;
+        let parsed = Note::parse(&note.path, &raw);
+        let body_start = raw
+            .split_inclusive('\n')
+            .take(parsed.frontmatter_line_count)
+            .map(str::len)
+            .sum();
+        let (raw_frontmatter, raw_body) = raw.split_at(body_start);
 
-        let count = raw.matches(old_string).count();
+        let count = raw_body.matches(old_string).count();
         if count == 0 {
             return Err(VaultError::StringNotFound(note.path.clone()));
         }
@@ -710,15 +714,18 @@ impl Vault {
             return Err(VaultError::StringFoundMultipleTimes(note.path.clone()));
         }
 
-        let patched_content = raw.replacen(old_string, new_string, 1);
-        let mut patched_note = note.clone();
-        patched_note.update_content(Some(&patched_content), None)?;
+        let patched_body = raw_body.replacen(old_string, new_string, 1);
+        let patched_raw = format!("{raw_frontmatter}{patched_body}");
+        let patched_note = Note::parse(&note.path, &patched_raw);
 
         if self.note_is_loaded(&note.path) {
             self.load_note(patched_note.clone());
             Ok(patched_note)
         } else {
-            patched_note.write()?;
+            let parent = note.path.parent().unwrap_or_else(|| Path::new("."));
+            let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+            tmp.write_all(patched_raw.as_bytes())?;
+            tmp.persist(&note.path).map_err(|e| e.error)?;
             Ok(patched_note)
         }
     }
@@ -1533,7 +1540,7 @@ mod tests {
         vault.patch_note(&note, "world", "Rust").unwrap();
 
         let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
-        assert_eq!(content, "---\nid: note\n---\n\nHello Rust.");
+        assert_eq!(content, "Hello Rust.");
     }
 
     #[test]
@@ -1558,6 +1565,23 @@ mod tests {
         let result = vault.patch_note(&note, "foo", "bar");
 
         assert!(matches!(result, Err(VaultError::StringFoundMultipleTimes(_))));
+    }
+
+    #[test]
+    fn patch_note_preserves_explicit_empty_frontmatter_arrays() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("note.md"), "---\ntags: []\n---\n\nHello world.").unwrap();
+
+        let mut vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path_with_body(dir.path().join("note.md")).unwrap();
+        let patched = vault.patch_note(&note, "world", "Rust").unwrap();
+
+        let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
+        assert_eq!(content, "---\ntags: []\n---\n\nHello Rust.");
+        assert_eq!(
+            patched.frontmatter_json().unwrap().get("tags"),
+            Some(&serde_json::json!([]))
+        );
     }
 
     #[test]

@@ -460,8 +460,10 @@ impl Note {
         // Make sure fields are up-to-date.
         fm.insert("id".to_string(), Pod::String(self.id.clone()));
         if self.aliases.is_empty() {
-            // No aliases; remove the field to avoid emitting an empty array.
-            fm.shift_remove("aliases");
+            // Preserve an explicitly empty aliases array, otherwise omit the field.
+            if !matches!(fm.get("aliases"), Some(Pod::Array(values)) if values.is_empty()) {
+                fm.shift_remove("aliases");
+            }
         } else {
             fm.insert(
                 "aliases".to_string(),
@@ -475,8 +477,10 @@ impl Note {
             .map(|t| t.tag.clone())
             .collect();
         if fm_tags.is_empty() {
-            // No tags; remove the field to avoid emitting an empty array.
-            fm.shift_remove("tags");
+            // Preserve an explicitly empty tags array, otherwise omit the field.
+            if !matches!(fm.get("tags"), Some(Pod::Array(values)) if values.is_empty()) {
+                fm.shift_remove("tags");
+            }
         } else {
             fm.insert(
                 "tags".to_string(),
@@ -857,6 +861,24 @@ mod tests {
         let reparsed = Note::from_path_with_body(tmp.path()).unwrap();
         assert_eq!(reparsed.title.as_deref(), Some("My Note"));
         assert_eq!(reparsed.body.as_deref().unwrap().trim(), "Body text.");
+    }
+
+    #[test]
+    fn write_preserves_explicit_empty_frontmatter_arrays() {
+        let note = Note::parse("/vault/note.md", "---\naliases: []\ntags: []\n---\n\nBody text.");
+
+        assert_eq!(
+            note.read(true).unwrap(),
+            "---\nid: note\naliases: []\ntags: []\n---\n\nBody text."
+        );
+        assert_eq!(
+            note.frontmatter_json().unwrap().get("tags"),
+            Some(&serde_json::json!([]))
+        );
+        assert_eq!(
+            note.frontmatter_json().unwrap().get("aliases"),
+            Some(&serde_json::json!([]))
+        );
     }
 
     #[test]

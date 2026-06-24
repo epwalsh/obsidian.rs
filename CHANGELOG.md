@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - LSP markdown-to-wiki link refactors now use the resolved note ID for generated wiki targets instead of the filename stem, which fixes incorrect suggestions for notes like nested `index.md` files.
+- `patch_note` no longer rewrites untouched frontmatter while patching body text, so explicit empty arrays like `tags: []` are preserved.
 
 ## v0.5.0 - 2026-06-12
 

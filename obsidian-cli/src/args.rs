@@ -194,7 +194,7 @@ pub enum NoteCommand {
     Backlinks(BacklinksArgs),
     /// Merge two or more notes into a single destination note
     Merge(MergeArgs),
-    /// Patch the content of a note by replacing one exact string with another
+    /// Patch the body of a note by replacing one exact string with another
     Patch(PatchArgs),
     /// Rename a note and update all backlinks
     Rename(RenameArgs),
@@ -263,7 +263,7 @@ pub struct WriteArgs {
 pub struct PatchArgs {
     /// Path to the note (resolved relative to current directory)
     pub note: PathBuf,
-    /// The exact string to find (must appear exactly once in the note)
+    /// The exact string to find (must appear exactly once in the note body)
     #[arg(long)]
     pub old_string: String,
     /// The string to replace it with

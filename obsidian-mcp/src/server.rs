@@ -18,7 +18,7 @@ const SERVER_INSTRUCTIONS: &str = r#"Use this MCP server to work with an Obsidia
 Capabilities:
 - Discover notes by path, title, alias, ID, tag, content substring, regex, or glob.
 - Read note bodies and YAML frontmatter; list notes, tags, and backlinks.
-- Create notes, update frontmatter, patch exact body text, and rename notes while updating backlinks.
+- Create notes, update frontmatter, patch exact body text without rewriting frontmatter, and rename notes while updating backlinks.
 - Check vault health for duplicate IDs or aliases, broken links, and stranded notes.
 
 Operational guidance:
@@ -318,15 +318,14 @@ impl VaultServer {
     }
 
     #[tool(
-        description = "Replace an exact string occurrence in a note (must appear exactly once)",
+        description = "Replace an exact body-text occurrence in a note (must appear exactly once)",
         annotations(read_only_hint = false, destructive_hint = true, open_world_hint = false)
     )]
     async fn patch_note(&self, Parameters(p): Parameters<PatchNoteParams>) -> Result<CallToolResult, rmcp::ErrorData> {
         let vault = Arc::clone(&self.vault);
         let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, rmcp::ErrorData> {
             let mut vault = vault.lock().unwrap();
-            let mut note = vault.resolve_note(&p.note).map_err(vault_err)?;
-            note.load_body().map_err(note_err)?; // Ensure content is loaded before patching.
+            let note = vault.resolve_note(&p.note).map_err(vault_err)?;
             let patched = vault
                 .patch_note(&note, &p.old_string, &p.new_string)
                 .map_err(vault_err)?;

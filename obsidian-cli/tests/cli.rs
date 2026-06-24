@@ -1647,7 +1647,30 @@ fn note_patch_replaces_string() {
         .success()
         .stdout(predicate::str::contains("note.md"));
     let content = fs::read_to_string(&note_path).unwrap();
-    assert_eq!(content, "---\nid: note\n---\n\nHello Rust.");
+    assert_eq!(content, "Hello Rust.");
+}
+
+#[test]
+fn note_patch_preserves_explicit_empty_frontmatter_arrays() {
+    let vault = make_vault();
+    let note_path = vault.path().join("note.md");
+    fs::write(&note_path, "---\ntags: []\n---\n\nHello world.").unwrap();
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "patch",
+            note_path.to_str().unwrap(),
+            "--old-string",
+            "world",
+            "--new-string",
+            "Rust",
+        ])
+        .assert()
+        .success();
+    let content = fs::read_to_string(&note_path).unwrap();
+    assert_eq!(content, "---\ntags: []\n---\n\nHello Rust.");
 }
 
 #[test]
@@ -1670,7 +1693,7 @@ fn note_patch_newline_escape_in_new_string() {
         .assert()
         .success();
     let content = fs::read_to_string(&note_path).unwrap();
-    assert_eq!(content, "---\nid: note\n---\n\nHello world\nfoo.");
+    assert_eq!(content, "Hello world\nfoo.");
 }
 
 #[test]
@@ -1693,7 +1716,7 @@ fn note_patch_newline_escape_in_old_string() {
         .assert()
         .success();
     let content = fs::read_to_string(&note_path).unwrap();
-    assert_eq!(content, "---\nid: note\n---\n\nGoodbye.");
+    assert_eq!(content, "Goodbye.");
 }
 
 #[test]

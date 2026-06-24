@@ -163,7 +163,7 @@ fn unescape(s: &str) -> String {
 
 pub fn cmd_patch(mut vault: Vault, args: PatchArgs) -> eyre::Result<()> {
     let (note_path, _) = vault.resolve_note_path(&args.note, true)?;
-    let note = Note::from_path_with_body(&note_path)?;
+    let note = Note::from_path(&note_path)?;
     let old = unescape(&args.old_string);
     let new = unescape(&args.new_string);
     let patched = vault.patch_note(&note, &old, &new)?;
