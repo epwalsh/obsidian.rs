@@ -25,10 +25,10 @@ use tower_lsp::lsp_types::{
 use tower_lsp::{Client, LanguageServer};
 
 use crate::state::{
-    BackendState, CodeActionRequest, CompletionRequest, Config, DiagnosticUpdate, DiagnosticsRequest,
-    DocumentLinksRequest, DocumentSymbolsRequest, FileChange, FileChangeKind, FormattingRequest, NavigationRequest,
-    PrepareRenameRequest, RenameRequest, ResolveDocumentLinkRequest, StateError, WorkspaceSymbolsRequest,
-    new_note_content, normalize_new_note_path,
+    BackendState, CodeActionRequest, CompletionRequest, Config, DiagnosticsRequest, DocumentLinksRequest,
+    DocumentSymbolsRequest, FileChange, FileChangeKind, FormattingRequest, NavigationRequest, PrepareRenameRequest,
+    RenameRequest, ResolveDocumentLinkRequest, StateError, WorkspaceSymbolsRequest, new_note_content,
+    normalize_new_note_path,
 };
 use crate::uri::uri_to_path;
 
@@ -97,15 +97,7 @@ impl Backend {
             state.global_diagnostics_request()
         };
 
-        self.handle_diagnostics(Ok(request)).await;
-    }
-
-    async fn publish_diagnostics(&self, updates: &[DiagnosticUpdate]) {
-        for update in updates {
-            self.client
-                .publish_diagnostics(update.uri.clone(), update.diagnostics.clone(), update.version)
-                .await;
-        }
+        self.schedule_diagnostics(Ok(request));
     }
 
     async fn log_error(&self, error: impl std::fmt::Display) {
@@ -116,38 +108,14 @@ impl Backend {
         self.state.read().await.vault_path().to_path_buf()
     }
 
-    async fn handle_diagnostics(&self, request: std::result::Result<DiagnosticsRequest, StateError>) {
-        let request = match request {
-            Ok(request) => request,
-            Err(error) => {
-                self.log_error(error).await;
-                return;
-            }
-        };
+    fn schedule_diagnostics(&self, request: std::result::Result<DiagnosticsRequest, StateError>) {
+        let client = self.client.clone();
+        let state = Arc::clone(&self.state);
+        let diagnostics_lock = Arc::clone(&self.diagnostics_lock);
 
-        let _guard = self.diagnostics_lock.lock().await;
-        let batch = match tokio::task::spawn_blocking(move || request.compute()).await {
-            Ok(Ok(batch)) => batch,
-            Ok(Err(error)) => {
-                self.log_error(error).await;
-                return;
-            }
-            Err(error) => {
-                self.log_error(format!("diagnostics task failed: {error}")).await;
-                return;
-            }
-        };
-
-        if self.state.read().await.diagnostics_revision() != batch.revision {
-            return;
-        }
-
-        self.publish_diagnostics(&batch.updates).await;
-
-        let mut state = self.state.write().await;
-        if state.diagnostics_revision() == batch.revision {
-            state.set_published_diagnostics(batch.published_diagnostics);
-        }
+        tokio::spawn(async move {
+            run_diagnostics(client, state, diagnostics_lock, request).await;
+        });
     }
 
     async fn compute_hover(&self, request: std::result::Result<NavigationRequest, StateError>) -> Option<Hover> {
@@ -253,8 +221,62 @@ impl Backend {
         };
 
         if let Some(request) = request {
-            self.handle_diagnostics(Ok(request)).await;
+            self.schedule_diagnostics(Ok(request));
         }
+    }
+}
+
+async fn run_diagnostics(
+    client: Client,
+    state: Arc<RwLock<BackendState>>,
+    diagnostics_lock: Arc<Mutex<()>>,
+    request: std::result::Result<DiagnosticsRequest, StateError>,
+) {
+    let request = match request {
+        Ok(request) => request,
+        Err(error) => {
+            client.log_message(MessageType::ERROR, error.to_string()).await;
+            return;
+        }
+    };
+    let request_revision = request.revision();
+
+    if state.read().await.diagnostics_revision() != request_revision {
+        return;
+    }
+
+    let _guard = diagnostics_lock.lock().await;
+    if state.read().await.diagnostics_revision() != request_revision {
+        return;
+    }
+
+    let batch = match tokio::task::spawn_blocking(move || request.compute()).await {
+        Ok(Ok(batch)) => batch,
+        Ok(Err(error)) => {
+            client.log_message(MessageType::ERROR, error.to_string()).await;
+            return;
+        }
+        Err(error) => {
+            client
+                .log_message(MessageType::ERROR, format!("diagnostics task failed: {error}"))
+                .await;
+            return;
+        }
+    };
+
+    let updates = {
+        let mut state = state.write().await;
+        if state.diagnostics_revision() != batch.revision {
+            return;
+        }
+        state.set_published_diagnostics(batch.published_diagnostics);
+        batch.updates
+    };
+
+    for update in updates {
+        client
+            .publish_diagnostics(update.uri, update.diagnostics, update.version)
+            .await;
     }
 }
 
@@ -363,7 +385,7 @@ impl LanguageServer for Backend {
             )
         };
 
-        self.handle_diagnostics(request).await;
+        self.schedule_diagnostics(request);
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -376,7 +398,7 @@ impl LanguageServer for Backend {
             )
         };
 
-        self.handle_diagnostics(request).await;
+        self.schedule_diagnostics(request);
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
@@ -385,7 +407,7 @@ impl LanguageServer for Backend {
             state.close_document(params.text_document.uri)
         };
 
-        self.handle_diagnostics(request).await;
+        self.schedule_diagnostics(request);
     }
 
     async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
@@ -696,7 +718,7 @@ impl LanguageServer for Backend {
             }])
         };
         match request {
-            Ok(Some(request)) => self.handle_diagnostics(Ok(request)).await,
+            Ok(Some(request)) => self.schedule_diagnostics(Ok(request)),
             Ok(None) => {}
             Err(error) => self.log_error(error).await,
         }

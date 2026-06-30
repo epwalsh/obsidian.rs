@@ -42,7 +42,9 @@ mod workspace_symbols_request;
 pub use self::code_action_request::CodeActionRequest;
 pub(crate) use self::code_action_request::new_note_content;
 pub use self::completion_request::CompletionRequest;
-pub use self::diagnostics_request::{DiagnosticUpdate, DiagnosticsRequest};
+#[cfg(test)]
+pub use self::diagnostics_request::DiagnosticUpdate;
+pub use self::diagnostics_request::DiagnosticsRequest;
 pub use self::document_links_request::DocumentLinksRequest;
 pub use self::document_symbols_request::DocumentSymbolsRequest;
 pub use self::formatting_request::FormattingRequest;

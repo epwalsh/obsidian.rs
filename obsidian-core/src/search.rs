@@ -952,17 +952,6 @@ pub(crate) fn link_targets_note(source: &Note, link: &Link, target: &Note, vault
     }
 }
 
-pub(crate) fn has_matching_link(source: &Note, target: &Note, vault_path: &Path) -> bool {
-    if source.path == target.path {
-        return false;
-    }
-
-    source
-        .links
-        .iter()
-        .any(|ll| link_targets_note(source, &ll.link, target, vault_path))
-}
-
 /// Returns all links in `source` that point to `target`, using the vault root `vault_path`
 /// for resolving relative markdown URLs. Returns an empty vec if `source` is `target`.
 pub fn find_matching_links(source: &Note, target: &Note, vault_path: &std::path::Path) -> Vec<LocatedLink> {

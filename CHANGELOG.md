@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- LSP diagnostics now run outside the request/notification path and skip superseded revisions, reducing stale diagnostics and preventing diagnostics work from blocking formatting requests.
+- Vault health connectivity checks now avoid all-pairs note scans, improving diagnostics latency for larger vaults.
 - LSP markdown-to-wiki link refactors now use the resolved note ID for generated wiki targets instead of the filename stem, which fixes incorrect suggestions for notes like nested `index.md` files.
 - `patch_note` no longer rewrites untouched frontmatter while patching body text, so explicit empty arrays like `tags: []` are preserved.
 
