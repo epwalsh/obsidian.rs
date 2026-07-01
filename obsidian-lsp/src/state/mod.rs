@@ -111,6 +111,8 @@ pub enum StateError {
     InvalidRenameTarget { path: PathBuf, new_name: String },
     #[error("invalid tag rename target '{0}'")]
     InvalidTagRenameTarget(String),
+    #[error("vault index is not ready yet")]
+    NotReady,
 }
 
 pub struct BackendState {
@@ -119,6 +121,7 @@ pub struct BackendState {
     published_diagnostics: HashMap<PathBuf, Url>,
     diagnostics_revision: u64,
     config: Config,
+    is_indexed: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -135,14 +138,24 @@ pub struct FileChange {
 }
 
 impl BackendState {
+    #[cfg(test)]
     pub fn new(vault: Vault) -> Self {
         let vault = Vault::open_cached(vault.path()).expect("opened vault path should be cacheable");
+        Self::with_index_state(vault, true)
+    }
+
+    pub(crate) fn new_unindexed(vault: Vault) -> Self {
+        Self::with_index_state(vault, false)
+    }
+
+    fn with_index_state(vault: Vault, is_indexed: bool) -> Self {
         Self {
             vault: Arc::new(vault),
             open_documents: HashMap::new(),
             published_diagnostics: HashMap::new(),
             diagnostics_revision: 0,
             config: Config::default(),
+            is_indexed,
         }
     }
 
@@ -150,13 +163,28 @@ impl BackendState {
         if let Some(new_path) = &config.vault_path_override
             && new_path != self.vault.path()
         {
-            self.vault = Arc::new(Vault::open_cached(new_path)?);
+            self.vault = Arc::new(Vault::open(new_path)?);
             self.open_documents.clear();
             self.published_diagnostics.clear();
             self.diagnostics_revision += 1;
+            self.is_indexed = false;
         }
         self.config = config;
         Ok(())
+    }
+
+    pub fn install_indexed_vault(&mut self, vault: Vault) -> Option<DiagnosticsRequest> {
+        if vault.path() != self.vault.path() {
+            return None;
+        }
+
+        self.vault = Arc::new(vault);
+        self.is_indexed = true;
+        Some(self.prepare_diagnostics_request(None))
+    }
+
+    pub fn is_indexed(&self) -> bool {
+        self.is_indexed
     }
 
     pub fn global_diagnostics_request(&mut self) -> DiagnosticsRequest {
@@ -196,6 +224,9 @@ impl BackendState {
     pub fn close_document(&mut self, uri: Url) -> Result<DiagnosticsRequest, StateError> {
         let path = self.path_from_uri(&uri)?;
         self.open_documents.remove(&path);
+        if !self.is_indexed {
+            return Err(StateError::NotReady);
+        }
         Arc::make_mut(&mut self.vault).refresh_cached_note(&path)?;
 
         Ok(self.prepare_diagnostics_request(Some(PrimaryDocument {
@@ -234,10 +265,15 @@ impl BackendState {
             }
         }
 
+        if !self.is_indexed {
+            return Ok(None);
+        }
+
         Ok(changed.then(|| self.prepare_diagnostics_request(None)))
     }
 
     pub fn document_links_request(&self, uri: Url) -> Result<DocumentLinksRequest, StateError> {
+        self.ensure_indexed()?;
         let path = self.path_from_uri(&uri)?;
 
         Ok(DocumentLinksRequest {
@@ -248,6 +284,7 @@ impl BackendState {
     }
 
     pub fn document_symbols_request(&self, uri: Url) -> Result<DocumentSymbolsRequest, StateError> {
+        self.ensure_indexed()?;
         let path = self.path_from_uri(&uri)?;
 
         Ok(DocumentSymbolsRequest {
@@ -257,6 +294,7 @@ impl BackendState {
     }
 
     pub fn formatting_request(&self, uri: Url) -> Result<FormattingRequest, StateError> {
+        self.ensure_indexed()?;
         let path = self.path_from_uri(&uri)?;
 
         Ok(FormattingRequest {
@@ -265,17 +303,19 @@ impl BackendState {
         })
     }
 
-    pub fn workspace_symbols_request(&self, query: String) -> WorkspaceSymbolsRequest {
-        WorkspaceSymbolsRequest {
+    pub fn workspace_symbols_request(&self, query: String) -> Result<WorkspaceSymbolsRequest, StateError> {
+        self.ensure_indexed()?;
+        Ok(WorkspaceSymbolsRequest {
             snapshot: self.snapshot(),
             query,
-        }
+        })
     }
 
     pub fn resolve_document_link_request(
         &self,
         document_link: DocumentLink,
     ) -> Result<ResolveDocumentLinkRequest, StateError> {
+        self.ensure_indexed()?;
         let data = parse_document_link_data(
             document_link
                 .data
@@ -296,6 +336,7 @@ impl BackendState {
     }
 
     pub fn navigation_request(&self, uri: Url, position: Position) -> Result<NavigationRequest, StateError> {
+        self.ensure_indexed()?;
         let path = self.path_from_uri(&uri)?;
 
         Ok(NavigationRequest {
@@ -306,6 +347,7 @@ impl BackendState {
     }
 
     pub fn completion_request(&self, uri: Url, position: Position) -> Result<CompletionRequest, StateError> {
+        self.ensure_indexed()?;
         let path = self.path_from_uri(&uri)?;
 
         Ok(CompletionRequest {
@@ -321,6 +363,7 @@ impl BackendState {
         range: Range,
         diagnostics: Vec<Diagnostic>,
     ) -> Result<CodeActionRequest, StateError> {
+        self.ensure_indexed()?;
         let path = self.path_from_uri(&uri)?;
 
         Ok(CodeActionRequest {
@@ -333,6 +376,7 @@ impl BackendState {
     }
 
     pub fn prepare_rename_request(&self, uri: Url, position: Position) -> Result<PrepareRenameRequest, StateError> {
+        self.ensure_indexed()?;
         let path = self.path_from_uri(&uri)?;
 
         Ok(PrepareRenameRequest {
@@ -343,6 +387,7 @@ impl BackendState {
     }
 
     pub fn rename_request(&self, uri: Url, position: Position, new_name: String) -> Result<RenameRequest, StateError> {
+        self.ensure_indexed()?;
         let path = self.path_from_uri(&uri)?;
 
         Ok(RenameRequest {
@@ -376,6 +421,10 @@ impl BackendState {
             },
         );
 
+        if !self.is_indexed {
+            return Err(StateError::NotReady);
+        }
+
         Ok(self.prepare_diagnostics_request(Some(PrimaryDocument {
             path,
             uri,
@@ -407,6 +456,14 @@ impl BackendState {
         let path = uri_to_path(uri)?;
         vault_relative_path(self.vault.path(), &path)?;
         Ok(path)
+    }
+
+    fn ensure_indexed(&self) -> Result<(), StateError> {
+        if self.is_indexed {
+            Ok(())
+        } else {
+            Err(StateError::NotReady)
+        }
     }
 }
 

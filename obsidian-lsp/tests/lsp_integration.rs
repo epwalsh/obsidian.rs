@@ -351,6 +351,74 @@ fn stdio_session_registers_markdown_file_watcher_when_supported() {
     shutdown_session(&mut harness);
 }
 
+#[test]
+fn stdio_session_reports_startup_indexing_progress_when_supported() {
+    let vault_dir = tempfile::tempdir().expect("should create temp dir");
+    fs::create_dir(vault_dir.path().join(".obsidian")).expect("should create .obsidian directory");
+    fs::write(vault_dir.path().join("note.md"), "Body.").expect("should write note");
+    let vault_path = vault_dir.path().canonicalize().expect("vault path should canonicalize");
+    let vault_uri = Url::from_file_path(&vault_path).expect("vault path should convert to file URI");
+
+    let mut harness = LspHarness::spawn(vault_dir.path());
+    harness.send(request(
+        1,
+        "initialize",
+        Some(json!({
+            "processId": null,
+            "rootUri": vault_uri,
+            "capabilities": {
+                "window": {
+                    "workDoneProgress": true
+                }
+            },
+        })),
+    ));
+
+    let initialize = harness.expect_message("initialize response", |message| message["id"] == 1);
+    assert_eq!(initialize["result"]["serverInfo"]["name"], "obsidian-rs-lsp");
+
+    harness.send(notification("initialized", Some(json!({}))));
+    let create_progress = harness.expect_message("workDoneProgress/create request", |message| {
+        message["method"] == "window/workDoneProgress/create"
+    });
+    let progress_token = create_progress["params"]["token"].clone();
+    harness.send(json!({
+        "jsonrpc": "2.0",
+        "id": create_progress["id"].clone(),
+        "result": null,
+    }));
+
+    let begin = harness.expect_message("startup progress begin", |message| {
+        message["method"] == "$/progress"
+            && message["params"]["token"] == progress_token
+            && message["params"]["value"]["kind"] == "begin"
+    });
+    assert_eq!(begin["params"]["value"]["title"], "Indexing Obsidian vault");
+    assert!(
+        begin["params"]["value"]["message"]
+            .as_str()
+            .expect("progress message should be a string")
+            .contains(vault_path.to_string_lossy().as_ref())
+    );
+
+    let end = harness.expect_message("startup progress end", |message| {
+        message["method"] == "$/progress"
+            && message["params"]["token"] == progress_token
+            && message["params"]["value"]["kind"] == "end"
+    });
+    assert_eq!(end["params"]["value"]["message"], "Indexed vault.");
+
+    let log_message = harness.expect_message("ready log message", |message| message["method"] == "window/logMessage");
+    assert!(
+        log_message["params"]["message"]
+            .as_str()
+            .expect("log message should be a string")
+            .contains(vault_path.to_string_lossy().as_ref())
+    );
+
+    shutdown_session(&mut harness);
+}
+
 fn expect_diagnostics(harness: &mut LspHarness, uri: &Url, version: Option<i32>) -> Value {
     harness.expect_message("publishDiagnostics notification", |message| {
         if message["method"] != "textDocument/publishDiagnostics" || message["params"]["uri"] != uri.as_str() {

@@ -148,6 +148,36 @@ fn open_preview_document_reports_trailing_whitespace_diagnostics() {
 }
 
 #[test]
+fn unindexed_state_records_open_documents_but_returns_not_ready() {
+    let vault_dir = tempfile::tempdir().unwrap();
+    fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
+    let note_path = vault_dir.path().join("note.md");
+    fs::write(&note_path, "disk body").unwrap();
+    let note_path = note_path.canonicalize().unwrap();
+    let note_uri = path_to_uri(&note_path).unwrap();
+    let mut state = BackendState::new_unindexed(Vault::open(vault_dir.path()).unwrap());
+
+    let result = state.open_document(note_uri.clone(), 1, "Body  \n".to_string());
+    assert!(matches!(result, Err(StateError::NotReady)));
+    assert_eq!(state.open_documents.get(&note_path).unwrap().text, "Body  \n");
+    assert!(matches!(
+        state.document_symbols_request(note_uri.clone()),
+        Err(StateError::NotReady)
+    ));
+
+    let indexed_vault = Vault::open_cached(vault_dir.path()).unwrap();
+    let batch = state
+        .install_indexed_vault(indexed_vault)
+        .expect("matching indexed vault should produce diagnostics")
+        .compute()
+        .unwrap();
+    let update = update_for_uri(&batch, &note_uri);
+
+    assert_eq!(update.version, Some(1));
+    assert!(codes(update).contains(&"trailing-whitespace"));
+}
+
+#[test]
 fn normalize_document_text_reorders_frontmatter_and_trims_trailing_whitespace() {
     let text = concat!(
         "---\n",
@@ -686,22 +716,32 @@ fn document_symbols_include_note_structure_metadata_tags_and_links() {
 fn workspace_symbols_search_note_ids_aliases_tags_and_headings() {
     let (_vault_dir, state, _source_uri, other_uri) = symbol_state();
 
-    let aliases = state.workspace_symbols_request("work".to_string()).compute().unwrap();
+    let aliases = state
+        .workspace_symbols_request("work".to_string())
+        .unwrap()
+        .compute()
+        .unwrap();
     assert!(aliases.iter().any(|symbol| symbol.name == "Work Alias"));
 
     let ids = state
         .workspace_symbols_request("other-note".to_string())
+        .unwrap()
         .compute()
         .unwrap();
     assert!(ids.iter().any(|symbol| {
         symbol.name == "other-note" && symbol.kind == SymbolKind::FILE && symbol.location.uri == other_uri
     }));
 
-    let tags = state.workspace_symbols_request("rust".to_string()).compute().unwrap();
+    let tags = state
+        .workspace_symbols_request("rust".to_string())
+        .unwrap()
+        .compute()
+        .unwrap();
     assert_eq!(tags.iter().filter(|symbol| symbol.name == "#rust").count(), 2);
 
     let headings = state
         .workspace_symbols_request("overview".to_string())
+        .unwrap()
         .compute()
         .unwrap();
     assert_eq!(headings.len(), 1);

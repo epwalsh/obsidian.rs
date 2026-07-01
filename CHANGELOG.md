@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - LSP diagnostics now warn on trailing whitespace, including unsaved open buffers inside the vault.
 - Added LSP `textDocument/formatting` support for trimming trailing whitespace and normalizing parseable YAML frontmatter blocks.
+- Added LSP startup work-done progress while indexing the vault, with language-feature requests returning empty results until indexing is ready.
 - Added `append_to_note` MCP tool for appending content to a note body without rewriting frontmatter, backed by `Vault::append_to_note()`.
 
 ### Changed

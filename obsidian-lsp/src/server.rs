@@ -1,7 +1,7 @@
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -16,11 +16,12 @@ use tower_lsp::lsp_types::{
     DocumentSymbolResponse, ExecuteCommandOptions, ExecuteCommandParams, FileChangeType, FileOperationFilter,
     FileOperationPattern, FileOperationPatternKind, FileOperationRegistrationOptions, FileSystemWatcher, GlobPattern,
     GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams,
-    InitializeResult, InitializedParams, Location, MessageType, OneOf, PrepareRenameResponse, ReferenceParams,
-    Registration, RenameFilesParams, RenameOptions, RenameParams, ServerCapabilities, ServerInfo, SymbolInformation,
-    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, WatchKind, WorkspaceEdit,
-    WorkspaceFileOperationsServerCapabilities, WorkspaceFoldersServerCapabilities, WorkspaceServerCapabilities,
-    WorkspaceSymbolParams,
+    InitializeResult, InitializedParams, Location, MessageType, NumberOrString, OneOf, PrepareRenameResponse,
+    ProgressParams, ProgressParamsValue, ReferenceParams, Registration, RenameFilesParams, RenameOptions, RenameParams,
+    ServerCapabilities, ServerInfo, SymbolInformation, TextDocumentPositionParams, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextEdit, WatchKind, WorkDoneProgress, WorkDoneProgressBegin, WorkDoneProgressCreateParams,
+    WorkDoneProgressEnd, WorkspaceEdit, WorkspaceFileOperationsServerCapabilities, WorkspaceFoldersServerCapabilities,
+    WorkspaceServerCapabilities, WorkspaceSymbolParams, notification::Progress, request::WorkDoneProgressCreate,
 };
 use tower_lsp::{Client, LanguageServer};
 
@@ -40,6 +41,8 @@ pub struct Backend {
     file_change_debounce_scheduled: AtomicBool,
     supports_pull_config: AtomicBool,
     supports_watched_file_registration: AtomicBool,
+    supports_work_done_progress: AtomicBool,
+    progress_counter: AtomicU64,
 }
 
 const FILE_CHANGE_DEBOUNCE: Duration = Duration::from_millis(50);
@@ -61,12 +64,14 @@ impl Backend {
     pub fn new(client: Client, vault: obsidian_core::Vault) -> Self {
         Self {
             client,
-            state: Arc::new(RwLock::new(BackendState::new(vault))),
+            state: Arc::new(RwLock::new(BackendState::new_unindexed(vault))),
             diagnostics_lock: Arc::new(Mutex::new(())),
             pending_file_changes: Arc::new(Mutex::new(Vec::new())),
             file_change_debounce_scheduled: AtomicBool::new(false),
             supports_pull_config: AtomicBool::new(false),
             supports_watched_file_registration: AtomicBool::new(false),
+            supports_work_done_progress: AtomicBool::new(false),
+            progress_counter: AtomicU64::new(1),
         }
     }
 
@@ -94,18 +99,16 @@ impl Backend {
                 self.log_error(format!("failed to apply configuration: {error}")).await;
                 return;
             }
-            state.global_diagnostics_request()
+            state.is_indexed().then(|| state.global_diagnostics_request())
         };
 
-        self.schedule_diagnostics(Ok(request));
+        if let Some(request) = request {
+            self.schedule_diagnostics(Ok(request));
+        }
     }
 
     async fn log_error(&self, error: impl std::fmt::Display) {
         self.client.log_message(MessageType::ERROR, error.to_string()).await;
-    }
-
-    async fn vault_path(&self) -> PathBuf {
-        self.state.read().await.vault_path().to_path_buf()
     }
 
     fn schedule_diagnostics(&self, request: std::result::Result<DiagnosticsRequest, StateError>) {
@@ -115,6 +118,18 @@ impl Backend {
 
         tokio::spawn(async move {
             run_diagnostics(client, state, diagnostics_lock, request).await;
+        });
+    }
+
+    fn schedule_indexing(&self) {
+        let client = self.client.clone();
+        let state = Arc::clone(&self.state);
+        let diagnostics_lock = Arc::clone(&self.diagnostics_lock);
+        let supports_progress = self.supports_work_done_progress.load(Ordering::Relaxed);
+        let progress_id = self.progress_counter.fetch_add(1, Ordering::Relaxed);
+
+        tokio::spawn(async move {
+            run_startup_indexing(client, state, diagnostics_lock, supports_progress, progress_id).await;
         });
     }
 
@@ -137,6 +152,7 @@ impl Backend {
     {
         let request = match request {
             Ok(request) => request,
+            Err(StateError::NotReady) => return None,
             Err(error) => {
                 self.log_error(error).await;
                 return None;
@@ -234,6 +250,7 @@ async fn run_diagnostics(
 ) {
     let request = match request {
         Ok(request) => request,
+        Err(StateError::NotReady) => return,
         Err(error) => {
             client.log_message(MessageType::ERROR, error.to_string()).await;
             return;
@@ -280,6 +297,110 @@ async fn run_diagnostics(
     }
 }
 
+async fn run_startup_indexing(
+    client: Client,
+    state: Arc<RwLock<BackendState>>,
+    diagnostics_lock: Arc<Mutex<()>>,
+    supports_progress: bool,
+    progress_id: u64,
+) {
+    let vault_path = {
+        let state = state.read().await;
+        if state.is_indexed() {
+            return;
+        }
+        state.vault_path().to_path_buf()
+    };
+
+    let progress_token = begin_startup_progress(&client, supports_progress, progress_id, &vault_path).await;
+    let indexed_vault = match tokio::task::spawn_blocking({
+        let vault_path = vault_path.clone();
+        move || obsidian_core::Vault::open_cached(vault_path)
+    })
+    .await
+    {
+        Ok(Ok(vault)) => vault,
+        Ok(Err(error)) => {
+            end_startup_progress(&client, progress_token, Some("Failed to index vault.".to_string())).await;
+            client
+                .log_message(MessageType::ERROR, format!("failed to index vault: {error}"))
+                .await;
+            return;
+        }
+        Err(error) => {
+            end_startup_progress(&client, progress_token, Some("Failed to index vault.".to_string())).await;
+            client
+                .log_message(MessageType::ERROR, format!("vault indexing task failed: {error}"))
+                .await;
+            return;
+        }
+    };
+
+    let request = {
+        let mut state = state.write().await;
+        state.install_indexed_vault(indexed_vault)
+    };
+
+    end_startup_progress(&client, progress_token, Some("Indexed vault.".to_string())).await;
+
+    if let Some(request) = request {
+        client
+            .log_message(
+                MessageType::INFO,
+                format!("obsidian-lsp ready for vault {}", vault_path.display()),
+            )
+            .await;
+        run_diagnostics(client, state, diagnostics_lock, Ok(request)).await;
+    }
+}
+
+async fn begin_startup_progress(
+    client: &Client,
+    supports_progress: bool,
+    progress_id: u64,
+    vault_path: &Path,
+) -> Option<NumberOrString> {
+    if !supports_progress {
+        return None;
+    }
+
+    let token = NumberOrString::String(format!("obsidian-rs-lsp-startup-{progress_id}"));
+    if client
+        .send_request::<WorkDoneProgressCreate>(WorkDoneProgressCreateParams { token: token.clone() })
+        .await
+        .is_err()
+    {
+        return None;
+    }
+
+    client
+        .send_notification::<Progress>(ProgressParams {
+            token: token.clone(),
+            value: ProgressParamsValue::WorkDone(WorkDoneProgress::Begin(WorkDoneProgressBegin {
+                title: "Indexing Obsidian vault".to_string(),
+                cancellable: Some(false),
+                message: Some(vault_path.display().to_string()),
+                percentage: None,
+            })),
+        })
+        .await;
+
+    Some(token)
+}
+
+async fn end_startup_progress(client: &Client, token: Option<NumberOrString>, message: Option<String>) {
+    let Some(token) = token else {
+        return;
+    };
+
+    client
+        .send_notification::<Progress>(ProgressParams {
+            token,
+            value: ProgressParamsValue::WorkDone(WorkDoneProgress::End(WorkDoneProgressEnd { message })),
+        })
+        .await;
+}
+
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
@@ -299,6 +420,14 @@ impl LanguageServer for Backend {
             .unwrap_or(false);
         self.supports_watched_file_registration
             .store(supports_watched_files, Ordering::Relaxed);
+        let supports_work_done_progress = params
+            .capabilities
+            .window
+            .as_ref()
+            .and_then(|window| window.work_done_progress)
+            .unwrap_or(false);
+        self.supports_work_done_progress
+            .store(supports_work_done_progress, Ordering::Relaxed);
 
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
@@ -356,19 +485,14 @@ impl LanguageServer for Backend {
             self.pull_and_apply_config().await;
         }
 
-        let vault_path = self.vault_path().await;
-        self.client
-            .log_message(
-                MessageType::INFO,
-                format!("obsidian-lsp ready for vault {}", vault_path.display()),
-            )
-            .await;
+        self.schedule_indexing();
     }
 
     async fn did_change_configuration(&self, _: DidChangeConfigurationParams) {
         if self.supports_pull_config.load(Ordering::Relaxed) {
             self.pull_and_apply_config().await;
         }
+        self.schedule_indexing();
     }
 
     async fn shutdown(&self) -> Result<()> {
@@ -564,7 +688,7 @@ impl LanguageServer for Backend {
         };
 
         Ok(self
-            .compute_request(Ok(request), "workspace/symbol", |request: WorkspaceSymbolsRequest| {
+            .compute_request(request, "workspace/symbol", |request: WorkspaceSymbolsRequest| {
                 request.compute()
             })
             .await)
