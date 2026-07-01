@@ -1,7 +1,7 @@
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -16,19 +16,20 @@ use tower_lsp::lsp_types::{
     DocumentSymbolResponse, ExecuteCommandOptions, ExecuteCommandParams, FileChangeType, FileOperationFilter,
     FileOperationPattern, FileOperationPatternKind, FileOperationRegistrationOptions, FileSystemWatcher, GlobPattern,
     GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams,
-    InitializeResult, InitializedParams, Location, MessageType, OneOf, PrepareRenameResponse, ReferenceParams,
-    Registration, RenameFilesParams, RenameOptions, RenameParams, ServerCapabilities, ServerInfo, SymbolInformation,
-    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, WatchKind, WorkspaceEdit,
-    WorkspaceFileOperationsServerCapabilities, WorkspaceFoldersServerCapabilities, WorkspaceServerCapabilities,
-    WorkspaceSymbolParams,
+    InitializeResult, InitializedParams, Location, MessageType, NumberOrString, OneOf, PrepareRenameResponse,
+    ProgressParams, ProgressParamsValue, ReferenceParams, Registration, RenameFilesParams, RenameOptions, RenameParams,
+    ServerCapabilities, ServerInfo, SymbolInformation, TextDocumentPositionParams, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextEdit, WatchKind, WorkDoneProgress, WorkDoneProgressBegin, WorkDoneProgressCreateParams,
+    WorkDoneProgressEnd, WorkspaceEdit, WorkspaceFileOperationsServerCapabilities, WorkspaceFoldersServerCapabilities,
+    WorkspaceServerCapabilities, WorkspaceSymbolParams, notification::Progress, request::WorkDoneProgressCreate,
 };
 use tower_lsp::{Client, LanguageServer};
 
 use crate::state::{
-    BackendState, CodeActionRequest, CompletionRequest, Config, DiagnosticUpdate, DiagnosticsRequest,
-    DocumentLinksRequest, DocumentSymbolsRequest, FileChange, FileChangeKind, FormattingRequest, NavigationRequest,
-    PrepareRenameRequest, RenameRequest, ResolveDocumentLinkRequest, StateError, WorkspaceSymbolsRequest,
-    new_note_content, normalize_new_note_path,
+    BackendState, CodeActionRequest, CompletionRequest, Config, DiagnosticsRequest, DocumentLinksRequest,
+    DocumentSymbolsRequest, FileChange, FileChangeKind, FormattingRequest, NavigationRequest, PrepareRenameRequest,
+    RenameRequest, ResolveDocumentLinkRequest, StateError, WorkspaceSymbolsRequest, new_note_content,
+    normalize_new_note_path,
 };
 use crate::uri::uri_to_path;
 
@@ -40,6 +41,8 @@ pub struct Backend {
     file_change_debounce_scheduled: AtomicBool,
     supports_pull_config: AtomicBool,
     supports_watched_file_registration: AtomicBool,
+    supports_work_done_progress: AtomicBool,
+    progress_counter: AtomicU64,
 }
 
 const FILE_CHANGE_DEBOUNCE: Duration = Duration::from_millis(50);
@@ -61,12 +64,14 @@ impl Backend {
     pub fn new(client: Client, vault: obsidian_core::Vault) -> Self {
         Self {
             client,
-            state: Arc::new(RwLock::new(BackendState::new(vault))),
+            state: Arc::new(RwLock::new(BackendState::new_unindexed(vault))),
             diagnostics_lock: Arc::new(Mutex::new(())),
             pending_file_changes: Arc::new(Mutex::new(Vec::new())),
             file_change_debounce_scheduled: AtomicBool::new(false),
             supports_pull_config: AtomicBool::new(false),
             supports_watched_file_registration: AtomicBool::new(false),
+            supports_work_done_progress: AtomicBool::new(false),
+            progress_counter: AtomicU64::new(1),
         }
     }
 
@@ -94,17 +99,11 @@ impl Backend {
                 self.log_error(format!("failed to apply configuration: {error}")).await;
                 return;
             }
-            state.global_diagnostics_request()
+            state.is_indexed().then(|| state.global_diagnostics_request())
         };
 
-        self.handle_diagnostics(Ok(request)).await;
-    }
-
-    async fn publish_diagnostics(&self, updates: &[DiagnosticUpdate]) {
-        for update in updates {
-            self.client
-                .publish_diagnostics(update.uri.clone(), update.diagnostics.clone(), update.version)
-                .await;
+        if let Some(request) = request {
+            self.schedule_diagnostics(Ok(request));
         }
     }
 
@@ -112,42 +111,26 @@ impl Backend {
         self.client.log_message(MessageType::ERROR, error.to_string()).await;
     }
 
-    async fn vault_path(&self) -> PathBuf {
-        self.state.read().await.vault_path().to_path_buf()
+    fn schedule_diagnostics(&self, request: std::result::Result<DiagnosticsRequest, StateError>) {
+        let client = self.client.clone();
+        let state = Arc::clone(&self.state);
+        let diagnostics_lock = Arc::clone(&self.diagnostics_lock);
+
+        tokio::spawn(async move {
+            run_diagnostics(client, state, diagnostics_lock, request).await;
+        });
     }
 
-    async fn handle_diagnostics(&self, request: std::result::Result<DiagnosticsRequest, StateError>) {
-        let request = match request {
-            Ok(request) => request,
-            Err(error) => {
-                self.log_error(error).await;
-                return;
-            }
-        };
+    fn schedule_indexing(&self) {
+        let client = self.client.clone();
+        let state = Arc::clone(&self.state);
+        let diagnostics_lock = Arc::clone(&self.diagnostics_lock);
+        let supports_progress = self.supports_work_done_progress.load(Ordering::Relaxed);
+        let progress_id = self.progress_counter.fetch_add(1, Ordering::Relaxed);
 
-        let _guard = self.diagnostics_lock.lock().await;
-        let batch = match tokio::task::spawn_blocking(move || request.compute()).await {
-            Ok(Ok(batch)) => batch,
-            Ok(Err(error)) => {
-                self.log_error(error).await;
-                return;
-            }
-            Err(error) => {
-                self.log_error(format!("diagnostics task failed: {error}")).await;
-                return;
-            }
-        };
-
-        if self.state.read().await.diagnostics_revision() != batch.revision {
-            return;
-        }
-
-        self.publish_diagnostics(&batch.updates).await;
-
-        let mut state = self.state.write().await;
-        if state.diagnostics_revision() == batch.revision {
-            state.set_published_diagnostics(batch.published_diagnostics);
-        }
+        tokio::spawn(async move {
+            run_startup_indexing(client, state, diagnostics_lock, supports_progress, progress_id).await;
+        });
     }
 
     async fn compute_hover(&self, request: std::result::Result<NavigationRequest, StateError>) -> Option<Hover> {
@@ -169,6 +152,7 @@ impl Backend {
     {
         let request = match request {
             Ok(request) => request,
+            Err(StateError::NotReady) => return None,
             Err(error) => {
                 self.log_error(error).await;
                 return None;
@@ -253,9 +237,168 @@ impl Backend {
         };
 
         if let Some(request) = request {
-            self.handle_diagnostics(Ok(request)).await;
+            self.schedule_diagnostics(Ok(request));
         }
     }
+}
+
+async fn run_diagnostics(
+    client: Client,
+    state: Arc<RwLock<BackendState>>,
+    diagnostics_lock: Arc<Mutex<()>>,
+    request: std::result::Result<DiagnosticsRequest, StateError>,
+) {
+    let request = match request {
+        Ok(request) => request,
+        Err(StateError::NotReady) => return,
+        Err(error) => {
+            client.log_message(MessageType::ERROR, error.to_string()).await;
+            return;
+        }
+    };
+    let request_revision = request.revision();
+
+    if state.read().await.diagnostics_revision() != request_revision {
+        return;
+    }
+
+    let _guard = diagnostics_lock.lock().await;
+    if state.read().await.diagnostics_revision() != request_revision {
+        return;
+    }
+
+    let batch = match tokio::task::spawn_blocking(move || request.compute()).await {
+        Ok(Ok(batch)) => batch,
+        Ok(Err(error)) => {
+            client.log_message(MessageType::ERROR, error.to_string()).await;
+            return;
+        }
+        Err(error) => {
+            client
+                .log_message(MessageType::ERROR, format!("diagnostics task failed: {error}"))
+                .await;
+            return;
+        }
+    };
+
+    let updates = {
+        let mut state = state.write().await;
+        if state.diagnostics_revision() != batch.revision {
+            return;
+        }
+        state.set_published_diagnostics(batch.published_diagnostics);
+        batch.updates
+    };
+
+    for update in updates {
+        client
+            .publish_diagnostics(update.uri, update.diagnostics, update.version)
+            .await;
+    }
+}
+
+async fn run_startup_indexing(
+    client: Client,
+    state: Arc<RwLock<BackendState>>,
+    diagnostics_lock: Arc<Mutex<()>>,
+    supports_progress: bool,
+    progress_id: u64,
+) {
+    let vault_path = {
+        let state = state.read().await;
+        if state.is_indexed() {
+            return;
+        }
+        state.vault_path().to_path_buf()
+    };
+
+    let progress_token = begin_startup_progress(&client, supports_progress, progress_id, &vault_path).await;
+    let indexed_vault = match tokio::task::spawn_blocking({
+        let vault_path = vault_path.clone();
+        move || obsidian_core::Vault::open_cached(vault_path)
+    })
+    .await
+    {
+        Ok(Ok(vault)) => vault,
+        Ok(Err(error)) => {
+            end_startup_progress(&client, progress_token, Some("Failed to index vault.".to_string())).await;
+            client
+                .log_message(MessageType::ERROR, format!("failed to index vault: {error}"))
+                .await;
+            return;
+        }
+        Err(error) => {
+            end_startup_progress(&client, progress_token, Some("Failed to index vault.".to_string())).await;
+            client
+                .log_message(MessageType::ERROR, format!("vault indexing task failed: {error}"))
+                .await;
+            return;
+        }
+    };
+
+    let request = {
+        let mut state = state.write().await;
+        state.install_indexed_vault(indexed_vault)
+    };
+
+    end_startup_progress(&client, progress_token, Some("Indexed vault.".to_string())).await;
+
+    if let Some(request) = request {
+        client
+            .log_message(
+                MessageType::INFO,
+                format!("obsidian-lsp ready for vault {}", vault_path.display()),
+            )
+            .await;
+        run_diagnostics(client, state, diagnostics_lock, Ok(request)).await;
+    }
+}
+
+async fn begin_startup_progress(
+    client: &Client,
+    supports_progress: bool,
+    progress_id: u64,
+    vault_path: &Path,
+) -> Option<NumberOrString> {
+    if !supports_progress {
+        return None;
+    }
+
+    let token = NumberOrString::String(format!("obsidian-rs-lsp-startup-{progress_id}"));
+    if client
+        .send_request::<WorkDoneProgressCreate>(WorkDoneProgressCreateParams { token: token.clone() })
+        .await
+        .is_err()
+    {
+        return None;
+    }
+
+    client
+        .send_notification::<Progress>(ProgressParams {
+            token: token.clone(),
+            value: ProgressParamsValue::WorkDone(WorkDoneProgress::Begin(WorkDoneProgressBegin {
+                title: "Indexing Obsidian vault".to_string(),
+                cancellable: Some(false),
+                message: Some(vault_path.display().to_string()),
+                percentage: None,
+            })),
+        })
+        .await;
+
+    Some(token)
+}
+
+async fn end_startup_progress(client: &Client, token: Option<NumberOrString>, message: Option<String>) {
+    let Some(token) = token else {
+        return;
+    };
+
+    client
+        .send_notification::<Progress>(ProgressParams {
+            token,
+            value: ProgressParamsValue::WorkDone(WorkDoneProgress::End(WorkDoneProgressEnd { message })),
+        })
+        .await;
 }
 
 #[tower_lsp::async_trait]
@@ -277,6 +420,14 @@ impl LanguageServer for Backend {
             .unwrap_or(false);
         self.supports_watched_file_registration
             .store(supports_watched_files, Ordering::Relaxed);
+        let supports_work_done_progress = params
+            .capabilities
+            .window
+            .as_ref()
+            .and_then(|window| window.work_done_progress)
+            .unwrap_or(false);
+        self.supports_work_done_progress
+            .store(supports_work_done_progress, Ordering::Relaxed);
 
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
@@ -334,19 +485,14 @@ impl LanguageServer for Backend {
             self.pull_and_apply_config().await;
         }
 
-        let vault_path = self.vault_path().await;
-        self.client
-            .log_message(
-                MessageType::INFO,
-                format!("obsidian-lsp ready for vault {}", vault_path.display()),
-            )
-            .await;
+        self.schedule_indexing();
     }
 
     async fn did_change_configuration(&self, _: DidChangeConfigurationParams) {
         if self.supports_pull_config.load(Ordering::Relaxed) {
             self.pull_and_apply_config().await;
         }
+        self.schedule_indexing();
     }
 
     async fn shutdown(&self) -> Result<()> {
@@ -363,7 +509,7 @@ impl LanguageServer for Backend {
             )
         };
 
-        self.handle_diagnostics(request).await;
+        self.schedule_diagnostics(request);
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -376,7 +522,7 @@ impl LanguageServer for Backend {
             )
         };
 
-        self.handle_diagnostics(request).await;
+        self.schedule_diagnostics(request);
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
@@ -385,7 +531,7 @@ impl LanguageServer for Backend {
             state.close_document(params.text_document.uri)
         };
 
-        self.handle_diagnostics(request).await;
+        self.schedule_diagnostics(request);
     }
 
     async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
@@ -542,7 +688,7 @@ impl LanguageServer for Backend {
         };
 
         Ok(self
-            .compute_request(Ok(request), "workspace/symbol", |request: WorkspaceSymbolsRequest| {
+            .compute_request(request, "workspace/symbol", |request: WorkspaceSymbolsRequest| {
                 request.compute()
             })
             .await)
@@ -696,7 +842,7 @@ impl LanguageServer for Backend {
             }])
         };
         match request {
-            Ok(Some(request)) => self.handle_diagnostics(Ok(request)).await,
+            Ok(Some(request)) => self.schedule_diagnostics(Ok(request)),
             Ok(None) => {}
             Err(error) => self.log_error(error).await,
         }

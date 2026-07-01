@@ -31,6 +31,10 @@ pub(in crate::state) struct PrimaryDocument {
 }
 
 impl DiagnosticsRequest {
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision
+    }
+
     pub fn compute(self) -> Result<DiagnosticsBatch, StateError> {
         let ignore_set = build_ignore_set(&self.snapshot.diagnostics_ignore);
         let is_visible_path = |path: &Path| {

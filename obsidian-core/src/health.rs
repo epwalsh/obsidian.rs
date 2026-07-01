@@ -226,19 +226,85 @@ fn build_connectivity_by_path(notes: &[Note], vault_path: &Path) -> HashMap<Path
             )
         })
         .collect();
+    let note_paths = connectivity_by_path.keys().cloned().collect::<HashSet<_>>();
+    let wiki_target_index = build_wiki_target_index(notes);
+    let markdown_target_index = build_markdown_target_index(notes, vault_path);
 
     for source in notes {
-        for target in notes {
-            if search::has_matching_link(source, target, vault_path) {
-                connectivity_by_path
-                    .get_mut(target.path.as_path())
-                    .expect("all notes should have connectivity entries")
-                    .backlink_count += 1;
+        let mut linked_targets = HashSet::new();
+        for located_link in &source.links {
+            match &located_link.link {
+                Link::Wiki { target, .. } => {
+                    if let Some(target_paths) = wiki_target_index.get(target.as_str()) {
+                        for target_path in target_paths {
+                            insert_linked_target(&mut linked_targets, &source.path, target_path);
+                        }
+                    }
+                }
+                Link::Markdown { url, .. } => {
+                    let Some(url_path) = local_markdown_url_path(url) else {
+                        continue;
+                    };
+                    let source_dir = source.path.parent().unwrap_or(source.path.as_path());
+                    let source_relative_candidate =
+                        common::normalize_path(source_dir.join(&url_path), Some(vault_path));
+                    if note_paths.contains(&source_relative_candidate) {
+                        insert_linked_target(&mut linked_targets, &source.path, &source_relative_candidate);
+                    }
+                    if let Some(target_path) = markdown_target_index.get(url_path.as_str()) {
+                        insert_linked_target(&mut linked_targets, &source.path, target_path);
+                    }
+                }
+                Link::Embed { .. } => {}
             }
+        }
+
+        for target_path in linked_targets {
+            connectivity_by_path
+                .get_mut(target_path.as_path())
+                .expect("all linked note paths should have connectivity entries")
+                .backlink_count += 1;
         }
     }
 
     connectivity_by_path
+}
+
+fn build_wiki_target_index(notes: &[Note]) -> HashMap<String, Vec<PathBuf>> {
+    let mut target_index: HashMap<String, Vec<PathBuf>> = HashMap::new();
+    for note in notes {
+        target_index.entry(note.id.clone()).or_default().push(note.path.clone());
+        if let Some(stem) = note.path.file_stem().and_then(|stem| stem.to_str()) {
+            target_index
+                .entry(stem.to_string())
+                .or_default()
+                .push(note.path.clone());
+        }
+        for alias in &note.aliases {
+            target_index.entry(alias.clone()).or_default().push(note.path.clone());
+        }
+    }
+    target_index
+}
+
+fn build_markdown_target_index(notes: &[Note], vault_path: &Path) -> HashMap<String, PathBuf> {
+    notes
+        .iter()
+        .map(|note| {
+            (
+                common::relative_path(vault_path, &note.path)
+                    .to_string_lossy()
+                    .to_string(),
+                note.path.clone(),
+            )
+        })
+        .collect()
+}
+
+fn insert_linked_target(linked_targets: &mut HashSet<PathBuf>, source_path: &Path, target_path: &Path) {
+    if target_path != source_path {
+        linked_targets.insert(target_path.to_path_buf());
+    }
 }
 
 fn has_outgoing_note_link(note: &Note) -> bool {
@@ -250,14 +316,23 @@ fn has_outgoing_note_link(note: &Note) -> bool {
 }
 
 fn is_local_markdown_note_url(url: &str) -> bool {
+    local_markdown_url_path(url).is_some()
+}
+
+fn local_markdown_url_path(url: &str) -> Option<String> {
     if url.contains("://") || url.starts_with('/') {
-        return false;
+        return None;
     }
     let url_path_raw = match url.find('#') {
         Some(i) => &url[..i],
         None => url,
     };
-    !url_path_raw.is_empty() && common::percent_decode(url_path_raw).ends_with(".md")
+    let url_path = common::percent_decode(url_path_raw);
+    if !url_path.is_empty() && url_path.ends_with(".md") {
+        Some(url_path)
+    } else {
+        None
+    }
 }
 
 fn is_stranded_note_exempt(path: &Path) -> bool {
@@ -325,5 +400,41 @@ mod tests {
         let report = check_notes(vault_dir.path(), &notes);
         assert_eq!(report.broken_links.len(), 1);
         assert!(report.stranded_notes.is_empty());
+    }
+
+    #[test]
+    fn check_notes_counts_each_source_target_backlink_once() {
+        let vault_dir = tempfile::tempdir().unwrap();
+        let notes = vec![
+            Note::parse(vault_dir.path().join("wiki-source.md"), "See [[dup]] and [[dup]].\n"),
+            Note::parse(
+                vault_dir.path().join("markdown-source.md"),
+                "See [A](dupe-a.md) and [B](dupe-b.md).\n",
+            ),
+            Note::parse(vault_dir.path().join("dupe-a.md"), "---\nid: dup\n---\n"),
+            Note::parse(vault_dir.path().join("dupe-b.md"), "---\nid: dup\n---\n"),
+        ];
+
+        let report = check_notes(vault_dir.path(), &notes);
+        let duplicate = report
+            .duplicate_ids
+            .iter()
+            .find(|duplicate| duplicate.id == "dup")
+            .expect("duplicate ID should be reported");
+        let backlink_counts: Vec<_> = duplicate
+            .notes
+            .iter()
+            .map(|note| {
+                (
+                    note.path.file_name().unwrap().to_string_lossy().to_string(),
+                    note.backlink_count,
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            backlink_counts,
+            vec![("dupe-a.md".to_string(), 2), ("dupe-b.md".to_string(), 2)]
+        );
     }
 }

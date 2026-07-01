@@ -121,6 +121,7 @@ Current functionality:
 - clean LSP initialization and shutdown
 - full-document text sync for open buffers
 - cached vault state via `obsidian_core::Vault::open_cached()`, with open buffers layered on top as authoritative in-memory shadows
+- startup work-done progress while indexing the vault; language-feature requests return empty results until indexing is ready
 - diagnostics for broken links, duplicate IDs, duplicate aliases, stranded notes, and trailing whitespace across the vault and open buffers
 - document formatting that removes trailing whitespace and normalizes parseable YAML frontmatter blocks
 - hover on note links with basic target-note metadata
