@@ -2,6 +2,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
+use deunicode::deunicode;
 use regex::Regex;
 
 use crate::{LocatedTag, Location, NoteError, common};
@@ -40,16 +41,49 @@ pub struct NoteBuilder {
     pub body: Option<String>,
 }
 
+const FALLBACK_NOTE_ID: &str = "note";
+
+pub fn normalize_note_id(candidate: &str) -> String {
+    let transliterated = deunicode(candidate);
+    let mut normalized = String::new();
+    let mut last_was_separator = false;
+
+    for ch in transliterated.chars() {
+        if ch.is_ascii_alphanumeric() {
+            normalized.push(ch.to_ascii_lowercase());
+            last_was_separator = false;
+        } else if !last_was_separator && !normalized.is_empty() {
+            normalized.push('-');
+            last_was_separator = true;
+        }
+    }
+
+    while normalized.ends_with('-') {
+        normalized.pop();
+    }
+
+    if normalized.is_empty() {
+        FALLBACK_NOTE_ID.to_string()
+    } else {
+        normalized
+    }
+}
+
+pub fn default_note_id_for_path(path: impl AsRef<Path>) -> Result<String, NoteError> {
+    let path = path.as_ref();
+    let stem = path
+        .file_stem()
+        .ok_or(NoteError::InvalidPath(path.to_path_buf()))?
+        .to_string_lossy();
+    Ok(normalize_note_id(&stem))
+}
+
 impl NoteBuilder {
     pub fn new(path: impl AsRef<Path>) -> Result<Self, NoteError> {
+        let path = path.as_ref();
         Ok(Self {
-            path: path.as_ref().to_path_buf(),
-            id: path
-                .as_ref()
-                .file_stem()
-                .ok_or(NoteError::InvalidPath(path.as_ref().to_path_buf()))?
-                .to_string_lossy()
-                .to_string(),
+            path: path.to_path_buf(),
+            id: default_note_id_for_path(path)?,
             title: None,
             aliases: Vec::new(),
             tags: Vec::new(),
@@ -188,12 +222,7 @@ impl Note {
             .as_ref()
             .and_then(|fm| fm.get("id"))
             .and_then(|p| p.as_string().ok())
-            .or_else(|| {
-                path.as_ref()
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .map(|s| s.to_string())
-            })
+            .or_else(|| default_note_id_for_path(path.as_ref()).ok())
             .unwrap_or_default();
         let mut title = frontmatter
             .as_ref()
@@ -842,10 +871,34 @@ mod tests {
             on_disk,
             format!(
                 "---\nid: {}\n---\n\n{}",
-                tmp.path().file_stem().unwrap().display(),
+                default_note_id_for_path(tmp.path()).unwrap(),
                 original
             )
         );
+    }
+
+    #[test]
+    fn normalize_note_id_transliterates_and_hyphenates() {
+        assert_eq!(normalize_note_id("Café Note"), "cafe-note");
+        assert_eq!(normalize_note_id("Alpha_beta 123"), "alpha-beta-123");
+    }
+
+    #[test]
+    fn normalize_note_id_falls_back_when_no_ascii_alphanumerics_remain() {
+        assert_eq!(normalize_note_id("!!!"), "note");
+        assert_eq!(normalize_note_id("你好"), "ni-hao");
+    }
+
+    #[test]
+    fn note_builder_normalizes_default_id_from_path() {
+        let builder = Note::builder("/vault/Café Note.md").unwrap();
+        assert_eq!(builder.id, "cafe-note");
+    }
+
+    #[test]
+    fn parse_uses_normalized_filename_id_when_frontmatter_id_is_missing() {
+        let note = Note::parse("/vault/Café Note.md", "# Cafe\n");
+        assert_eq!(note.id, "cafe-note");
     }
 
     #[test]

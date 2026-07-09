@@ -31,6 +31,10 @@ impl CodeActionRequest {
             &diagnostics,
         )?);
 
+        if let Some(action) = extract_code_action(&snapshot, &path, range, position)? {
+            actions.push(action);
+        }
+
         if let Some(located_link) = find_link_at_position(&source_note, position) {
             let targets = resolve_link_targets(&path, &located_link.link, &notes, snapshot.vault_path.as_path());
             match targets.as_slice() {
@@ -408,8 +412,9 @@ pub(in crate::state) fn create_note_code_action(
         .and_then(|s| s.to_str())
         .unwrap_or("note")
         .to_string();
+    let note_id = default_note_id_for_path(&new_path).unwrap_or_else(|_| "note".to_string());
     let note_title = new_note_title_from_link(&located_link.link);
-    let new_note_text = new_note_content(&stem, note_title.as_deref());
+    let new_note_text = new_note_content(&note_id, note_title.as_deref());
 
     let new_path_str = new_path.to_string_lossy().into_owned();
     let new_uri = path_to_uri(&new_path)?;
@@ -527,6 +532,232 @@ pub(in crate::state) fn add_missing_heading_code_action(
         edit: Some(workspace_edit_from_text_edits(snapshot, edits_by_path)?),
         ..Default::default()
     }))
+}
+
+pub(in crate::state) fn extract_code_action(
+    snapshot: &StateSnapshot,
+    source_path: &Path,
+    range: Range,
+    position: Position,
+) -> Result<Option<CodeAction>, StateError> {
+    let source_text = snapshot.text_for_path(source_path)?;
+
+    if range.start == range.end {
+        return extract_heading_code_action(snapshot, source_path, &source_text, position);
+    }
+
+    extract_selection_code_action(snapshot, source_path, &source_text, range)
+}
+
+fn extract_selection_code_action(
+    snapshot: &StateSnapshot,
+    source_path: &Path,
+    source_text: &str,
+    range: Range,
+) -> Result<Option<CodeAction>, StateError> {
+    let Some(span) = text_span_from_lsp_range(source_text, range) else {
+        return Ok(None);
+    };
+    let selected_text = selected_text_for_span(source_text, &span);
+    if selected_text.trim().is_empty() {
+        return Ok(None);
+    }
+
+    let new_path = default_extract_note_path(snapshot, source_path, &selected_text);
+    let vault = snapshot.build_vault()?;
+    let edits = match vault.extract_to_note_edits_from_text(
+        source_path,
+        source_text,
+        &ExtractSelection::Span(span.clone()),
+        &new_path,
+        None,
+        None,
+    ) {
+        Ok(edits) => edits,
+        Err(_) => return Ok(None),
+    };
+    let edit = extract_workspace_edit(snapshot, source_path, source_text, &edits)?;
+    let title = format!("Extract selection to '{}'", note_file_stem(&edits.new_note));
+    let command_args = json!({
+        "sourceUri": snapshot.uri_for_path(source_path)?,
+        "newPath": edits.new_path,
+        "sourceContent": edits.source_content,
+        "newContent": edits.new_content,
+    });
+
+    Ok(Some(CodeAction {
+        title: title.clone(),
+        kind: Some(CodeActionKind::REFACTOR_EXTRACT),
+        edit: Some(edit),
+        command: Some(Command {
+            title,
+            command: "obsidian.extractToNote".to_string(),
+            arguments: Some(vec![command_args]),
+        }),
+        ..Default::default()
+    }))
+}
+
+fn extract_heading_code_action(
+    snapshot: &StateSnapshot,
+    source_path: &Path,
+    source_text: &str,
+    position: Position,
+) -> Result<Option<CodeAction>, StateError> {
+    let Some(heading) = find_heading_at_position(source_text, position) else {
+        return Ok(None);
+    };
+
+    let new_path = default_extract_note_path(snapshot, source_path, &heading.path);
+    let vault = snapshot.build_vault()?;
+    let edits = match vault.extract_to_note_edits_from_text(
+        source_path,
+        source_text,
+        &ExtractSelection::Section(heading.path.clone()),
+        &new_path,
+        None,
+        None,
+    ) {
+        Ok(edits) => edits,
+        Err(_) => return Ok(None),
+    };
+    let edit = extract_workspace_edit(snapshot, source_path, source_text, &edits)?;
+    let title = format!("Extract section to '{}'", note_file_stem(&edits.new_note));
+    let command_args = json!({
+        "sourceUri": snapshot.uri_for_path(source_path)?,
+        "newPath": edits.new_path,
+        "section": heading.path,
+        "sourceContent": edits.source_content,
+        "newContent": edits.new_content,
+    });
+
+    Ok(Some(CodeAction {
+        title: title.clone(),
+        kind: Some(CodeActionKind::REFACTOR_EXTRACT),
+        edit: Some(edit),
+        command: Some(Command {
+            title,
+            command: "obsidian.extractToNote".to_string(),
+            arguments: Some(vec![command_args]),
+        }),
+        ..Default::default()
+    }))
+}
+
+fn extract_workspace_edit(
+    snapshot: &StateSnapshot,
+    source_path: &Path,
+    source_text: &str,
+    edits: &ExtractEdits,
+) -> Result<WorkspaceEdit, StateError> {
+    let source_uri = snapshot.uri_for_path(source_path)?;
+    let source_range = Range::new(Position::new(0, 0), document_end_range(source_text).end);
+    let new_uri = path_to_uri(&edits.new_path)?;
+
+    Ok(WorkspaceEdit {
+        document_changes: Some(DocumentChanges::Operations(vec![
+            DocumentChangeOperation::Edit(TextDocumentEdit {
+                text_document: OptionalVersionedTextDocumentIdentifier {
+                    uri: source_uri,
+                    version: snapshot.version_for_path(source_path),
+                },
+                edits: vec![OneOf::Left(TextEdit {
+                    range: source_range,
+                    new_text: edits.source_content.clone(),
+                })],
+            }),
+            DocumentChangeOperation::Edit(TextDocumentEdit {
+                text_document: OptionalVersionedTextDocumentIdentifier {
+                    uri: new_uri,
+                    version: None,
+                },
+                edits: vec![OneOf::Left(TextEdit {
+                    range: document_start_range(),
+                    new_text: edits.new_content.clone(),
+                })],
+            }),
+        ])),
+        ..Default::default()
+    })
+}
+
+fn text_span_from_lsp_range(text: &str, range: Range) -> Option<TextSpan> {
+    let start_line = range.start.line as usize;
+    let end_line = range.end.line as usize;
+    let start_text = text.lines().nth(start_line)?;
+    let end_text = text.lines().nth(end_line)?;
+    let start_byte = lsp_character_to_byte_index(start_text, range.start.character);
+    let end_byte = lsp_character_to_byte_index(end_text, range.end.character);
+
+    Some(TextSpan {
+        start_line: start_line + 1,
+        start_col: start_text[..start_byte].chars().count(),
+        end_line: end_line + 1,
+        end_col: end_text[..end_byte].chars().count(),
+    })
+}
+
+fn selected_text_for_span(text: &str, span: &TextSpan) -> String {
+    let mut selection = String::new();
+    for (index, line) in text.lines().enumerate() {
+        let line_number = index + 1;
+        if line_number < span.start_line || line_number > span.end_line {
+            continue;
+        }
+
+        let start = if line_number == span.start_line {
+            nth_char_boundary(line, span.start_col)
+        } else {
+            0
+        };
+        let end = if line_number == span.end_line {
+            nth_char_boundary(line, span.end_col)
+        } else {
+            line.len()
+        };
+        selection.push_str(&line[start..end]);
+        if line_number != span.end_line {
+            selection.push('\n');
+        }
+    }
+    selection
+}
+
+fn nth_char_boundary(text: &str, char_index: usize) -> usize {
+    if char_index == 0 {
+        return 0;
+    }
+
+    text.char_indices()
+        .nth(char_index)
+        .map(|(index, _)| index)
+        .unwrap_or(text.len())
+}
+
+fn default_extract_note_path(snapshot: &StateSnapshot, source_path: &Path, selected_text: &str) -> PathBuf {
+    let source_dir = source_path.parent().unwrap_or(snapshot.vault_path.as_path());
+    let stem = default_extract_note_stem(selected_text);
+    let unique = unique_suffixed_name(&stem, |candidate| {
+        let candidate_path = source_dir.join(format!("{candidate}.md"));
+        candidate_path.exists() || snapshot.open_documents.contains_key(&candidate_path)
+    });
+    source_dir.join(format!("{unique}.md"))
+}
+
+fn default_extract_note_stem(selected_text: &str) -> String {
+    let seed = selected_text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("extract")
+        .trim_start_matches('#')
+        .trim();
+    let stem = obsidian_core::normalize_note_id(seed);
+    if stem == "note" && seed.eq_ignore_ascii_case("extract") {
+        "extract".to_string()
+    } else {
+        stem
+    }
 }
 
 pub(in crate::state) fn new_note_title_from_link(link: &Link) -> Option<String> {

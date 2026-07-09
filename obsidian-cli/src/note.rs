@@ -1,11 +1,11 @@
 use std::io::{BufRead, IsTerminal, Read};
 
 use color_eyre::eyre;
-use obsidian_core::{Note, Vault};
+use obsidian_core::{ExtractSelection, Note, TextSpan, Vault};
 
 use crate::args::{
-    BacklinksArgs, ListArgs, MergeArgs, OutputFormat, PatchArgs, ReadArgs, RenameArgs, ResolveArgs, UpdateArgs,
-    WriteArgs,
+    BacklinksArgs, ExtractArgs, ListArgs, MergeArgs, OutputFormat, PatchArgs, ReadArgs, RenameArgs, ResolveArgs,
+    UpdateArgs, WriteArgs,
 };
 use crate::output;
 
@@ -134,6 +134,51 @@ pub fn cmd_merge(mut vault: Vault, args: MergeArgs) -> eyre::Result<()> {
             OutputFormat::Plain => output::print_note_plain(&merged, vault.path()),
             OutputFormat::Json => output::print_note_json(&merged, vault.path())?,
         }
+    }
+    Ok(())
+}
+
+fn parse_extract_selection(args: &ExtractArgs) -> eyre::Result<ExtractSelection> {
+    let span_values = [args.start_line, args.start_col, args.end_line, args.end_col];
+    let has_span_values = span_values.iter().any(Option::is_some);
+    let has_all_span_values = span_values.iter().all(Option::is_some);
+
+    match (&args.section, has_span_values, has_all_span_values) {
+        (Some(_), true, _) => {
+            eyre::bail!("--section cannot be combined with --start-line/--start-col/--end-line/--end-col")
+        }
+        (Some(section), false, _) => Ok(ExtractSelection::Section(section.clone())),
+        (None, false, false) => {
+            eyre::bail!("either --section or all of --start-line/--start-col/--end-line/--end-col is required")
+        }
+        (None, true, false) => {
+            eyre::bail!("--start-line, --start-col, --end-line, and --end-col must be provided together")
+        }
+        (None, true, true) => Ok(ExtractSelection::Span(TextSpan {
+            start_line: args.start_line.unwrap(),
+            start_col: args.start_col.unwrap(),
+            end_line: args.end_line.unwrap(),
+            end_col: args.end_col.unwrap(),
+        })),
+        (None, false, true) => unreachable!("all span values implies some span value"),
+    }
+}
+
+pub fn cmd_extract(mut vault: Vault, args: ExtractArgs) -> eyre::Result<()> {
+    let note = vault.resolve_note(&args.note)?;
+    let selection = parse_extract_selection(&args)?;
+    let replace_with = args.replace_with.as_deref().map(unescape);
+    let extracted = vault.extract_to_note(
+        &note,
+        &selection,
+        &args.new_path,
+        args.new_id.as_deref(),
+        replace_with.as_deref(),
+    )?;
+
+    match args.format {
+        OutputFormat::Plain => output::print_extract_result_plain(&extracted, vault.path()),
+        OutputFormat::Json => output::print_extract_result_json(&extracted, vault.path())?,
     }
     Ok(())
 }

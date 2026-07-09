@@ -5,6 +5,12 @@ pub(in crate::state) struct HeadingSymbol {
     pub(in crate::state) name: String,
     pub(in crate::state) range: Range,
 }
+
+#[derive(Clone, Debug)]
+pub(in crate::state) struct HeadingMatch {
+    pub(in crate::state) path: String,
+}
+
 pub(in crate::state) fn resolve_heading_fragment_text(text: &str, fragment: &str) -> Option<String> {
     let expected_segments = parse_heading_fragment_segments(fragment);
     if expected_segments.is_empty() {
@@ -37,6 +43,51 @@ pub(in crate::state) fn resolve_heading_fragment_text(text: &str, fragment: &str
                     .collect::<Vec<_>>()
                     .join("#"),
             );
+        }
+    }
+
+    None
+}
+
+pub(in crate::state) fn find_heading_at_position(text: &str, position: Position) -> Option<HeadingMatch> {
+    let mut seen_anchors = HashMap::new();
+    let mut current_path = Vec::new();
+    let mut in_frontmatter = false;
+
+    for (line_index, line) in text.lines().enumerate() {
+        if line_index == 0 && line == "---" {
+            in_frontmatter = true;
+            continue;
+        }
+        if in_frontmatter {
+            if line == "---" || line == "..." {
+                in_frontmatter = false;
+            }
+            continue;
+        }
+
+        let Some((level, _col_start, heading_text)) = heading_line_parts(line) else {
+            continue;
+        };
+        let Some(resolved_anchor) = resolve_heading_anchor(heading_text, &mut seen_anchors) else {
+            continue;
+        };
+
+        current_path.truncate(level.saturating_sub(1));
+        current_path.push(HeadingPathSegment {
+            text: heading_text,
+            normalized_anchor: normalize_heading_anchor(heading_text),
+            resolved_anchor,
+        });
+
+        if position.line == line_index as u32 {
+            return Some(HeadingMatch {
+                path: current_path
+                    .iter()
+                    .map(|segment| segment.text)
+                    .collect::<Vec<_>>()
+                    .join("#"),
+            });
         }
     }
 

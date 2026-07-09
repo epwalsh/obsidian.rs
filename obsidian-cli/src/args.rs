@@ -194,6 +194,8 @@ pub enum NoteCommand {
     Backlinks(BacklinksArgs),
     /// Merge two or more notes into a single destination note
     Merge(MergeArgs),
+    /// Extract a section or span from a note into a new note
+    Extract(ExtractArgs),
     /// Patch the body of a note by replacing one exact string with another
     Patch(PatchArgs),
     /// Rename a note and update all backlinks
@@ -254,6 +256,38 @@ pub struct WriteArgs {
     /// Force overwrite any existing note
     #[arg(long)]
     pub force: bool,
+    /// Output format
+    #[arg(long, short = 'f', default_value = "plain", help_heading = "Output options")]
+    pub format: OutputFormat,
+}
+
+#[derive(clap::Args)]
+pub struct ExtractArgs {
+    /// Path, ID, or alias of the source note
+    pub note: String,
+    /// Path for the new note (resolved relative to the vault root or current directory, .md added if omitted)
+    pub new_path: PathBuf,
+    /// Extract a named section (supports nested heading paths like Parent#Child)
+    #[arg(long)]
+    pub section: Option<String>,
+    /// 1-indexed start line for span extraction
+    #[arg(long)]
+    pub start_line: Option<usize>,
+    /// 0-indexed start column for span extraction
+    #[arg(long)]
+    pub start_col: Option<usize>,
+    /// 1-indexed end line for span extraction
+    #[arg(long)]
+    pub end_line: Option<usize>,
+    /// 0-indexed end column for span extraction (exclusive)
+    #[arg(long)]
+    pub end_col: Option<usize>,
+    /// Override the new note's ID
+    #[arg(long)]
+    pub new_id: Option<String>,
+    /// Text to replace the extracted section/span with in the source note
+    #[arg(long)]
+    pub replace_with: Option<String>,
     /// Output format
     #[arg(long, short = 'f', default_value = "plain", help_heading = "Output options")]
     pub format: OutputFormat,

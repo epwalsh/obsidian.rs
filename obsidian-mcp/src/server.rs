@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use obsidian_core::{Link, LocatedLink, Location, Note, Vault, VaultHealthReport};
+use obsidian_core::{
+    ExtractResult, ExtractSelection, Link, LocatedLink, Location, Note, TextSpan, Vault, VaultHealthReport,
+};
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
 use rmcp::model::{CallToolResult, Content, ServerCapabilities, ServerInfo};
 use rmcp::{ServerHandler, tool, tool_handler, tool_router};
@@ -9,8 +11,9 @@ use serde_json::json;
 
 use crate::error::{note_err, other_err, search_err, vault_err};
 use crate::tools::{
-    AppendToNoteParams, CheckVaultParams, ListBacklinksParams, ListNotesParams, ListTagsParams, PatchNoteParams,
-    ReadNoteParams, RenameNoteParams, SearchByTagParams, SearchNotesParams, UpdateNoteParams, WriteNoteParams,
+    AppendToNoteParams, CheckVaultParams, ExtractToNoteParams, ListBacklinksParams, ListNotesParams, ListTagsParams,
+    PatchNoteParams, ReadNoteParams, RenameNoteParams, SearchByTagParams, SearchNotesParams, UpdateNoteParams,
+    WriteNoteParams,
 };
 
 const SERVER_INSTRUCTIONS: &str = r#"Use this MCP server to work with an Obsidian vault as a collection of Markdown notes.
@@ -18,13 +21,13 @@ const SERVER_INSTRUCTIONS: &str = r#"Use this MCP server to work with an Obsidia
 Capabilities:
 - Discover notes by path, title, alias, ID, tag, content substring, regex, or glob.
 - Read note bodies and YAML frontmatter; list notes, tags, and backlinks.
-- Create notes, append to note bodies, update frontmatter, patch exact body text without rewriting frontmatter, and rename notes while updating backlinks.
+- Create notes, extract sections or spans into new notes, append to note bodies, update frontmatter, patch exact body text without rewriting frontmatter, and rename notes while updating backlinks.
 - Check vault health for duplicate IDs or aliases, broken links, and stranded notes.
 
 Operational guidance:
 - Note identifiers can be vault-relative paths, current-working-directory-relative paths, absolute paths, frontmatter IDs, or aliases when a tool accepts `note`.
 - Prefer read-only tools (`search_notes`, `read_note`, `list_notes`, `list_backlinks`, `list_tags`, `search_tags`, `check_vault`) before modifying content.
-- Use `append_to_note` for additive body updates, `patch_note` only when `old_string` appears exactly once, and `write_note` with `force=true` only when intentionally replacing a whole note.
+- Use `extract_to_note` when splitting content into a new note, `append_to_note` for additive body updates, `patch_note` only when `old_string` appears exactly once, and `write_note` with `force=true` only when intentionally replacing a whole note.
 - Prefer vault-relative paths for writes and renames; tool results use vault-relative paths when possible.
 "#;
 
@@ -66,6 +69,27 @@ fn note_to_json(note: &Note, vault_path: &Path) -> Result<serde_json::Value, rmc
         serde_json::Value::String(vault_rel_path(&note.path, vault_path)),
     );
     Ok(serde_json::Value::Object(map))
+}
+
+fn extract_result_to_json(result: &ExtractResult, vault_path: &Path) -> Result<serde_json::Value, rmcp::ErrorData> {
+    Ok(json!({
+        "source_note": note_to_json(&result.source_note, vault_path)?,
+        "new_note": note_to_json(&result.new_note, vault_path)?,
+    }))
+}
+
+fn extract_selection_from_params(params: &ExtractToNoteParams) -> Result<ExtractSelection, rmcp::ErrorData> {
+    match (&params.section, &params.span) {
+        (Some(_), Some(_)) => Err(other_err("provide either section or span, not both")),
+        (None, None) => Err(other_err("either section or span is required")),
+        (Some(section), None) => Ok(ExtractSelection::Section(section.clone())),
+        (None, Some(span)) => Ok(ExtractSelection::Span(TextSpan {
+            start_line: span.start_line,
+            start_col: span.start_col,
+            end_line: span.end_line,
+            end_col: span.end_col,
+        })),
+    }
 }
 
 fn backlink_link_to_json(link: &LocatedLink) -> serde_json::Value {
@@ -339,6 +363,36 @@ impl VaultServer {
     }
 
     #[tool(
+        description = "Extract a named section or explicit span from a note into a new note",
+        annotations(read_only_hint = false, destructive_hint = true, open_world_hint = false)
+    )]
+    async fn extract_to_note(
+        &self,
+        Parameters(p): Parameters<ExtractToNoteParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let vault = Arc::clone(&self.vault);
+        let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, rmcp::ErrorData> {
+            let mut vault = vault.lock().unwrap();
+            let note = vault.resolve_note(&p.note).map_err(vault_err)?;
+            let selection = extract_selection_from_params(&p)?;
+            let extracted = vault
+                .extract_to_note(
+                    &note,
+                    &selection,
+                    &p.new_path,
+                    p.new_id.as_deref(),
+                    p.replace_with.as_deref(),
+                )
+                .map_err(vault_err)?;
+            extract_result_to_json(&extracted, vault.path())
+        })
+        .await
+        .map_err(|e| other_err(e.to_string()))??;
+
+        Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+    }
+
+    #[tool(
         description = "Replace an exact body-text occurrence in a note (must appear exactly once)",
         annotations(read_only_hint = false, destructive_hint = true, open_world_hint = false)
     )]
@@ -594,9 +648,11 @@ mod tests {
 
     use serde_json::{Value, json};
 
-    use super::{SERVER_INSTRUCTIONS, VaultHealthReport, health_report_to_json, list_backlinks_json};
+    use super::{
+        SERVER_INSTRUCTIONS, VaultHealthReport, extract_result_to_json, health_report_to_json, list_backlinks_json,
+    };
     use crate::tools::{ListBacklinksParams, SortOrder};
-    use obsidian_core::Vault;
+    use obsidian_core::{ExtractSelection, TextSpan, Vault};
 
     fn write_note(vault_path: &Path, rel_path: &str, content: &str) {
         let path = vault_path.join(rel_path);
@@ -615,6 +671,7 @@ mod tests {
             "Read note bodies",
             "backlinks",
             "Create notes",
+            "extract_to_note",
             "append_to_note",
             "rename notes while updating backlinks",
             "Check vault health",
@@ -717,5 +774,33 @@ mod tests {
             .map(|item| item["source_path"].as_str().unwrap().to_string())
             .collect();
         assert_eq!(source_paths, vec!["z.md".to_string(), "a.md".to_string()]);
+    }
+
+    #[test]
+    fn extract_result_json_includes_source_and_new_notes() {
+        let vault_dir = tempfile::tempdir().unwrap();
+        write_note(vault_dir.path(), "source.md", "Hello world.");
+
+        let mut vault = Vault::open(vault_dir.path()).unwrap();
+        let note = vault.resolve_note("source.md").unwrap();
+        let result = vault
+            .extract_to_note(
+                &note,
+                &ExtractSelection::Span(TextSpan {
+                    start_line: 1,
+                    start_col: 6,
+                    end_line: 1,
+                    end_col: 11,
+                }),
+                vault_dir.path().join("new.md"),
+                None,
+                None,
+            )
+            .unwrap();
+
+        let value = extract_result_to_json(&result, vault.path()).unwrap();
+        assert_eq!(value["source_note"]["path"], json!("source.md"));
+        assert_eq!(value["new_note"]["path"], json!("new.md"));
+        assert_eq!(value["new_note"]["id"], json!("new"));
     }
 }

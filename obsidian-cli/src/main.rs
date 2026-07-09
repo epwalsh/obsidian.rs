@@ -39,6 +39,7 @@ fn main() -> eyre::Result<()> {
             args::NoteCommand::Write(args) => note::cmd_write(vault, args),
             args::NoteCommand::Backlinks(args) => note::cmd_backlinks(vault, args),
             args::NoteCommand::Merge(args) => note::cmd_merge(vault, args),
+            args::NoteCommand::Extract(args) => note::cmd_extract(vault, args),
             args::NoteCommand::Patch(args) => note::cmd_patch(vault, args),
             args::NoteCommand::Rename(args) => note::cmd_rename(vault, args),
             args::NoteCommand::Update(args) => note::cmd_update(vault, args),

@@ -1624,6 +1624,75 @@ fn merge_dry_run_updated_notes_backlinks() {
     assert_eq!(linker, "See [[src]].");
 }
 
+// --- note extract tests ---
+
+#[test]
+fn note_extract_section_by_id_creates_new_note_and_keeps_heading() {
+    let vault = make_vault();
+    write_note(
+        vault.path(),
+        "source.md",
+        "---\nid: source-id\n---\n\n# Root\n\n## Section\nBody.\n\n## Next\nStay.\n",
+    );
+    let extracted_path = vault.path().join("section.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "extract",
+            "source-id",
+            extracted_path.to_str().unwrap(),
+            "--section",
+            "Section",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("section.md"))
+        .stdout(predicate::str::contains("source.md"));
+
+    let source = fs::read_to_string(vault.path().join("source.md")).unwrap();
+    let extracted = fs::read_to_string(&extracted_path).unwrap();
+    assert!(source.contains("## Section\n[[section]]"));
+    assert!(extracted.contains("id: section"));
+    assert!(extracted.contains("# Section"));
+}
+
+#[test]
+fn note_extract_span_json_output_includes_source_and_new_note() {
+    let vault = make_vault();
+    write_note(vault.path(), "note.md", "Hello world.");
+    let extracted_path = vault.path().join("new.md");
+    obsidian()
+        .args([
+            "--vault",
+            vault.path().to_str().unwrap(),
+            "note",
+            "extract",
+            "note.md",
+            extracted_path.to_str().unwrap(),
+            "--start-line",
+            "1",
+            "--start-col",
+            "6",
+            "--end-line",
+            "1",
+            "--end-col",
+            "11",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"source_note\""))
+        .stdout(predicate::str::contains("\"new_note\""));
+
+    let source = fs::read_to_string(vault.path().join("note.md")).unwrap();
+    let extracted = fs::read_to_string(&extracted_path).unwrap();
+    assert_eq!(source, "Hello [[new]].");
+    assert_eq!(extracted, "---\nid: new\n---\n\nworld");
+}
+
 // --- note patch tests ---
 
 #[test]

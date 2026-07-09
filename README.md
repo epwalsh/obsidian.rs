@@ -10,6 +10,8 @@
 
 A collection of tools for working with [Obsidian](https://obsidian.md) vaults, written in Rust.
 
+When a note relies on a filename-derived ID instead of an explicit frontmatter `id`, obsidian.rs normalizes that ID to lowercase ASCII kebab-case with Unicode transliteration. For example, `Café Note.md` defaults to `cafe-note`.
+
 
 | Crate | Docs | Description |
 |---|---|---|
@@ -38,6 +40,7 @@ obsidian note       Work with individual notes
   read              Read contents or frontmatter
   write             Write a new note
   backlinks         Find notes that link to a given note
+  extract           Extract a section or span into a new note
   merge             Merge multiple notes into one
   patch             Replace one exact string in a note's body
   rename            Rename a note and update all backlinks
@@ -66,6 +69,9 @@ obsidian note read "My Note" --format json
 # Rename a note and automatically update every backlink
 obsidian note rename "Old Title" "New Title"
 
+# Extract a named section into a new note, leaving a wiki link behind
+obsidian note extract "Source Note" notes/section.md --section Section
+
 # Find all notes that link to a given note
 obsidian note backlinks "My Note"
 
@@ -87,7 +93,7 @@ cargo install obsidian-rs-mcp
 claude mcp add obsidian --scope project obsidian-mcp --vault .
 ```
 
-When initialized by an MCP client, the server describes the vault as a collection of Markdown notes and summarizes the safe workflow for consuming agents: discover/read before writing, use `append_to_note` for additive body updates, use exact-match patching for surgical edits, rely on rename tools for backlink updates, and prefer vault-relative paths for writes and renames.
+When initialized by an MCP client, the server describes the vault as a collection of Markdown notes and summarizes the safe workflow for consuming agents: discover/read before writing, use `extract_to_note` when splitting content into a new note, use `append_to_note` for additive body updates, use exact-match patching for surgical edits, rely on rename tools for backlink updates, and prefer vault-relative paths for writes and renames.
 
 ### Tools exposed
 
@@ -98,6 +104,7 @@ When initialized by an MCP client, the server describes the vault as a collectio
 | `list_backlinks` | List notes that link to a given note, including matching link locations |
 | `read_note` | Read the body and frontmatter of a note |
 | `write_note` | Write a new note |
+| `extract_to_note` | Extract a named section or explicit span into a new note and update the source note |
 | `append_to_note` | Append content exactly to the end of a note's body without rewriting frontmatter |
 | `patch_note` | Replace one exact string in a note's body without rewriting frontmatter |
 | `update_note` | Update frontmatter fields of a note |
@@ -133,6 +140,7 @@ Current functionality:
 - diagnostics clearing and refresh on open/change/close events, watched Markdown file changes, and workspace file create/rename/delete notifications
 - completion for wiki links (`[[`) and markdown links (`[`) with per-note variants (bare ID/title, alias override, and bare alias), plus inline tag completion (`#`)
 - quick fixes for broken note links that create missing notes inside the active vault without overwriting existing files, using wiki aliases or markdown link text as the new note's primary alias and heading when available
+- execute-command extraction of named sections or explicit spans into new notes, plus code action previews for extracting either a selected span or the section under a heading-line cursor; heading-based previews derive their default target path from the full heading ancestry (for example `Foo` > `Bar` -> `foo-bar.md`)
 - quick fixes for duplicate IDs and aliases, wiki-only missing-heading creation, and refactors that convert between wiki and markdown note links while preserving resolved note IDs in generated wiki targets
 - filename-first note rename via `textDocument/prepareRename` and `textDocument/rename`, with backlink updates and automatic frontmatter ID updates when the current ID matches the old filename stem
 - hover, references, go-to-definition, and rename support for inline and frontmatter tags
