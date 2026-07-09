@@ -2,6 +2,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::env::current_dir;
 use std::fs;
 use std::io::Write;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -748,6 +749,134 @@ impl Vault {
         self.apply_raw_note_update(&note.path, appended_raw)
     }
 
+    /// Returns the exact source/new-note file contents that [`extract_to_note`](Self::extract_to_note)
+    /// would produce without touching the filesystem.
+    pub fn extract_to_note_edits(
+        &self,
+        note: &Note,
+        selection: &ExtractSelection,
+        new_path: impl AsRef<Path>,
+        new_id: Option<&str>,
+        replace_with: Option<&str>,
+    ) -> Result<ExtractEdits, VaultError> {
+        let raw = self.text_for_path(&note.path)?;
+        self.extract_to_note_edits_from_text(&note.path, &raw, selection, new_path, new_id, replace_with)
+    }
+
+    /// Like [`extract_to_note_edits`](Self::extract_to_note_edits), but uses the provided raw source
+    /// text instead of reading from the vault. This is useful for editor integrations that need
+    /// unsaved buffer contents to participate in the core extraction logic.
+    pub fn extract_to_note_edits_from_text(
+        &self,
+        source_path: impl AsRef<Path>,
+        raw_source: &str,
+        selection: &ExtractSelection,
+        new_path: impl AsRef<Path>,
+        new_id: Option<&str>,
+        replace_with: Option<&str>,
+    ) -> Result<ExtractEdits, VaultError> {
+        let source_path = self.normalize_path(source_path);
+        let new_path = self.prepare_new_note_path(new_path.as_ref());
+        if self.has_known_note_path(&new_path) {
+            return Err(VaultError::NoteAlreadyExists(new_path));
+        }
+
+        let op =
+            self.compute_extract_op_from_text(&source_path, raw_source, selection, &new_path, new_id, replace_with)?;
+        Ok(ExtractEdits {
+            source_path: source_path.clone(),
+            source_content: op.source_raw,
+            source_note: op.source_note,
+            new_path: op.new_note.path.clone(),
+            new_content: op.new_raw,
+            new_note: op.new_note,
+        })
+    }
+
+    /// Extracts a section or span of body text from `note` into a new note.
+    ///
+    /// The source note is updated in-place, preserving its raw frontmatter formatting, while the
+    /// new note is created at `new_path`. If `replace_with` is `None`, the source note is updated
+    /// with a wiki link to the new note's ID.
+    pub fn extract_to_note(
+        &mut self,
+        note: &Note,
+        selection: &ExtractSelection,
+        new_path: impl AsRef<Path>,
+        new_id: Option<&str>,
+        replace_with: Option<&str>,
+    ) -> Result<ExtractResult, VaultError> {
+        let edits = self.extract_to_note_edits(note, selection, new_path, new_id, replace_with)?;
+
+        if let Some(parent) = edits.new_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        edits.new_note.write()?;
+
+        let source_note = match self.apply_raw_note_update(&edits.source_path, edits.source_content.clone()) {
+            Ok(note) => note,
+            Err(error) => {
+                let _ = fs::remove_file(&edits.new_path);
+                return Err(error);
+            }
+        };
+
+        Ok(ExtractResult {
+            source_note,
+            new_note: edits.new_note,
+        })
+    }
+
+    fn prepare_new_note_path(&self, new_path: &Path) -> PathBuf {
+        let mut path = if new_path.is_absolute() {
+            new_path.to_path_buf()
+        } else {
+            self.path.join(new_path)
+        };
+        if path.extension().is_none() {
+            path.set_extension("md");
+        }
+        common::normalize_path(path, Some(&self.path))
+    }
+
+    fn compute_extract_op_from_text(
+        &self,
+        source_path: &Path,
+        raw_source: &str,
+        selection: &ExtractSelection,
+        new_path: &Path,
+        new_id: Option<&str>,
+        replace_with: Option<&str>,
+    ) -> Result<ExtractOp, VaultError> {
+        let resolved = resolve_extract_selection(source_path, raw_source, selection)?;
+
+        let mut extracted = raw_source[resolved.extracted_range.clone()].to_string();
+        if let Some(root_level) = resolved.section_root_level {
+            extracted = normalize_section_heading_levels(&extracted, root_level);
+        }
+        extracted = rewrite_relative_markdown_links(&extracted, source_path, new_path);
+
+        let new_note = build_extracted_note(new_path, &extracted, new_id)?;
+        let new_raw = new_note.read(true)?;
+
+        let default_link = format!("[[{}]]", new_note.id);
+        let replacement = replace_with.unwrap_or(default_link.as_str());
+        let source_raw = if resolved.section_root_level.is_some() {
+            replace_section_body(raw_source, resolved.source_replace_range, replacement)
+        } else {
+            replace_text_range(raw_source, resolved.source_replace_range, replacement)
+        };
+        let source_note = Note::parse(source_path, &source_raw);
+
+        Ok(ExtractOp {
+            source_raw,
+            source_note,
+            new_raw,
+            new_note,
+        })
+    }
+
     /// Computes all changes required to merge `sources` into `dest_path` without performing I/O.
     fn compute_merge_op(&self, sources: &[Note], dest_path: impl AsRef<Path>) -> Result<MergeOp, VaultError> {
         use std::collections::HashMap;
@@ -1054,6 +1183,42 @@ pub struct RenameEdits {
     pub backlink_edits: Vec<(PathBuf, Vec<(LocatedLink, String)>)>,
 }
 
+/// Character-based span within a note's body text.
+///
+/// Lines are 1-indexed, columns are 0-indexed, and the end position is exclusive.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextSpan {
+    pub start_line: usize,
+    pub start_col: usize,
+    pub end_line: usize,
+    pub end_col: usize,
+}
+
+/// Selection target for note extraction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExtractSelection {
+    Section(String),
+    Span(TextSpan),
+}
+
+/// Result of extracting content from one note into another.
+#[derive(Clone)]
+pub struct ExtractResult {
+    pub source_note: Note,
+    pub new_note: Note,
+}
+
+/// Exact file contents that note extraction would write.
+#[derive(Clone)]
+pub struct ExtractEdits {
+    pub source_path: PathBuf,
+    pub source_content: String,
+    pub source_note: Note,
+    pub new_path: PathBuf,
+    pub new_content: String,
+    pub new_note: Note,
+}
+
 /// Public summary of what a merge would change, without touching the filesystem.
 pub struct MergePreview {
     pub dest_path: PathBuf,
@@ -1078,6 +1243,512 @@ struct MergeOp {
     merged_aliases: Vec<String>,
     /// External notes (not sources, not dest) with backlinks to rewrite.
     per_note_replacements: Vec<(PathBuf, Vec<(LocatedLink, String)>)>,
+}
+
+struct ExtractOp {
+    source_raw: String,
+    source_note: Note,
+    new_raw: String,
+    new_note: Note,
+}
+
+struct ResolvedExtract {
+    extracted_range: Range<usize>,
+    source_replace_range: Range<usize>,
+    section_root_level: Option<usize>,
+}
+
+struct ResolvedSection {
+    start_byte: usize,
+    body_start_byte: usize,
+    end_byte: usize,
+    level: usize,
+}
+
+struct HeadingFragmentSegment {
+    raw: String,
+    normalized: String,
+}
+
+struct HeadingPathSegment {
+    text: String,
+    normalized_anchor: String,
+    resolved_anchor: String,
+}
+
+fn resolve_extract_selection(
+    note_path: &Path,
+    raw_source: &str,
+    selection: &ExtractSelection,
+) -> Result<ResolvedExtract, VaultError> {
+    let (raw_frontmatter, raw_body) = Vault::raw_note_sections(note_path, raw_source);
+    let body_start = raw_frontmatter.len();
+
+    match selection {
+        ExtractSelection::Section(section) => {
+            let resolved = resolve_section_bounds(note_path, raw_body, section)?;
+            Ok(ResolvedExtract {
+                extracted_range: (body_start + resolved.start_byte)..(body_start + resolved.end_byte),
+                source_replace_range: (body_start + resolved.body_start_byte)..(body_start + resolved.end_byte),
+                section_root_level: Some(resolved.level),
+            })
+        }
+        ExtractSelection::Span(span) => {
+            let start = line_col_to_byte_index(raw_source, span.start_line, span.start_col).ok_or_else(|| {
+                invalid_extract_span(
+                    note_path,
+                    format!(
+                        "start position {}:{} is outside the note",
+                        span.start_line, span.start_col
+                    ),
+                )
+            })?;
+            let end = line_col_to_byte_index(raw_source, span.end_line, span.end_col).ok_or_else(|| {
+                invalid_extract_span(
+                    note_path,
+                    format!("end position {}:{} is outside the note", span.end_line, span.end_col),
+                )
+            })?;
+            if start >= end {
+                return Err(invalid_extract_span(
+                    note_path,
+                    "start position must come before end position".to_string(),
+                ));
+            }
+            if start < body_start || end < body_start {
+                return Err(invalid_extract_span(
+                    note_path,
+                    "span overlaps frontmatter; only note body text can be extracted".to_string(),
+                ));
+            }
+            Ok(ResolvedExtract {
+                extracted_range: start..end,
+                source_replace_range: start..end,
+                section_root_level: None,
+            })
+        }
+    }
+}
+
+fn resolve_section_bounds(note_path: &Path, raw_body: &str, section: &str) -> Result<ResolvedSection, VaultError> {
+    let expected = parse_heading_fragment_segments(section);
+    if expected.is_empty() {
+        return Err(VaultError::SectionNotFound {
+            path: note_path.to_path_buf(),
+            section: section.to_string(),
+        });
+    }
+
+    let lines: Vec<&str> = raw_body.split_inclusive('\n').collect();
+    let mut line_starts = Vec::with_capacity(lines.len());
+    let mut offset = 0;
+    for line in &lines {
+        line_starts.push(offset);
+        offset += line.len();
+    }
+
+    let mut seen_anchors = HashMap::new();
+    let mut current_path = Vec::new();
+    let mut matches = Vec::new();
+    let mut in_fenced_code = false;
+
+    for (index, line) in lines.iter().enumerate() {
+        let (line_content, _) = split_line_ending(line);
+        if is_fence_line(line_content) {
+            in_fenced_code = !in_fenced_code;
+            continue;
+        }
+        if in_fenced_code {
+            continue;
+        }
+
+        let Some((level, heading_text)) = heading_line_parts(line_content) else {
+            continue;
+        };
+        let Some(resolved_anchor) = resolve_heading_anchor(&heading_text, &mut seen_anchors) else {
+            continue;
+        };
+        let normalized_anchor = normalize_heading_anchor(&heading_text);
+
+        current_path.truncate(level.saturating_sub(1));
+        current_path.push(HeadingPathSegment {
+            text: heading_text,
+            normalized_anchor,
+            resolved_anchor,
+        });
+
+        if heading_path_matches(&current_path, &expected) {
+            matches.push(ResolvedSection {
+                start_byte: line_starts[index],
+                body_start_byte: line_starts[index] + line.len(),
+                end_byte: find_section_end(&lines, index + 1, level, raw_body.len()),
+                level,
+            });
+        }
+    }
+
+    match matches.len() {
+        0 => Err(VaultError::SectionNotFound {
+            path: note_path.to_path_buf(),
+            section: section.to_string(),
+        }),
+        1 => Ok(matches.remove(0)),
+        _ => Err(VaultError::AmbiguousSection {
+            path: note_path.to_path_buf(),
+            section: section.to_string(),
+        }),
+    }
+}
+
+fn find_section_end(lines: &[&str], start_index: usize, level: usize, raw_len: usize) -> usize {
+    let mut offset = lines.iter().take(start_index).map(|line| line.len()).sum();
+    let mut in_fenced_code = false;
+
+    for line in lines.iter().skip(start_index) {
+        let (line_content, _) = split_line_ending(line);
+        if is_fence_line(line_content) {
+            in_fenced_code = !in_fenced_code;
+            offset += line.len();
+            continue;
+        }
+        if !in_fenced_code
+            && let Some((next_level, _)) = heading_line_parts(line_content)
+            && next_level <= level
+        {
+            return offset;
+        }
+        offset += line.len();
+    }
+
+    raw_len
+}
+
+fn parse_heading_fragment_segments(heading: &str) -> Vec<HeadingFragmentSegment> {
+    heading
+        .split('#')
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| HeadingFragmentSegment {
+            raw: segment.to_string(),
+            normalized: normalize_heading_anchor(segment),
+        })
+        .collect()
+}
+
+fn heading_path_matches(path: &[HeadingPathSegment], expected: &[HeadingFragmentSegment]) -> bool {
+    if expected.len() > path.len() {
+        return false;
+    }
+
+    path[path.len() - expected.len()..]
+        .iter()
+        .zip(expected.iter())
+        .all(|(candidate, expected_segment)| heading_segment_matches(candidate, expected_segment))
+}
+
+fn heading_segment_matches(candidate: &HeadingPathSegment, expected: &HeadingFragmentSegment) -> bool {
+    candidate.text == expected.raw
+        || candidate.normalized_anchor == expected.normalized
+        || candidate.resolved_anchor == expected.normalized
+}
+
+fn heading_line_parts(line: &str) -> Option<(usize, String)> {
+    let trimmed = line.trim_start();
+    if !trimmed.starts_with('#') {
+        return None;
+    }
+
+    let marker_bytes = trimmed
+        .char_indices()
+        .take_while(|(_, ch)| *ch == '#')
+        .last()
+        .map_or(0, |(index, ch)| index + ch.len_utf8());
+    let level = trimmed[..marker_bytes].chars().count();
+    let after_markers = &trimmed[marker_bytes..];
+    let content = after_markers.trim_start();
+    if content.is_empty() {
+        return None;
+    }
+
+    let heading_text = strip_optional_heading_closing_hashes(content);
+    if heading_text.is_empty() {
+        return None;
+    }
+
+    Some((level, heading_text.to_string()))
+}
+
+fn heading_marker_span(line: &str) -> Option<(Range<usize>, usize)> {
+    let trimmed = line.trim_start();
+    if !trimmed.starts_with('#') {
+        return None;
+    }
+
+    let marker_bytes = trimmed
+        .char_indices()
+        .take_while(|(_, ch)| *ch == '#')
+        .last()
+        .map_or(0, |(index, ch)| index + ch.len_utf8());
+    let level = trimmed[..marker_bytes].chars().count();
+    let after_markers = &trimmed[marker_bytes..];
+    let content = after_markers.trim_start();
+    if content.is_empty() {
+        return None;
+    }
+
+    let heading_text = strip_optional_heading_closing_hashes(content);
+    if heading_text.is_empty() {
+        return None;
+    }
+
+    let leading_bytes = line.len() - trimmed.len();
+    Some((leading_bytes..leading_bytes + marker_bytes, level))
+}
+
+fn strip_optional_heading_closing_hashes(text: &str) -> &str {
+    let trimmed = text.trim_end();
+    let without_hashes = trimmed.trim_end_matches('#');
+    if without_hashes.len() == trimmed.len() || !without_hashes.chars().last().is_some_and(char::is_whitespace) {
+        return trimmed;
+    }
+
+    without_hashes.trim_end()
+}
+
+fn normalize_heading_anchor(text: &str) -> String {
+    let mut anchor = String::new();
+    let mut last_was_separator = true;
+
+    for ch in text.trim().chars().flat_map(char::to_lowercase) {
+        if ch.is_alphanumeric() || ch == '_' {
+            anchor.push(ch);
+            last_was_separator = false;
+        } else if (ch.is_whitespace() || ch == '-') && !last_was_separator && !anchor.is_empty() {
+            anchor.push('-');
+            last_was_separator = true;
+        }
+    }
+
+    while anchor.ends_with('-') {
+        anchor.pop();
+    }
+
+    anchor
+}
+
+fn resolve_heading_anchor(heading_text: &str, seen_anchors: &mut HashMap<String, usize>) -> Option<String> {
+    let base_anchor = normalize_heading_anchor(heading_text);
+    if base_anchor.is_empty() {
+        return None;
+    }
+
+    let seen_count = seen_anchors.entry(base_anchor.clone()).or_default();
+    let anchor = if *seen_count == 0 {
+        base_anchor
+    } else {
+        format!("{base_anchor}-{seen_count}")
+    };
+    *seen_count += 1;
+
+    Some(anchor)
+}
+
+fn normalize_section_heading_levels(content: &str, root_level: usize) -> String {
+    if root_level <= 1 {
+        return content.to_string();
+    }
+
+    let shift = root_level.saturating_sub(1);
+    let mut normalized = String::with_capacity(content.len());
+    let mut in_fenced_code = false;
+
+    for line in content.split_inclusive('\n') {
+        let (line_content, line_ending) = split_line_ending(line);
+        if is_fence_line(line_content) {
+            in_fenced_code = !in_fenced_code;
+            normalized.push_str(line);
+            continue;
+        }
+        if in_fenced_code {
+            normalized.push_str(line);
+            continue;
+        }
+
+        let Some((marker_range, level)) = heading_marker_span(line_content) else {
+            normalized.push_str(line);
+            continue;
+        };
+        let new_level = level.saturating_sub(shift).max(1);
+        normalized.push_str(&line_content[..marker_range.start]);
+        normalized.push_str(&"#".repeat(new_level));
+        normalized.push_str(&line_content[marker_range.end..]);
+        normalized.push_str(line_ending);
+    }
+
+    normalized
+}
+
+fn rewrite_relative_markdown_links(content: &str, source_path: &Path, new_path: &Path) -> String {
+    let replacements = crate::link::parse_links(content)
+        .into_iter()
+        .filter_map(|located_link| {
+            let Link::Markdown { text, url } = located_link.link.clone() else {
+                return None;
+            };
+            let new_url = rewrite_relative_markdown_url(source_path, new_path, &url)?;
+            Some((located_link, format!("[{text}]({new_url})")))
+        })
+        .collect::<Vec<_>>();
+
+    if replacements.is_empty() {
+        content.to_string()
+    } else {
+        common::rewrite_links(content, replacements)
+    }
+}
+
+fn rewrite_relative_markdown_url(source_path: &Path, new_path: &Path, url: &str) -> Option<String> {
+    if !is_relative_markdown_url(url) {
+        return None;
+    }
+
+    let (path_part, fragment) = match url.split_once('#') {
+        Some((path, fragment)) => (path, Some(fragment)),
+        None => (url, None),
+    };
+    let source_dir = source_path.parent().unwrap_or(source_path);
+    let target_path = if path_part.is_empty() {
+        source_path.to_path_buf()
+    } else {
+        common::normalize_path(source_dir.join(common::percent_decode(path_part)), None)
+    };
+    let target_dir = new_path.parent().unwrap_or_else(|| Path::new("."));
+    let mut new_url = common::relative_path(target_dir, &target_path)
+        .to_string_lossy()
+        .replace('\\', "/");
+    if let Some(fragment) = fragment
+        && !fragment.is_empty()
+    {
+        new_url.push('#');
+        new_url.push_str(fragment);
+    }
+    Some(new_url)
+}
+
+fn is_relative_markdown_url(url: &str) -> bool {
+    if url.starts_with('/') {
+        return false;
+    }
+
+    let path_part = url.split('#').next().unwrap_or(url);
+    if let Some((scheme, _)) = path_part.split_once(':')
+        && !scheme.is_empty()
+        && scheme.chars().next().is_some_and(|ch| ch.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '+' || ch == '-' || ch == '.')
+    {
+        return false;
+    }
+
+    true
+}
+
+fn replace_text_range(raw: &str, range: Range<usize>, replacement: &str) -> String {
+    let mut updated = String::with_capacity(raw.len() - (range.end - range.start) + replacement.len());
+    updated.push_str(&raw[..range.start]);
+    updated.push_str(replacement);
+    updated.push_str(&raw[range.end..]);
+    updated
+}
+
+fn replace_section_body(raw: &str, range: Range<usize>, replacement: &str) -> String {
+    let prefix = &raw[..range.start];
+    let suffix = &raw[range.end..];
+    let mut updated = String::with_capacity(raw.len() - (range.end - range.start) + replacement.len() + 2);
+    updated.push_str(prefix);
+    if !replacement.is_empty() {
+        if !prefix.ends_with('\n') && !replacement.starts_with('\n') {
+            updated.push('\n');
+        }
+        updated.push_str(replacement);
+        if !suffix.is_empty() && !replacement.ends_with('\n') {
+            updated.push('\n');
+        }
+    }
+    updated.push_str(suffix);
+    updated
+}
+
+fn build_extracted_note(new_path: &Path, body: &str, new_id: Option<&str>) -> Result<Note, VaultError> {
+    let mut builder = Note::builder(new_path)?;
+    if let Some(id) = new_id.map(str::trim).filter(|id| !id.is_empty()) {
+        builder = builder.id(id);
+    }
+    builder.body(body).build().map_err(VaultError::Note)
+}
+
+fn line_col_to_byte_index(text: &str, line: usize, col: usize) -> Option<usize> {
+    if line == 0 {
+        return None;
+    }
+
+    let mut line_starts = vec![0];
+    for (index, ch) in text.char_indices() {
+        if ch == '\n' {
+            line_starts.push(index + 1);
+        }
+    }
+
+    let start = *line_starts.get(line - 1)?;
+    let line_end = line_starts
+        .get(line)
+        .copied()
+        .map(|next| next - 1)
+        .unwrap_or(text.len());
+    let mut line_text = &text[start..line_end];
+    if let Some(stripped) = line_text.strip_suffix('\r') {
+        line_text = stripped;
+    }
+
+    let char_count = line_text.chars().count();
+    if col > char_count {
+        return None;
+    }
+    if col == char_count {
+        return Some(start + line_text.len());
+    }
+
+    for (seen, (offset, _)) in line_text.char_indices().enumerate() {
+        if seen == col {
+            return Some(start + offset);
+        }
+    }
+
+    Some(start + line_text.len())
+}
+
+fn split_line_ending(line: &str) -> (&str, &str) {
+    if let Some(without_newline) = line.strip_suffix('\n') {
+        if let Some(without_crlf) = without_newline.strip_suffix('\r') {
+            (without_crlf, "\r\n")
+        } else {
+            (without_newline, "\n")
+        }
+    } else {
+        (line, "")
+    }
+}
+
+fn is_fence_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("```") || trimmed.starts_with("~~~")
+}
+
+fn invalid_extract_span(path: &Path, message: String) -> VaultError {
+    VaultError::InvalidExtractSpan {
+        path: path.to_path_buf(),
+        message,
+    }
 }
 
 #[cfg(test)]
@@ -1677,6 +2348,207 @@ mod tests {
                 .iter()
                 .any(|tag| { tag.tag == "new-tag" && matches!(tag.location, Location::Inline(_)) })
         );
+    }
+
+    // --- extract_to_note tests ---
+
+    #[test]
+    fn extract_span_creates_new_note_and_replaces_source_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("source.md");
+        fs::write(&source_path, "---\ntags: []\n---\n\nHello world.").unwrap();
+
+        let mut vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(&source_path).unwrap();
+        let result = vault
+            .extract_to_note(
+                &note,
+                &ExtractSelection::Span(TextSpan {
+                    start_line: 5,
+                    start_col: 6,
+                    end_line: 5,
+                    end_col: 11,
+                }),
+                dir.path().join("new.md"),
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&source_path).unwrap(),
+            "---\ntags: []\n---\n\nHello [[new]]."
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("new.md")).unwrap(),
+            "---\nid: new\n---\n\nworld"
+        );
+        assert_eq!(result.source_note.body.as_deref(), Some("Hello [[new]]."));
+        assert_eq!(result.new_note.id, "new");
+    }
+
+    #[test]
+    fn extract_span_rewrites_relative_markdown_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("journal/daily/source.md");
+        fs::create_dir_all(source_path.parent().unwrap()).unwrap();
+        fs::create_dir_all(dir.path().join("notes")).unwrap();
+        fs::write(dir.path().join("notes/topic.md"), "# Topic\n").unwrap();
+        let line = "See [Target](../../notes/topic.md#section).";
+        fs::write(&source_path, line).unwrap();
+
+        let mut vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(&source_path).unwrap();
+        vault
+            .extract_to_note(
+                &note,
+                &ExtractSelection::Span(TextSpan {
+                    start_line: 1,
+                    start_col: 0,
+                    end_line: 1,
+                    end_col: line.chars().count(),
+                }),
+                dir.path().join("projects/extract.md"),
+                None,
+                Some("See [[extract]]."),
+            )
+            .unwrap();
+
+        let extracted = fs::read_to_string(dir.path().join("projects/extract.md")).unwrap();
+        assert!(extracted.contains("[Target](../notes/topic.md#section)"));
+    }
+
+    #[test]
+    fn extract_section_keeps_source_heading_and_normalizes_extracted_headings() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("source.md");
+        fs::write(
+            &source_path,
+            "# Root\n\n## Section\nIntro\n### Child\nBody\n\n## Next\nStay.\n",
+        )
+        .unwrap();
+
+        let mut vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(&source_path).unwrap();
+        vault
+            .extract_to_note(
+                &note,
+                &ExtractSelection::Section("Section".to_string()),
+                dir.path().join("section.md"),
+                None,
+                None,
+            )
+            .unwrap();
+
+        let source = fs::read_to_string(&source_path).unwrap();
+        assert!(source.contains("## Section\n[[section]]\n## Next"));
+
+        let extracted = fs::read_to_string(dir.path().join("section.md")).unwrap();
+        assert!(extracted.contains("id: section"));
+        assert!(extracted.contains("# Section"));
+        assert!(extracted.contains("## Child"));
+        assert!(!extracted.contains("### Child"));
+    }
+
+    #[test]
+    fn extract_section_default_link_uses_new_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("source.md");
+        fs::write(&source_path, "## Section\nBody.\n").unwrap();
+
+        let mut vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(&source_path).unwrap();
+        vault
+            .extract_to_note(
+                &note,
+                &ExtractSelection::Section("Section".to_string()),
+                dir.path().join("section.md"),
+                Some("section-id"),
+                None,
+            )
+            .unwrap();
+
+        let source = fs::read_to_string(&source_path).unwrap();
+        let extracted = fs::read_to_string(dir.path().join("section.md")).unwrap();
+        assert!(source.contains("[[section-id]]"));
+        assert!(extracted.contains("id: section-id"));
+    }
+
+    #[test]
+    fn extract_section_default_id_uses_normalized_filename_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("source.md");
+        fs::write(&source_path, "## Section\nBody.\n").unwrap();
+
+        let mut vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(&source_path).unwrap();
+        vault
+            .extract_to_note(
+                &note,
+                &ExtractSelection::Section("Section".to_string()),
+                dir.path().join("Café Note.md"),
+                None,
+                None,
+            )
+            .unwrap();
+
+        let source = fs::read_to_string(&source_path).unwrap();
+        let extracted = fs::read_to_string(dir.path().join("Café Note.md")).unwrap();
+        assert!(source.contains("[[cafe-note]]"));
+        assert!(extracted.contains("id: cafe-note"));
+    }
+
+    #[test]
+    fn extract_section_duplicate_heading_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("source.md");
+        fs::write(
+            &source_path,
+            "# Root\n\n## Section\nOne.\n\n## Other\nBody.\n\n## Section\nTwo.\n",
+        )
+        .unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(&source_path).unwrap();
+        let error = vault
+            .extract_to_note_edits(
+                &note,
+                &ExtractSelection::Section("Section".to_string()),
+                dir.path().join("section.md"),
+                None,
+                None,
+            )
+            .err()
+            .expect("duplicate sections should error");
+
+        assert!(matches!(error, VaultError::AmbiguousSection { .. }));
+    }
+
+    #[test]
+    fn extract_span_overlapping_frontmatter_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("source.md");
+        fs::write(&source_path, "---\nid: source\n---\n\nBody.\n").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let note = Note::from_path(&source_path).unwrap();
+        let error = vault
+            .extract_to_note_edits(
+                &note,
+                &ExtractSelection::Span(TextSpan {
+                    start_line: 2,
+                    start_col: 0,
+                    end_line: 2,
+                    end_col: 2,
+                }),
+                dir.path().join("frontmatter.md"),
+                None,
+                None,
+            )
+            .err()
+            .expect("frontmatter spans should error");
+
+        assert!(matches!(error, VaultError::InvalidExtractSpan { .. }));
     }
 
     // --- rename tests ---

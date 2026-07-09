@@ -80,6 +80,34 @@ pub struct AppendToNoteParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct TextSpanParams {
+    #[schemars(description = "1-indexed start line")]
+    pub start_line: usize,
+    #[schemars(description = "0-indexed start column")]
+    pub start_col: usize,
+    #[schemars(description = "1-indexed end line")]
+    pub end_line: usize,
+    #[schemars(description = "0-indexed end column (exclusive)")]
+    pub end_col: usize,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ExtractToNoteParams {
+    #[schemars(description = "Source note identifier: a file path (absolute or vault-relative), note ID, or alias")]
+    pub note: String,
+    #[schemars(description = "Named section to extract. Supports nested heading paths like 'Parent#Child'.")]
+    pub section: Option<String>,
+    #[schemars(description = "Explicit span to extract instead of a named section.")]
+    pub span: Option<TextSpanParams>,
+    #[schemars(description = "Path for the new note, relative to the vault root. Extension .md is added if omitted.")]
+    pub new_path: String,
+    #[schemars(description = "Override the new note's frontmatter ID")]
+    pub new_id: Option<String>,
+    #[schemars(description = "Text to replace the extracted section/span with in the source note")]
+    pub replace_with: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct PatchNoteParams {
     #[schemars(description = "Note identifier: a file path (absolute or vault-relative), note ID, or alias")]
     pub note: String,

@@ -842,6 +842,53 @@ fn code_action_request_converts_markdown_links_to_wiki_using_note_ids() {
 }
 
 #[test]
+fn code_action_request_offers_extract_section_on_heading_line_cursor() {
+    let vault_dir = tempfile::tempdir().unwrap();
+    fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
+
+    let source_path = vault_dir.path().join("source.md");
+    let source_text = "# Root\n\n## Section\nIntro\n### Child\nBody\n";
+    fs::write(&source_path, source_text).unwrap();
+    let source_path = source_path.canonicalize().unwrap();
+    let source_uri = path_to_uri(&source_path).unwrap();
+
+    let state = BackendState::new(Vault::open(vault_dir.path()).unwrap());
+    let heading_cursor = Position::new(2, 0);
+    let actions = state
+        .code_action_request(
+            source_uri.clone(),
+            Range::new(heading_cursor, heading_cursor),
+            Vec::new(),
+        )
+        .unwrap()
+        .compute()
+        .unwrap()
+        .unwrap();
+
+    let extract = action_by_title(&actions, "Extract section to 'root-section'");
+    assert_eq!(extract.kind, Some(CodeActionKind::REFACTOR_EXTRACT));
+    let command = extract
+        .command
+        .as_ref()
+        .expect("extract code action should include a command");
+    assert_eq!(command.command, "obsidian.extractToNote");
+    assert_eq!(command.arguments.as_ref().unwrap()[0]["section"], "Root#Section");
+
+    let source_edits = plain_text_edits_for_uri(extract.edit.as_ref().unwrap(), &source_uri);
+    assert_eq!(source_edits.len(), 1);
+    assert!(source_edits[0].new_text.contains("## Section\n[[root-section]]"));
+    assert_eq!(
+        extract.command.as_ref().unwrap().arguments.as_ref().unwrap()[0]["newPath"]
+            .as_str()
+            .unwrap()
+            .rsplit('/')
+            .next()
+            .unwrap(),
+        "root-section.md"
+    );
+}
+
+#[test]
 fn code_action_request_fixes_duplicate_id_and_alias_diagnostics() {
     let vault_dir = tempfile::tempdir().unwrap();
     fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
@@ -1261,6 +1308,45 @@ fn code_action_request_rejects_create_note_paths_outside_the_vault() {
         .compute()
         .unwrap();
     assert!(markdown_actions.is_none());
+}
+
+#[test]
+fn code_action_request_normalizes_create_note_id_from_filename() {
+    let vault_dir = tempfile::tempdir().unwrap();
+    fs::create_dir(vault_dir.path().join(".obsidian")).unwrap();
+
+    let source_path = vault_dir.path().join("source.md");
+    let source_text = "See [[Café Note]].";
+    fs::write(&source_path, source_text).unwrap();
+    let source_path = source_path.canonicalize().unwrap();
+    let source_uri = path_to_uri(&source_path).unwrap();
+
+    let vault = Vault::open(vault_dir.path()).unwrap();
+    let mut state = BackendState::new(vault);
+    state
+        .open_document(source_uri.clone(), 1, source_text.to_string())
+        .unwrap();
+
+    let actions = state
+        .code_action_request(
+            source_uri.clone(),
+            Range::new(
+                position_for_substring(source_text, "[[Café Note]]"),
+                position_for_substring(source_text, "[[Café Note]]"),
+            ),
+            Vec::new(),
+        )
+        .unwrap()
+        .compute()
+        .unwrap()
+        .unwrap();
+
+    let create = action_by_title(&actions, "Create note 'Café Note'");
+    let preview_edits = plain_text_edits_for_uri(
+        create.edit.as_ref().unwrap(),
+        &path_to_uri(&vault_dir.path().join("Café Note.md")).unwrap(),
+    );
+    assert_eq!(preview_edits[0].new_text, "---\nid: cafe-note\n---\n");
 }
 
 #[test]

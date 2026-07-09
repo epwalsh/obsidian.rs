@@ -14,6 +14,7 @@ name = "obsidian_core"
 path = "src/lib.rs"
 
 [dependencies]
+deunicode = "1"
 globset = "0.4"
 thiserror = "2"
 gray_matter = "0.3.2"

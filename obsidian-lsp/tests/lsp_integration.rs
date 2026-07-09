@@ -2315,6 +2315,96 @@ fn stdio_session_offers_create_note_code_action_for_broken_links() {
 }
 
 #[test]
+fn stdio_session_normalizes_filename_derived_create_note_ids() {
+    let vault_dir = tempfile::tempdir().expect("should create temp dir");
+    fs::create_dir(vault_dir.path().join(".obsidian")).expect("should create .obsidian directory");
+
+    let source_path = vault_dir.path().join("source.md");
+    let source_text = "See [[Café Note]].";
+    fs::write(&source_path, source_text).expect("should write source note");
+    let source_path = source_path.canonicalize().expect("source path should canonicalize");
+    let source_uri = Url::from_file_path(&source_path).expect("source path should convert to URI");
+    let vault_uri = Url::from_file_path(vault_dir.path()).expect("vault path should convert to URI");
+
+    let mut harness = LspHarness::spawn(vault_dir.path());
+    initialize_session(&mut harness, &vault_uri, vault_dir.path());
+
+    harness.send(notification(
+        "textDocument/didOpen",
+        Some(json!({
+            "textDocument": {
+                "uri": source_uri,
+                "languageId": "markdown",
+                "version": 1,
+                "text": source_text,
+            },
+        })),
+    ));
+    expect_diagnostics(&mut harness, &source_uri, Some(1));
+
+    let (line, character) = position_for_substring(source_text, "[[Café Note]]");
+    harness.send(request(
+        2,
+        "textDocument/codeAction",
+        Some(json!({
+            "textDocument": { "uri": source_uri },
+            "range": {
+                "start": { "line": line, "character": character },
+                "end":   { "line": line, "character": character }
+            },
+            "context": { "diagnostics": [] }
+        })),
+    ));
+
+    let response = harness.expect_message("unicode create-note code action response", |message| message["id"] == 2);
+    let actions = response["result"]
+        .as_array()
+        .expect("code action result should be an array");
+    let create_action = actions
+        .iter()
+        .find(|action| action["command"]["command"] == "obsidian.createNote")
+        .expect("should offer a create-note action");
+
+    let preview_text = create_action["edit"]["documentChanges"]
+        .as_array()
+        .expect("preview edit should have documentChanges")
+        .iter()
+        .find(|op| {
+            op["textDocument"]["uri"]
+                .as_str()
+                .map_or(false, |uri| uri.ends_with("Caf%C3%A9%20Note.md"))
+        })
+        .expect("should include a preview edit for the new file")["edits"][0]["newText"]
+        .as_str()
+        .expect("preview edit should include newText");
+    assert_eq!(preview_text, "---\nid: cafe-note\n---\n");
+
+    let new_path = create_action["command"]["arguments"][0]
+        .as_str()
+        .expect("create-note command should include a path argument");
+    harness.send(request(
+        3,
+        "workspace/executeCommand",
+        Some(json!({ "command": "obsidian.createNote", "arguments": [new_path] })),
+    ));
+    harness.expect_message("unicode create-note executeCommand response", |message| {
+        message["id"] == 3
+    });
+    expect_diagnostics(&mut harness, &source_uri, Some(1));
+
+    let created = fs::read_to_string(
+        source_path
+            .parent()
+            .expect("source should have a parent")
+            .join("Café Note.md"),
+    )
+    .expect("new note should exist on disk after executeCommand");
+    assert_eq!(created, "---\nid: cafe-note\n---\n");
+
+    shutdown_session(&mut harness);
+}
+
+#[test]
 fn stdio_session_rejects_create_note_command_for_outside_or_existing_paths() {
     let vault_dir = tempfile::tempdir().expect("should create temp dir");
     fs::create_dir(vault_dir.path().join(".obsidian")).expect("should create .obsidian directory");
@@ -2355,6 +2445,189 @@ fn stdio_session_rejects_create_note_command_for_outside_or_existing_paths() {
         fs::read_to_string(&existing_path).expect("existing note should still be readable"),
         "original content",
         "executeCommand should not overwrite existing notes"
+    );
+
+    shutdown_session(&mut harness);
+}
+
+#[test]
+fn stdio_session_execute_command_extracts_named_section() {
+    let vault_dir = tempfile::tempdir().expect("should create temp dir");
+    fs::create_dir(vault_dir.path().join(".obsidian")).expect("should create .obsidian directory");
+
+    let source_path = vault_dir.path().join("source.md");
+    fs::write(
+        &source_path,
+        "# Root\n\n## Section\nIntro\n### Child\nBody\n\n## Next\nStay.\n",
+    )
+    .expect("should write source note");
+    let source_uri = Url::from_file_path(source_path.canonicalize().expect("source should canonicalize"))
+        .expect("source should convert to URI");
+    let vault_uri = Url::from_file_path(vault_dir.path()).expect("vault path should convert to URI");
+
+    let mut harness = LspHarness::spawn(vault_dir.path());
+    initialize_session(&mut harness, &vault_uri, vault_dir.path());
+
+    harness.send(request(
+        2,
+        "workspace/executeCommand",
+        Some(json!({
+            "command": "obsidian.extractToNote",
+            "arguments": [{
+                "sourceUri": source_uri,
+                "newPath": "section.md",
+                "section": "Section"
+            }]
+        })),
+    ));
+    harness.expect_message("extractToNote response", |message| message["id"] == 2);
+
+    let source = fs::read_to_string(&source_path).expect("source note should remain readable");
+    let extracted = fs::read_to_string(vault_dir.path().join("section.md"))
+        .expect("extracted note should exist on disk after executeCommand");
+    assert!(
+        source.contains("## Section\n[[section]]\n## Next"),
+        "source should keep the heading and replace its body with a link: {source}"
+    );
+    assert!(
+        extracted.contains("# Section"),
+        "new note should promote the extracted heading: {extracted}"
+    );
+    assert!(
+        extracted.contains("## Child"),
+        "child headings should preserve hierarchy: {extracted}"
+    );
+
+    shutdown_session(&mut harness);
+}
+
+#[test]
+fn stdio_session_offers_extract_selection_code_action() {
+    let vault_dir = tempfile::tempdir().expect("should create temp dir");
+    fs::create_dir(vault_dir.path().join(".obsidian")).expect("should create .obsidian directory");
+
+    let source_path = vault_dir.path().join("source.md");
+    fs::write(&source_path, "Hello world.").expect("should write source note");
+    let source_uri = Url::from_file_path(source_path.canonicalize().expect("source should canonicalize"))
+        .expect("source should convert to URI");
+    let vault_uri = Url::from_file_path(vault_dir.path()).expect("vault path should convert to URI");
+
+    let mut harness = LspHarness::spawn(vault_dir.path());
+    initialize_session(&mut harness, &vault_uri, vault_dir.path());
+
+    harness.send(request(
+        2,
+        "textDocument/codeAction",
+        Some(json!({
+            "textDocument": { "uri": source_uri },
+            "range": {
+                "start": { "line": 0, "character": 6 },
+                "end":   { "line": 0, "character": 11 }
+            },
+            "context": { "diagnostics": [] }
+        })),
+    ));
+
+    let response = harness.expect_message("extract selection code action response", |message| message["id"] == 2);
+    let actions = response["result"]
+        .as_array()
+        .expect("code action result should be an array");
+    let action = actions
+        .iter()
+        .find(|action| action["command"]["command"] == "obsidian.extractToNote")
+        .expect("should offer an extractToNote code action");
+
+    assert_eq!(action["kind"], "refactor.extract");
+    let command_args = &action["command"]["arguments"][0];
+    let new_path = command_args["newPath"]
+        .as_str()
+        .expect("extract command should include a newPath");
+    assert!(
+        new_path.ends_with("world.md"),
+        "default extracted note path should be derived from the selection, got: {new_path}"
+    );
+    assert_eq!(command_args["sourceContent"], "Hello [[world]].");
+    assert!(
+        command_args["newContent"]
+            .as_str()
+            .expect("extract command should include new content")
+            .contains("world")
+    );
+
+    let preview_changes = action["edit"]["documentChanges"]
+        .as_array()
+        .expect("extract code action should include preview edits");
+    assert_eq!(
+        preview_changes.len(),
+        2,
+        "preview should include source and new note edits"
+    );
+
+    shutdown_session(&mut harness);
+}
+
+#[test]
+fn stdio_session_offers_extract_section_code_action_on_heading_cursor() {
+    let vault_dir = tempfile::tempdir().expect("should create temp dir");
+    fs::create_dir(vault_dir.path().join(".obsidian")).expect("should create .obsidian directory");
+
+    let source_path = vault_dir.path().join("source.md");
+    fs::write(
+        &source_path,
+        "# Root\n\n## Section\nIntro\n### Child\nBody\n\n## Next\nStay.\n",
+    )
+    .expect("should write source note");
+    let source_uri = Url::from_file_path(source_path.canonicalize().expect("source should canonicalize"))
+        .expect("source should convert to URI");
+    let vault_uri = Url::from_file_path(vault_dir.path()).expect("vault path should convert to URI");
+
+    let mut harness = LspHarness::spawn(vault_dir.path());
+    initialize_session(&mut harness, &vault_uri, vault_dir.path());
+
+    harness.send(request(
+        2,
+        "textDocument/codeAction",
+        Some(json!({
+            "textDocument": { "uri": source_uri },
+            "range": {
+                "start": { "line": 2, "character": 0 },
+                "end":   { "line": 2, "character": 0 }
+            },
+            "context": { "diagnostics": [] }
+        })),
+    ));
+
+    let response = harness.expect_message("extract section code action response", |message| message["id"] == 2);
+    let actions = response["result"]
+        .as_array()
+        .expect("code action result should be an array");
+    let action = actions
+        .iter()
+        .find(|action| action["command"]["command"] == "obsidian.extractToNote")
+        .expect("should offer an extractToNote code action");
+
+    assert_eq!(action["title"], "Extract section to 'root-section'");
+    assert_eq!(action["kind"], "refactor.extract");
+    let command_args = &action["command"]["arguments"][0];
+    assert_eq!(command_args["section"], "Root#Section");
+    let new_path = command_args["newPath"]
+        .as_str()
+        .expect("extract command should include a newPath");
+    assert!(
+        new_path.ends_with("root-section.md"),
+        "default extracted note path should be derived from the heading, got: {new_path}"
+    );
+    assert!(
+        command_args["sourceContent"]
+            .as_str()
+            .expect("extract command should include updated source content")
+            .contains("## Section\n[[root-section]]"),
+    );
+    assert!(
+        command_args["newContent"]
+            .as_str()
+            .expect("extract command should include new note content")
+            .contains("# Section"),
     );
 
     shutdown_session(&mut harness);

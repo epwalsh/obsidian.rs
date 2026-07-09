@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use obsidian_core::{
-    BrokenLink, DuplicateAlias, DuplicateId, InlineLocation, Link, LocatedLink, Location as CoreLocation, Note,
-    NoteError, Vault, VaultError,
+    BrokenLink, DuplicateAlias, DuplicateId, ExtractEdits, ExtractSelection, InlineLocation, Link, LocatedLink,
+    Location as CoreLocation, Note, NoteError, TextSpan, Vault, VaultError, default_note_id_for_path,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -27,6 +27,7 @@ mod document_link_data;
 mod document_links_request;
 mod document_symbols_request;
 mod edits;
+mod extract_note_request;
 mod formatting_request;
 mod frontmatter;
 mod headings;
@@ -47,6 +48,7 @@ pub use self::diagnostics_request::DiagnosticUpdate;
 pub use self::diagnostics_request::DiagnosticsRequest;
 pub use self::document_links_request::DocumentLinksRequest;
 pub use self::document_symbols_request::DocumentSymbolsRequest;
+pub use self::extract_note_request::{ExtractNoteRequest, ExtractNoteSelection};
 pub use self::formatting_request::FormattingRequest;
 pub(crate) use self::links::normalize_new_note_path;
 pub use self::navigation_request::NavigationRequest;
@@ -109,6 +111,8 @@ pub enum StateError {
     InvalidDocumentLinkData(String),
     #[error("invalid rename target '{new_name}' for note '{path}'")]
     InvalidRenameTarget { path: PathBuf, new_name: String },
+    #[error("invalid extract target '{new_path}' for note '{path}'")]
+    InvalidExtractTarget { path: PathBuf, new_path: String },
     #[error("invalid tag rename target '{0}'")]
     InvalidTagRenameTarget(String),
     #[error("vault index is not ready yet")]
@@ -395,6 +399,32 @@ impl BackendState {
             path,
             position,
             new_name,
+        })
+    }
+
+    pub fn extract_note_request(
+        &self,
+        uri: Url,
+        selection: ExtractNoteSelection,
+        new_path: String,
+        new_id: Option<String>,
+        replace_with: Option<String>,
+    ) -> Result<ExtractNoteRequest, StateError> {
+        self.ensure_indexed()?;
+        let path = self.path_from_uri(&uri)?;
+        let normalized_new_path =
+            normalize_new_note_path(self.vault.path(), &new_path).ok_or_else(|| StateError::InvalidExtractTarget {
+                path: path.clone(),
+                new_path: new_path.clone(),
+            })?;
+
+        Ok(ExtractNoteRequest {
+            snapshot: self.snapshot(),
+            path,
+            selection,
+            new_path: normalized_new_path,
+            new_id,
+            replace_with,
         })
     }
 

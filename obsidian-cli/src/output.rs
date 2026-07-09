@@ -2,7 +2,7 @@ use std::path::Path;
 
 use color_eyre::eyre;
 use colored::Colorize;
-use obsidian_core::{Link, LocatedLink, LocatedTag, Location, MergePreview, Note, RenamePreview};
+use obsidian_core::{ExtractResult, Link, LocatedLink, LocatedTag, Location, MergePreview, Note, RenamePreview};
 use serde::Serialize;
 use serde_json::json;
 
@@ -44,6 +44,24 @@ pub fn print_note_many_plain(notes: &[Note], vault_path: &Path) {
         let rel = get_rel_path(&note.path, vault_path);
         println!("{}", rel.cyan());
     }
+}
+
+pub fn print_extract_result_plain(result: &ExtractResult, vault_path: &Path) {
+    println!("{}", get_rel_path(&result.new_note.path, vault_path).cyan().bold());
+    println!(
+        " {} {}",
+        "update:".green(),
+        get_rel_path(&result.source_note.path, vault_path).cyan()
+    );
+}
+
+pub fn print_extract_result_json(result: &ExtractResult, vault_path: &Path) -> eyre::Result<()> {
+    let out = json!({
+        "source_note": get_note_json(&result.source_note, vault_path)?,
+        "new_note": get_note_json(&result.new_note, vault_path)?,
+    });
+    println!("{}", serde_json::to_string(&out)?);
+    Ok(())
 }
 
 pub fn print_note_read_plain(note: &Note, frontmatter: bool, no_content: bool) -> eyre::Result<()> {

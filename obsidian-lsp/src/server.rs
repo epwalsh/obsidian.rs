@@ -2,8 +2,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use obsidian_core::default_note_id_for_path;
+use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::{Mutex, RwLock};
 use tower_lsp::jsonrpc::Result;
@@ -17,19 +19,20 @@ use tower_lsp::lsp_types::{
     FileOperationPattern, FileOperationPatternKind, FileOperationRegistrationOptions, FileSystemWatcher, GlobPattern,
     GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams,
     InitializeResult, InitializedParams, Location, MessageType, NumberOrString, OneOf, PrepareRenameResponse,
-    ProgressParams, ProgressParamsValue, ReferenceParams, Registration, RenameFilesParams, RenameOptions, RenameParams,
-    ServerCapabilities, ServerInfo, SymbolInformation, TextDocumentPositionParams, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextEdit, WatchKind, WorkDoneProgress, WorkDoneProgressBegin, WorkDoneProgressCreateParams,
-    WorkDoneProgressEnd, WorkspaceEdit, WorkspaceFileOperationsServerCapabilities, WorkspaceFoldersServerCapabilities,
-    WorkspaceServerCapabilities, WorkspaceSymbolParams, notification::Progress, request::WorkDoneProgressCreate,
+    ProgressParams, ProgressParamsValue, Range, ReferenceParams, Registration, RenameFilesParams, RenameOptions,
+    RenameParams, ServerCapabilities, ServerInfo, SymbolInformation, TextDocumentPositionParams,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url, WatchKind, WorkDoneProgress,
+    WorkDoneProgressBegin, WorkDoneProgressCreateParams, WorkDoneProgressEnd, WorkspaceEdit,
+    WorkspaceFileOperationsServerCapabilities, WorkspaceFoldersServerCapabilities, WorkspaceServerCapabilities,
+    WorkspaceSymbolParams, notification::Progress, request::WorkDoneProgressCreate,
 };
 use tower_lsp::{Client, LanguageServer};
 
 use crate::state::{
     BackendState, CodeActionRequest, CompletionRequest, Config, DiagnosticsRequest, DocumentLinksRequest,
-    DocumentSymbolsRequest, FileChange, FileChangeKind, FormattingRequest, NavigationRequest, PrepareRenameRequest,
-    RenameRequest, ResolveDocumentLinkRequest, StateError, WorkspaceSymbolsRequest, new_note_content,
-    normalize_new_note_path,
+    DocumentSymbolsRequest, ExtractNoteRequest, ExtractNoteSelection, FileChange, FileChangeKind, FormattingRequest,
+    NavigationRequest, PrepareRenameRequest, RenameRequest, ResolveDocumentLinkRequest, StateError,
+    WorkspaceSymbolsRequest, new_note_content, normalize_new_note_path,
 };
 use crate::uri::uri_to_path;
 
@@ -46,6 +49,19 @@ pub struct Backend {
 }
 
 const FILE_CHANGE_DEBOUNCE: Duration = Duration::from_millis(50);
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExtractCommandArgs {
+    source_uri: String,
+    new_path: String,
+    section: Option<String>,
+    range: Option<Range>,
+    new_id: Option<String>,
+    replace_with: Option<String>,
+    source_content: Option<String>,
+    new_content: Option<String>,
+}
 
 fn markdown_file_operation_registration() -> FileOperationRegistrationOptions {
     FileOperationRegistrationOptions {
@@ -401,6 +417,46 @@ async fn end_startup_progress(client: &Client, token: Option<NumberOrString>, me
         .await;
 }
 
+fn write_string_atomic(path: &Path, content: &str) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("note.md");
+    let temp_path = parent.join(format!(".{file_name}.obsidian-lsp-{}-{nonce}.tmp", std::process::id()));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp_path)?;
+    file.write_all(content.as_bytes())?;
+    std::fs::rename(&temp_path, path)
+}
+
+fn persist_extract_edits(
+    source_path: &Path,
+    source_content: &str,
+    new_path: &Path,
+    new_content: &str,
+) -> std::io::Result<()> {
+    if new_path.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("note already exists: {}", new_path.display()),
+        ));
+    }
+    if let Some(parent) = new_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    write_string_atomic(new_path, new_content)?;
+    if let Err(error) = write_string_atomic(source_path, source_content) {
+        let _ = std::fs::remove_file(new_path);
+        return Err(error);
+    }
+    Ok(())
+}
+
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
@@ -452,7 +508,7 @@ impl LanguageServer for Backend {
                 })),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 execute_command_provider: Some(ExecuteCommandOptions {
-                    commands: vec!["obsidian.createNote".to_string()],
+                    commands: vec!["obsidian.createNote".to_string(), "obsidian.extractToNote".to_string()],
                     work_done_progress_options: Default::default(),
                 }),
                 workspace: Some(WorkspaceServerCapabilities {
@@ -787,59 +843,182 @@ impl LanguageServer for Backend {
     }
 
     async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<serde_json::Value>> {
-        if params.command != "obsidian.createNote" {
+        if params.command == "obsidian.createNote" {
+            let path_str = match params.arguments.first().and_then(|v| v.as_str()) {
+                Some(p) => p.to_string(),
+                None => {
+                    self.log_error("obsidian.createNote: missing path argument").await;
+                    return Ok(None);
+                }
+            };
+
+            let path = {
+                let state = self.state.read().await;
+                normalize_new_note_path(state.vault_path(), &path_str)
+            };
+            let Some(path) = path else {
+                self.log_error(format!("obsidian.createNote: invalid note path: {path_str}"))
+                    .await;
+                return Ok(None);
+            };
+            let note_id = default_note_id_for_path(&path).unwrap_or_else(|_| "note".to_string());
+            let note_title = params.arguments.get(1).and_then(Value::as_str).map(str::to_string);
+            let created_path = path.clone();
+
+            match tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)?;
+                file.write_all(new_note_content(&note_id, note_title.as_deref()).as_bytes())
+            })
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    self.log_error(format!("obsidian.createNote: failed to write file: {e}"))
+                        .await;
+                    return Ok(None);
+                }
+                Err(e) => {
+                    self.log_error(format!("obsidian.createNote task failed: {e}")).await;
+                    return Ok(None);
+                }
+            }
+
+            let request = {
+                let mut state = self.state.write().await;
+                state.apply_file_changes(vec![FileChange {
+                    path: created_path,
+                    kind: FileChangeKind::Created,
+                }])
+            };
+            match request {
+                Ok(Some(request)) => self.schedule_diagnostics(Ok(request)),
+                Ok(None) => {}
+                Err(error) => self.log_error(error).await,
+            }
+
             return Ok(None);
         }
 
-        let path_str = match params.arguments.first().and_then(|v| v.as_str()) {
-            Some(p) => p.to_string(),
-            None => {
-                self.log_error("obsidian.createNote: missing path argument").await;
+        if params.command != "obsidian.extractToNote" {
+            return Ok(None);
+        }
+
+        let Some(args_value) = params.arguments.first().cloned() else {
+            self.log_error("obsidian.extractToNote: missing arguments").await;
+            return Ok(None);
+        };
+        let args: ExtractCommandArgs = match serde_json::from_value(args_value) {
+            Ok(args) => args,
+            Err(error) => {
+                self.log_error(format!("obsidian.extractToNote: invalid arguments: {error}"))
+                    .await;
                 return Ok(None);
             }
         };
 
-        let path = {
-            let state = self.state.read().await;
-            normalize_new_note_path(state.vault_path(), &path_str)
+        let source_uri = match Url::parse(&args.source_uri) {
+            Ok(uri) => uri,
+            Err(error) => {
+                self.log_error(format!("obsidian.extractToNote: invalid sourceUri: {error}"))
+                    .await;
+                return Ok(None);
+            }
         };
-        let Some(path) = path else {
-            self.log_error(format!("obsidian.createNote: invalid note path: {path_str}"))
+        let source_path = match uri_to_path(&source_uri) {
+            Ok(path) => path,
+            Err(error) => {
+                self.log_error(format!("obsidian.extractToNote: invalid sourceUri: {error}"))
+                    .await;
+                return Ok(None);
+            }
+        };
+
+        let normalized_new_path = {
+            let state = self.state.read().await;
+            normalize_new_note_path(state.vault_path(), &args.new_path)
+        };
+        let Some(normalized_new_path) = normalized_new_path else {
+            self.log_error(format!("obsidian.extractToNote: invalid new path: {}", args.new_path))
                 .await;
             return Ok(None);
         };
-        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("note").to_string();
-        let note_title = params.arguments.get(1).and_then(Value::as_str).map(str::to_string);
-        let created_path = path.clone();
 
-        match tokio::task::spawn_blocking(move || -> std::io::Result<()> {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)?;
-            file.write_all(new_note_content(&stem, note_title.as_deref()).as_bytes())
+        let (source_content, new_content) = if let (Some(source_content), Some(new_content)) =
+            (args.source_content.clone(), args.new_content.clone())
+        {
+            (source_content, new_content)
+        } else {
+            let selection = match (&args.section, &args.range) {
+                (Some(_), Some(_)) => {
+                    self.log_error("obsidian.extractToNote: provide either section or range, not both")
+                        .await;
+                    return Ok(None);
+                }
+                (None, None) => {
+                    self.log_error("obsidian.extractToNote: either section or range is required")
+                        .await;
+                    return Ok(None);
+                }
+                (Some(section), None) => ExtractNoteSelection::Section(section.clone()),
+                (None, Some(range)) => ExtractNoteSelection::Range(*range),
+            };
+
+            let request = {
+                let state = self.state.read().await;
+                state.extract_note_request(
+                    source_uri.clone(),
+                    selection,
+                    args.new_path.clone(),
+                    args.new_id.clone(),
+                    args.replace_with.clone(),
+                )
+            };
+            let Some(edits) = self
+                .compute_request(request, "extractToNote", |request: ExtractNoteRequest| {
+                    request.compute()
+                })
+                .await
+            else {
+                return Ok(None);
+            };
+            (edits.source_content, edits.new_content)
+        };
+
+        let created_path = normalized_new_path.clone();
+        let changed_path = source_path.clone();
+        match tokio::task::spawn_blocking(move || {
+            persist_extract_edits(&source_path, &source_content, &normalized_new_path, &new_content)
         })
         .await
         {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                self.log_error(format!("obsidian.createNote: failed to write file: {e}"))
+            Ok(Err(error)) => {
+                self.log_error(format!("obsidian.extractToNote: failed to persist edits: {error}"))
                     .await;
                 return Ok(None);
             }
-            Err(e) => {
-                self.log_error(format!("obsidian.createNote task failed: {e}")).await;
+            Err(error) => {
+                self.log_error(format!("obsidian.extractToNote task failed: {error}"))
+                    .await;
                 return Ok(None);
             }
         }
 
-        // Proactively refresh diagnostics so the broken-link warning clears immediately.
         let request = {
             let mut state = self.state.write().await;
-            state.apply_file_changes(vec![FileChange {
-                path: created_path,
-                kind: FileChangeKind::Created,
-            }])
+            state.apply_file_changes(vec![
+                FileChange {
+                    path: changed_path,
+                    kind: FileChangeKind::Changed,
+                },
+                FileChange {
+                    path: created_path,
+                    kind: FileChangeKind::Created,
+                },
+            ])
         };
         match request {
             Ok(Some(request)) => self.schedule_diagnostics(Ok(request)),

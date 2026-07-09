@@ -18,6 +18,12 @@ pub enum VaultError {
     StringNotFound(PathBuf),
     #[error("old-string found multiple times in '{0}'; must match exactly once")]
     StringFoundMultipleTimes(PathBuf),
+    #[error("invalid extract span in '{path}': {message}")]
+    InvalidExtractSpan { path: PathBuf, message: String },
+    #[error("section '{section}' not found in '{path}'")]
+    SectionNotFound { path: PathBuf, section: String },
+    #[error("section '{section}' is ambiguous in '{path}'")]
+    AmbiguousSection { path: PathBuf, section: String },
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
