@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::env::current_dir;
 use std::fs;
 use std::io::Write;
@@ -14,27 +14,21 @@ use crate::health::VaultHealthReport;
 use crate::{InlineLocation, Link, LocatedLink, LocatedTag, Location, Note, NoteError, VaultError, common, search};
 
 #[derive(Clone)]
-struct CachedDiskNote {
-    note: Note,
-    text: String,
-}
-
-#[derive(Clone)]
 pub struct Vault {
+    /// The root directory of the vault.
     path: PathBuf,
-    note_overrides: HashMap<PathBuf, Note>,
-    cached_disk_notes: Option<HashMap<PathBuf, Arc<CachedDiskNote>>>,
+    /// When `Some`, an authoritative, complete in-memory snapshot of every note in the vault,
+    /// keyed by absolute path. Searches and scans iterate this map and never touch the filesystem.
+    /// When `None`, the vault operates in disk-walk mode. In-memory overrides and unsaved notes are
+    /// simply entries in this map.
+    cached_notes: Option<HashMap<PathBuf, Arc<Note>>>,
 }
 
 impl std::fmt::Debug for Vault {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Vault")
             .field("path", &self.path)
-            .field("note_override_count", &self.note_overrides.len())
-            .field(
-                "cached_disk_note_count",
-                &self.cached_disk_notes.as_ref().map(HashMap::len),
-            )
+            .field("cached_note_count", &self.cached_notes.as_ref().map(HashMap::len))
             .finish()
     }
 }
@@ -49,8 +43,7 @@ impl Vault {
         }
         Ok(Vault {
             path,
-            note_overrides: HashMap::new(),
-            cached_disk_notes: None,
+            cached_notes: None,
         })
     }
 
@@ -97,81 +90,64 @@ impl Vault {
         let notes = search::find_note_paths(&self.path)
             .collect::<Vec<_>>()
             .into_par_iter()
-            .filter_map(|path| load_cached_disk_note(path).ok())
-            .map(|cached| (cached.note.path.clone(), Arc::new(cached)))
+            .filter_map(|path| Note::from_path(path).ok())
+            .map(|note| (note.path.clone(), Arc::new(note)))
             .collect();
-        self.cached_disk_notes = Some(notes);
+        self.cached_notes = Some(notes);
     }
 
     pub fn has_cached_note(&self, path: impl AsRef<Path>) -> bool {
         let path = self.normalize_path(path);
-        self.cached_disk_notes
+        self.cached_notes
             .as_ref()
             .is_some_and(|notes| notes.contains_key(&path))
     }
 
     fn has_known_note_path(&self, path: &Path) -> bool {
         let path = common::normalize_path(path, None);
-        path.is_file()
-            || self.note_overrides.contains_key(&path)
-            || self
-                .cached_disk_notes
-                .as_ref()
-                .is_some_and(|notes| notes.contains_key(&path))
+        if let Some(cached_notes) = self.cached_notes.as_ref() {
+            cached_notes.contains_key(&path)
+        } else {
+            path.is_file()
+        }
     }
 
     pub fn note_for_path(&self, path: impl AsRef<Path>) -> Result<Note, VaultError> {
         let path = self.normalize_path(path);
-        if let Some(note) = self.note_overrides.get(&path) {
-            return Ok(note.clone());
-        }
-        if let Some(note) = self
-            .cached_disk_notes
-            .as_ref()
-            .and_then(|notes| notes.get(&path))
-            .map(|cached| cached.note.clone())
-        {
-            return Ok(note);
+        if let Some(note) = self.cached_notes.as_ref().and_then(|notes| notes.get(&path)) {
+            return Ok(note.as_ref().clone());
         }
         Ok(Note::from_path(path)?)
     }
 
     pub fn text_for_path(&self, path: impl AsRef<Path>) -> Result<String, VaultError> {
         let path = self.normalize_path(path);
-        if let Some(note) = self.note_overrides.get(&path) {
-            return Ok(note.read(true)?);
-        }
-        if let Some(text) = self
-            .cached_disk_notes
-            .as_ref()
-            .and_then(|notes| notes.get(&path))
-            .map(|cached| cached.text.clone())
-        {
-            return Ok(text);
+        if let Some(note) = self.cached_notes.as_ref().and_then(|notes| notes.get(&path)) {
+            return Ok(note.text().to_string());
         }
         Ok(fs::read_to_string(path)?)
     }
 
     pub fn refresh_cached_note(&mut self, path: impl AsRef<Path>) -> Result<bool, VaultError> {
         let path = self.normalize_path(path);
-        let Some(cached_disk_notes) = self.cached_disk_notes.as_mut() else {
+        let Some(cached_notes) = self.cached_notes.as_mut() else {
             return Ok(false);
         };
         if !Self::is_note_path(&path) || !path.is_file() {
-            cached_disk_notes.remove(&path);
+            cached_notes.remove(&path);
             return Ok(false);
         }
 
-        let cached = load_cached_disk_note(&path)?;
-        cached_disk_notes.insert(cached.note.path.clone(), Arc::new(cached));
+        let note = Note::from_path(&path)?;
+        cached_notes.insert(note.path.clone(), Arc::new(note));
         Ok(true)
     }
 
     pub fn remove_cached_note(&mut self, path: impl AsRef<Path>) -> bool {
         let path = self.normalize_path(path);
-        self.cached_disk_notes
+        self.cached_notes
             .as_mut()
-            .is_some_and(|cached_disk_notes| cached_disk_notes.remove(&path).is_some())
+            .is_some_and(|cached_notes| cached_notes.remove(&path).is_some())
     }
 
     /// Resolve a note based on a path, filename, ID, title, or alias.
@@ -282,101 +258,62 @@ impl Vault {
         Err(VaultError::NoteNotFound(path.to_string_lossy().to_string()))
     }
 
-    /// Loads all notes in the vault in parallel, without retaining body content.
-    ///
-    /// Links and inline tags are still extracted and available on each note.
-    /// Use [`notes_with_content`](Self::notes_with_content) when body text is needed.
+    /// Loads all notes in the vault in parallel, each retaining its full contents in
+    /// [`Note::text`].
     pub fn notes(&self) -> Vec<Result<Note, NoteError>> {
         self.notes_filtered(|_| true)
     }
 
-    /// Like [`notes`](Self::notes), but retains body content in each [`Note::content`].
-    pub fn notes_with_content(&self) -> Vec<Result<Note, NoteError>> {
-        self.notes_filtered_with_content(|_| true)
-    }
-
-    /// Inserts or replaces an in-memory note. While present, this note shadows its on-disk
-    /// counterpart (matched by `note.path`) across all vault search operations. Notes with a path
-    /// that does not exist on disk are included as additional candidates.
+    /// Inserts or replaces an in-memory note in the cached snapshot. While present, this note
+    /// shadows its on-disk counterpart (matched by `note.path`) across all vault operations. Notes
+    /// with a path that does not exist on disk are included as additional candidates.
+    ///
+    /// Only meaningful for a cached vault (see [`open_cached`](Self::open_cached)); a no-op when the
+    /// vault is in disk-walk mode.
     pub fn load_note(&mut self, mut note: Note) {
         let resolved_path = self
             .resolve_note_path(&note.path, false)
             .map(|(n, _)| n)
             .unwrap_or_else(|_| note.path.clone());
         note.path = resolved_path;
-        self.note_overrides.insert(note.path.clone(), note);
+        if let Some(cached_notes) = self.cached_notes.as_mut() {
+            cached_notes.insert(note.path.clone(), Arc::new(note));
+        }
     }
 
-    /// Removes a previously loaded in-memory note, restoring the on-disk version for searches.
-    /// Does nothing if the path is not currently loaded.
+    /// Restores the on-disk version of a note in the cached snapshot, re-reading it from disk (or
+    /// removing it from the cache if it no longer exists). Does nothing in disk-walk mode.
     pub fn unload_note(&mut self, path: &Path) {
         let resolved_path = self
             .resolve_note_path(path, false)
             .map(|(n, _)| n)
             .unwrap_or_else(|_| path.into());
-        self.note_overrides.remove(&resolved_path);
+        let _ = self.refresh_cached_note(&resolved_path);
     }
 
     pub fn note_is_loaded(&self, path: impl AsRef<Path>) -> bool {
-        let path = self.normalize_path(path);
-        self.note_overrides.contains_key(&path)
+        self.has_cached_note(path)
     }
 
     /// Like [`notes`](Self::notes), but skips notes whose path does not satisfy `filter`.
-    /// Filtering happens at the filesystem traversal level, before any file is read.
+    /// In disk-walk mode, filtering happens at the filesystem traversal level, before any file is
+    /// read.
     pub fn notes_filtered(&self, filter: impl Fn(&Path) -> bool) -> Vec<Result<Note, NoteError>> {
-        if let Some(cached_disk_notes) = &self.cached_disk_notes {
-            return self.cached_disk_notes_filtered(cached_disk_notes, filter, false);
+        if let Some(cached_notes) = &self.cached_notes {
+            let mut results: Vec<Result<Note, NoteError>> = cached_notes
+                .values()
+                .filter(|note| filter(&note.path))
+                .map(|note| Ok(note.as_ref().clone()))
+                .collect();
+            results.sort_by(|left, right| {
+                let left_path = left.as_ref().ok().map(|note| &note.path);
+                let right_path = right.as_ref().ok().map(|note| &note.path);
+                left_path.cmp(&right_path)
+            });
+            results
+        } else {
+            search::find_notes_filtered(&self.path, filter)
         }
-        search::find_notes_filtered(&self.path, filter, Some(&self.note_overrides))
-    }
-
-    /// Like [`notes_filtered`](Self::notes_filtered), but retains body content in each [`Note::content`].
-    pub fn notes_filtered_with_content(&self, filter: impl Fn(&Path) -> bool) -> Vec<Result<Note, NoteError>> {
-        if let Some(cached_disk_notes) = &self.cached_disk_notes {
-            return self.cached_disk_notes_filtered(cached_disk_notes, filter, true);
-        }
-        search::find_notes_filtered_with_content(&self.path, filter, Some(&self.note_overrides))
-    }
-
-    fn cached_disk_notes_filtered(
-        &self,
-        cached_disk_notes: &HashMap<PathBuf, Arc<CachedDiskNote>>,
-        filter: impl Fn(&Path) -> bool,
-        with_body: bool,
-    ) -> Vec<Result<Note, NoteError>> {
-        let override_paths = self.note_overrides.keys().cloned().collect::<HashSet<_>>();
-        let mut results = Vec::new();
-
-        for cached in cached_disk_notes.values() {
-            if override_paths.contains(&cached.note.path) || !filter(&cached.note.path) {
-                continue;
-            }
-            let note = if with_body {
-                Note::parse(&cached.note.path, &cached.text)
-            } else {
-                cached.note.clone()
-            };
-            results.push(Ok(note));
-        }
-
-        for note in self.note_overrides.values() {
-            if !filter(&note.path) {
-                continue;
-            }
-            if with_body && note.body.is_none() {
-                results.push(Err(NoteError::BodyNotLoaded));
-            } else {
-                results.push(Ok(note.clone()));
-            }
-        }
-
-        results.sort_by(|left, right| {
-            let left_path = left.as_ref().ok().map(|note| &note.path);
-            let right_path = right.as_ref().ok().map(|note| &note.path);
-            left_path.cmp(&right_path)
-        });
-        results
     }
 
     /// Scans the vault for health issues: duplicate IDs, duplicate aliases, broken links, and stranded notes.
@@ -392,17 +329,12 @@ impl Vault {
     }
 
     /// Returns a [`SearchQuery`](search::SearchQuery) rooted at this vault's path.
-    /// Any notes previously registered via [`load_note`](Self::load_note) are automatically
-    /// included, shadowing their on-disk counterparts.
+    /// For a cached vault, the query runs against the in-memory snapshot (including any notes
+    /// registered via [`load_note`](Self::load_note)); otherwise it walks the filesystem.
     pub fn search(&self) -> search::SearchQuery<'_> {
-        let query = search::SearchQuery::new(&self.path).with_loaded_notes(&self.note_overrides);
-        if let Some(cached_disk_notes) = &self.cached_disk_notes {
-            query.with_cached_notes(
-                cached_disk_notes
-                    .values()
-                    .map(|cached| search::CachedSearchNote::new(&cached.note, &cached.text))
-                    .collect(),
-            )
+        let query = search::SearchQuery::new(&self.path);
+        if let Some(cached_notes) = &self.cached_notes {
+            query.with_cached_notes(cached_notes)
         } else {
             query
         }
@@ -410,14 +342,15 @@ impl Vault {
 
     /// Returns all unique tags used in the vault, aggregated from frontmatter and inline tags.
     pub fn list_tags(&self) -> Result<Vec<String>, VaultError> {
-        if self.cached_disk_notes.is_some() {
+        if self.cached_notes.is_some() {
             let mut tags = BTreeSet::new();
             for note in self.notes_filtered(|_| true).into_iter().filter_map(Result::ok) {
                 tags.extend(note.tags.into_iter().map(|tag| tag.tag.to_lowercase()));
             }
-            return Ok(tags.into_iter().collect());
+            Ok(tags.into_iter().collect())
+        } else {
+            search::find_all_tags(&self.path).map_err(VaultError::Note)
         }
-        search::find_all_tags(&self.path, Some(&self.note_overrides)).map_err(VaultError::Note)
     }
 
     /// Find all occurrences of specific tags, grouped by the note they appear in. Tags are matched
@@ -436,8 +369,8 @@ impl Vault {
                 match lt.location {
                     // Replace frontmatter tags immediately.
                     Location::Frontmatter => {
-                        note.remove_tag(&lt.tag);
-                        note.add_tag(new_tag);
+                        note.remove_tag(&lt.tag)?;
+                        note.add_tag(new_tag)?;
                     }
                     // And gather tags in the body by their line number (1-indexed).
                     Location::Inline(loc) => {
@@ -449,8 +382,7 @@ impl Vault {
 
             if !tags_by_line.is_empty() {
                 // Replace all occurrences of the old tag in the body with the new one.
-                note.load_body()?;
-                let mut lines: Vec<String> = note.body.as_ref().unwrap().lines().map(|s| s.to_string()).collect();
+                let mut lines: Vec<String> = note.body().lines().map(|s| s.to_string()).collect();
                 for (lnum, locs) in tags_by_line.drain() {
                     let line = lines.get_mut(lnum - 1 - note.frontmatter_line_count).unwrap();
                     let mut offset = 0;
@@ -474,12 +406,9 @@ impl Vault {
                 .filter_map(|lt| if lt.tag == new_tag { Some(lt.clone()) } else { None })
                 .collect();
 
-            // If note is loaded, need to update it. Otherwise write to disk.
-            if self.note_is_loaded(&note.path) {
-                self.load_note(note.clone());
-            } else {
-                note.write()?;
-            }
+            // Persist to disk and keep any cached snapshot in sync.
+            note.write()?;
+            self.refresh_cached_note(&note.path)?;
 
             results.push((note, tags));
         }
@@ -493,7 +422,7 @@ impl Vault {
     /// Only wiki links (`[[target]]`) and markdown links (`[text](target.md)`) are
     /// considered. Embed links are excluded. Notes that fail to load are silently skipped.
     pub fn backlinks(&self, target: &Note) -> Result<Vec<(Note, Vec<LocatedLink>)>, VaultError> {
-        if self.cached_disk_notes.is_some() {
+        if self.cached_notes.is_some() {
             let notes: Vec<Note> = self.notes().into_iter().filter_map(Result::ok).collect();
             return Ok(self
                 .backlinks_from(&notes, target)
@@ -616,39 +545,24 @@ impl Vault {
         let op = self.compute_rename_op(note, &new_path)?;
 
         let mut renamed = note.clone();
-        renamed.load_body()?;
-        renamed.path = new_path;
+        renamed.path = new_path.clone();
         if op.frontmatter_id_will_update {
             renamed.id = op.new_stem;
         }
 
-        if self.note_is_loaded(&note.path) {
-            self.load_note(renamed.clone());
-            _ = std::fs::remove_file(&note.path);
-        } else {
-            renamed.write()?;
-            std::fs::remove_file(&note.path)?;
+        renamed.write()?;
+        std::fs::remove_file(&note.path)?;
+        self.remove_cached_note(&note.path);
+        self.refresh_cached_note(&new_path)?;
+
+        for (source_note, replacements) in op.per_note_replacements {
+            let raw_content = self.text_for_path(&source_note.path)?;
+            let new_content = common::rewrite_links(&raw_content, replacements);
+            std::fs::write(&source_note.path, new_content)?;
+            self.refresh_cached_note(&source_note.path)?;
         }
 
-        for (mut source_note, replacements) in op.per_note_replacements {
-            if self.note_is_loaded(&source_note.path) {
-                let new_content = common::rewrite_links(
-                    &source_note
-                        .body
-                        .clone()
-                        .ok_or(VaultError::Note(NoteError::BodyNotLoaded))?,
-                    replacements,
-                );
-                source_note.update_content(Some(&new_content), None)?;
-                self.load_note(source_note);
-            } else {
-                let raw_content = std::fs::read_to_string(&source_note.path)?;
-                let new_content = common::rewrite_links(&raw_content, replacements);
-                std::fs::write(&source_note.path, new_content)?;
-            }
-        }
-
-        Ok(renamed)
+        self.note_for_path(&new_path)
     }
 
     /// Returns a preview of what [`rename`](Self::rename) would change without touching the filesystem.
@@ -705,14 +619,11 @@ impl Vault {
         let note_path = self.normalize_path(note_path);
         let updated = Note::parse(&note_path, &raw);
 
-        if self.note_is_loaded(&note_path) {
-            self.load_note(updated.clone());
-        } else {
-            let parent = note_path.parent().unwrap_or_else(|| Path::new("."));
-            let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
-            tmp.write_all(raw.as_bytes())?;
-            tmp.persist(&note_path).map_err(|e| e.error)?;
-        }
+        let parent = note_path.parent().unwrap_or_else(|| Path::new("."));
+        let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+        tmp.write_all(raw.as_bytes())?;
+        tmp.persist(&note_path).map_err(|e| e.error)?;
+        self.refresh_cached_note(&note_path)?;
 
         Ok(updated)
     }
@@ -893,8 +804,7 @@ impl Vault {
             }
         }
 
-        let dest_is_loaded = self.note_is_loaded(dest_path);
-        let dest_is_new = !dest_is_loaded && !dest_path.exists();
+        let dest_is_new = !dest_path.exists();
 
         let dest_stem = dest_path
             .file_stem()
@@ -962,7 +872,7 @@ impl Vault {
         let (dest_body, dest_fm_tags, dest_fm_aliases, dest_frontmatter) = if dest_is_new {
             (String::new(), Vec::<String>::new(), Vec::<String>::new(), None)
         } else {
-            let d = Note::from_path_with_body(dest_path)?;
+            let d = Note::from_path(dest_path)?;
             let tags = d
                 .frontmatter
                 .as_ref()
@@ -981,7 +891,7 @@ impl Vault {
                 .into_iter()
                 .filter_map(|p| p.as_string().ok())
                 .collect::<Vec<_>>();
-            let body = d.body.as_deref().unwrap_or("").trim_start().to_string();
+            let body = d.body().trim_start().to_string();
             let fm = d.frontmatter;
             (body, tags, aliases, fm)
         };
@@ -992,12 +902,7 @@ impl Vault {
             body_parts.push(dest_body);
         }
         for source in sources {
-            let body = source
-                .body
-                .as_deref()
-                .ok_or(crate::NoteError::BodyNotLoaded)?
-                .trim_start()
-                .to_string();
+            let body = source.body().trim_start().to_string();
             if !body.is_empty() {
                 body_parts.push(body);
             }
@@ -1067,7 +972,6 @@ impl Vault {
 
         Ok(MergeOp {
             dest_is_new,
-            dest_is_loaded,
             merged_content,
             merged_frontmatter,
             merged_tags: tag_strings
@@ -1093,38 +997,35 @@ impl Vault {
         let op = self.compute_merge_op(sources, &dest_path)?;
 
         // Build and write destination note.
-        let dest_note = if op.dest_is_new {
-            let mut dest = Note::builder(dest_path)?
+        if op.dest_is_new {
+            let mut dest = Note::builder(dest_path.clone())?
                 .aliases(&op.merged_aliases)
                 .located_tags(&op.merged_tags)
                 .build()?;
             dest.update_content(Some(&op.merged_content), op.merged_frontmatter)?;
             dest.write()?;
-            dest
-        } else if op.dest_is_loaded {
-            let dest = self.note_overrides.get_mut(&dest_path).unwrap();
-            dest.update_content(Some(&op.merged_content), op.merged_frontmatter)?;
-            dest.clone()
         } else {
-            let mut dest = Note::from_path_with_body(&dest_path)?;
+            let mut dest = Note::from_path(&dest_path)?;
             dest.update_content(Some(&op.merged_content), op.merged_frontmatter)?;
             dest.write()?;
-            Note::from_path(&dest_path)?
         };
+        self.refresh_cached_note(&dest_path)?;
 
         // Rewrite backlinks in external notes.
         for (note_path, replacements) in op.per_note_replacements {
-            let raw_content = std::fs::read_to_string(&note_path)?;
+            let raw_content = self.text_for_path(&note_path)?;
             let new_content = common::rewrite_links(&raw_content, replacements);
             std::fs::write(&note_path, new_content)?;
+            self.refresh_cached_note(&note_path)?;
         }
 
         // Delete source files.
         for source in sources {
             std::fs::remove_file(&source.path)?;
+            self.remove_cached_note(&source.path);
         }
 
-        Ok(dest_note)
+        self.note_for_path(&dest_path)
     }
 
     /// Returns a preview of what [`merge`](Self::merge) would change without touching the filesystem.
@@ -1144,19 +1045,10 @@ impl Vault {
         Ok(MergePreview {
             dest_path: dest_path.to_path_buf(),
             dest_is_new: op.dest_is_new,
-            dest_is_loaded: op.dest_is_loaded,
             sources: sources.iter().map(|s| s.path.clone()).collect(),
             updated_notes,
         })
     }
-}
-
-fn load_cached_disk_note(path: impl AsRef<Path>) -> Result<CachedDiskNote, NoteError> {
-    let path = common::normalize_path(path, None);
-    let text = fs::read_to_string(&path)?;
-    let mut note = Note::parse(&path, &text);
-    note.body = None;
-    Ok(CachedDiskNote { note, text })
 }
 
 struct RenameOp {
@@ -1223,7 +1115,6 @@ pub struct ExtractEdits {
 pub struct MergePreview {
     pub dest_path: PathBuf,
     pub dest_is_new: bool,
-    pub dest_is_loaded: bool,
     /// Source paths that would be deleted.
     pub sources: Vec<PathBuf>,
     /// Notes with backlinks to any source that would be rewritten, sorted by path. Each entry is (path, link_count).
@@ -1232,7 +1123,6 @@ pub struct MergePreview {
 
 struct MergeOp {
     dest_is_new: bool,
-    dest_is_loaded: bool,
     /// Combined body content for the destination note (no leading whitespace).
     merged_content: String,
     /// Merged frontmatter for the destination note.
@@ -2225,7 +2115,7 @@ mod tests {
         fs::write(dir.path().join("note.md"), "Hello world.").unwrap();
 
         let mut vault = Vault::open(dir.path()).unwrap();
-        let note = Note::from_path_with_body(dir.path().join("note.md")).unwrap();
+        let note = Note::from_path(dir.path().join("note.md")).unwrap();
         vault.patch_note(&note, "world", "Rust").unwrap();
 
         let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
@@ -2238,7 +2128,7 @@ mod tests {
         fs::write(dir.path().join("note.md"), "Hello world.").unwrap();
 
         let mut vault = Vault::open(dir.path()).unwrap();
-        let note = Note::from_path_with_body(dir.path().join("note.md")).unwrap();
+        let note = Note::from_path(dir.path().join("note.md")).unwrap();
         let result = vault.patch_note(&note, "missing", "replacement");
 
         assert!(matches!(result, Err(VaultError::StringNotFound(_))));
@@ -2250,7 +2140,7 @@ mod tests {
         fs::write(dir.path().join("note.md"), "foo and foo").unwrap();
 
         let mut vault = Vault::open(dir.path()).unwrap();
-        let note = Note::from_path_with_body(dir.path().join("note.md")).unwrap();
+        let note = Note::from_path(dir.path().join("note.md")).unwrap();
         let result = vault.patch_note(&note, "foo", "bar");
 
         assert!(matches!(result, Err(VaultError::StringFoundMultipleTimes(_))));
@@ -2262,7 +2152,7 @@ mod tests {
         fs::write(dir.path().join("note.md"), "---\ntags: []\n---\n\nHello world.").unwrap();
 
         let mut vault = Vault::open(dir.path()).unwrap();
-        let note = Note::from_path_with_body(dir.path().join("note.md")).unwrap();
+        let note = Note::from_path(dir.path().join("note.md")).unwrap();
         let patched = vault.patch_note(&note, "world", "Rust").unwrap();
 
         let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
@@ -2279,7 +2169,7 @@ mod tests {
         fs::write(dir.path().join("note.md"), "---\ntitle: Old Title\n---\nBody.").unwrap();
 
         let mut vault = Vault::open(dir.path()).unwrap();
-        let note = Note::from_path_with_body(dir.path().join("note.md")).unwrap();
+        let note = Note::from_path(dir.path().join("note.md")).unwrap();
         assert!(vault.patch_note(&note, "Old Title", "New Title").is_err());
     }
 
@@ -2289,10 +2179,10 @@ mod tests {
         fs::write(dir.path().join("note.md"), "---\ntitle: Before\n---\n# Before\nBody.").unwrap();
 
         let mut vault = Vault::open(dir.path()).unwrap();
-        let note = Note::from_path_with_body(dir.path().join("note.md")).unwrap();
+        let note = Note::from_path(dir.path().join("note.md")).unwrap();
         let patched = vault.patch_note(&note, "Before", "After").unwrap();
 
-        assert_eq!(patched.body, Some("# After\nBody.".to_string()));
+        assert_eq!(patched.body(), "# After\nBody.");
     }
 
     // --- append_to_note tests ---
@@ -2308,7 +2198,7 @@ mod tests {
 
         let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
         assert_eq!(content, "Hello.\nWorld.");
-        assert_eq!(appended.body, Some("Hello.\nWorld.".to_string()));
+        assert_eq!(appended.body(), "Hello.\nWorld.");
     }
 
     #[test]
@@ -2383,7 +2273,7 @@ mod tests {
             fs::read_to_string(dir.path().join("new.md")).unwrap(),
             "---\nid: new\n---\n\nworld"
         );
-        assert_eq!(result.source_note.body.as_deref(), Some("Hello [[new]]."));
+        assert_eq!(result.source_note.body(), "Hello [[new]].");
         assert_eq!(result.new_note.id, "new");
     }
 
@@ -2559,7 +2449,7 @@ mod tests {
         fs::write(dir.path().join("old.md"), "Content.").unwrap();
 
         let mut vault = Vault::open(dir.path()).unwrap();
-        let note = Note::from_path_with_body(dir.path().join("old.md")).unwrap();
+        let note = Note::from_path(dir.path().join("old.md")).unwrap();
         let renamed = vault.rename(&note, &dir.path().join("new.md")).unwrap();
 
         assert!(!dir.path().join("old.md").exists());
@@ -2696,7 +2586,7 @@ mod tests {
         fs::write(dir.path().join("old.md"), "Content.").unwrap();
 
         let vault = Vault::open(dir.path()).unwrap();
-        let note = Note::from_path_with_body(dir.path().join("old.md")).unwrap();
+        let note = Note::from_path(dir.path().join("old.md")).unwrap();
         let preview = vault.rename_preview(&note, &dir.path().join("new.md")).unwrap();
 
         assert_eq!(
@@ -2935,8 +2825,8 @@ mod tests {
         fs::write(dir.path().join("b.md"), "Body B.").unwrap();
 
         let mut vault = Vault::open(dir.path()).unwrap();
-        let a = Note::from_path_with_body(dir.path().join("a.md")).unwrap();
-        let b = Note::from_path_with_body(dir.path().join("b.md")).unwrap();
+        let a = Note::from_path(dir.path().join("a.md")).unwrap();
+        let b = Note::from_path(dir.path().join("b.md")).unwrap();
         let dest_path = dir.path().join("combined.md");
         vault.merge(&[a, b], &dest_path).unwrap();
 
@@ -2955,7 +2845,7 @@ mod tests {
         fs::write(dir.path().join("dest.md"), "Existing body.").unwrap();
 
         let mut vault = Vault::open(dir.path()).unwrap();
-        let src = Note::from_path_with_body(dir.path().join("src.md")).unwrap();
+        let src = Note::from_path(dir.path().join("src.md")).unwrap();
         vault.merge(&[src], &dir.path().join("dest.md")).unwrap();
 
         assert!(!dir.path().join("src.md").exists());
@@ -2971,8 +2861,8 @@ mod tests {
         fs::write(dir.path().join("b.md"), "---\ntags: [obsidian]\n---\nBody B.").unwrap();
 
         let mut vault = Vault::open(dir.path()).unwrap();
-        let a = Note::from_path_with_body(dir.path().join("a.md")).unwrap();
-        let b = Note::from_path_with_body(dir.path().join("b.md")).unwrap();
+        let a = Note::from_path(dir.path().join("a.md")).unwrap();
+        let b = Note::from_path(dir.path().join("b.md")).unwrap();
         let dest_path = dir.path().join("combined.md");
         vault.merge(&[a, b], &dest_path).unwrap();
 
@@ -3001,7 +2891,7 @@ mod tests {
         .unwrap();
 
         let mut vault = Vault::open(dir.path()).unwrap();
-        let src = Note::from_path_with_body(dir.path().join("src.md")).unwrap();
+        let src = Note::from_path(dir.path().join("src.md")).unwrap();
         let dest_path = dir.path().join("dest.md");
         vault.merge(&[src], &dest_path).unwrap();
 
@@ -3024,7 +2914,7 @@ mod tests {
         .unwrap();
 
         let mut vault = Vault::open(dir.path()).unwrap();
-        let src = Note::from_path_with_body(dir.path().join("src.md")).unwrap();
+        let src = Note::from_path(dir.path().join("src.md")).unwrap();
         let dest_path = dir.path().join("dest.md");
         vault.merge(&[src], &dest_path).unwrap();
 
@@ -3041,7 +2931,7 @@ mod tests {
         fs::write(dir.path().join("dest.md"), "---\nauthor: bob\n---\nDest.").unwrap();
 
         let mut vault = Vault::open(dir.path()).unwrap();
-        let src = Note::from_path_with_body(dir.path().join("src.md")).unwrap();
+        let src = Note::from_path(dir.path().join("src.md")).unwrap();
         vault.merge(&[src], &dir.path().join("dest.md")).unwrap();
 
         let dest = Note::from_path(dir.path().join("dest.md")).unwrap();
@@ -3056,7 +2946,7 @@ mod tests {
         fs::write(dir.path().join("linker.md"), "See [[src]].").unwrap();
 
         let mut vault = Vault::open(dir.path()).unwrap();
-        let src = Note::from_path_with_body(dir.path().join("src.md")).unwrap();
+        let src = Note::from_path(dir.path().join("src.md")).unwrap();
         vault.merge(&[src], &dir.path().join("dest.md")).unwrap();
 
         let linker = fs::read_to_string(dir.path().join("linker.md")).unwrap();
@@ -3082,7 +2972,7 @@ mod tests {
         fs::write(dir.path().join("linker.md"), "See [[src]].").unwrap();
 
         let vault = Vault::open(dir.path()).unwrap();
-        let src = Note::from_path_with_body(dir.path().join("src.md")).unwrap();
+        let src = Note::from_path(dir.path().join("src.md")).unwrap();
         vault.merge_preview(&[src], dir.path().join("dest.md")).unwrap();
 
         assert!(dir.path().join("src.md").exists());

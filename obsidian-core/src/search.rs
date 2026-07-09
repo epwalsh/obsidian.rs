@@ -1,5 +1,6 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use ignore::WalkBuilder;
@@ -94,23 +95,13 @@ pub fn sort_notes_by<T>(items: &mut [T], key: impl Fn(&T) -> Option<&Note>, sort
 /// - [`or_content_matches`](SearchQuery::or_content_matches): OR — content matches any of these patterns
 pub struct SearchQuery<'a> {
     config: SearchQueryConfig,
-    loaded_notes: Option<&'a HashMap<PathBuf, Note>>,
-    cached_notes: Option<Vec<CachedSearchNote<'a>>>,
-}
-
-pub(crate) struct CachedSearchNote<'a> {
-    pub(crate) note: &'a Note,
-    pub(crate) text: &'a str,
-}
-
-impl<'a> CachedSearchNote<'a> {
-    pub(crate) fn new(note: &'a Note, text: &'a str) -> Self {
-        Self { note, text }
-    }
+    /// When present, an authoritative complete in-memory snapshot of the vault. The query runs
+    /// against it and never touches the filesystem. When `None`, the query walks the vault root.
+    cached_notes: Option<&'a HashMap<PathBuf, Arc<Note>>>,
 }
 
 /// All owned, non-reference fields of [`SearchQuery`]. Extracted into its own struct so that
-/// [`SearchQuery::with_loaded_notes`] can change the lifetime parameter without reconstructing
+/// [`SearchQuery::with_cached_notes`] can change the lifetime parameter without reconstructing
 /// every field individually.
 struct SearchQueryConfig {
     root: PathBuf,
@@ -164,30 +155,20 @@ impl SearchQuery<'static> {
                 include_inline_tags: false,
                 sort_order: None,
             },
-            loaded_notes: None,
-            cached_notes: None,
-        }
-    }
-
-    /// Provide in-memory notes to use instead of their on-disk counterparts.
-    ///
-    /// Each note's `note.path` is matched against the vault's note paths on disk. Notes whose
-    /// paths exist on disk shadow the disk version; notes with no on-disk counterpart are included
-    /// as additional candidates. In-memory notes are assumed to have `content` populated whenever
-    /// content filters (e.g. [`and_content_contains`](Self::and_content_contains)) are used.
-    pub fn with_loaded_notes<'a>(self, notes: &'a HashMap<PathBuf, Note>) -> SearchQuery<'a> {
-        SearchQuery {
-            config: self.config,
-            loaded_notes: Some(notes),
             cached_notes: None,
         }
     }
 }
 
 impl<'a> SearchQuery<'a> {
-    pub(crate) fn with_cached_notes(mut self, notes: Vec<CachedSearchNote<'a>>) -> Self {
-        self.cached_notes = Some(notes);
-        self
+    /// Run the query against an authoritative in-memory snapshot of the vault instead of walking
+    /// the filesystem. The snapshot is assumed to be complete: notes not present in it are treated
+    /// as not existing.
+    pub(crate) fn with_cached_notes(self, notes: &'a HashMap<PathBuf, Arc<Note>>) -> SearchQuery<'a> {
+        SearchQuery {
+            config: self.config,
+            cached_notes: Some(notes),
+        }
     }
 
     /// Note path must match this glob pattern (matched against the note's path relative to the vault root).
@@ -332,11 +313,7 @@ impl<'a> SearchQuery<'a> {
     /// Returns `Err` if any glob or regex pattern is invalid.
     /// Each inner `Err` represents an I/O failure loading a specific note.
     pub fn execute(self) -> Result<Vec<Result<Note, NoteError>>, SearchError> {
-        let SearchQuery {
-            config,
-            loaded_notes,
-            cached_notes,
-        } = self;
+        let SearchQuery { config, cached_notes } = self;
         let SearchQueryConfig {
             root,
             and_globs,
@@ -407,11 +384,6 @@ impl<'a> SearchQuery<'a> {
         let and_glob_set = build_glob_set(&and_globs)?;
         let or_glob_set = build_glob_set(&or_globs)?;
 
-        // Build a set of paths covered by in-memory overrides so they can be excluded from the disk walk.
-        let override_paths: HashSet<&Path> = loaded_notes
-            .map(|m| m.keys().map(|p| p.as_path()).collect())
-            .unwrap_or_default();
-
         let mut and_regexes: Vec<Regex> = Vec::new();
         for pattern in and_content_matches {
             let pattern = match case_sensitivity.unwrap_or(CaseSensitivity::Smart) {
@@ -446,10 +418,6 @@ impl<'a> SearchQuery<'a> {
             or_regexes.push(re);
         }
 
-        let needs_content = !and_content_contains.is_empty()
-            || !or_content_contains.is_empty()
-            || !and_regexes.is_empty()
-            || !or_regexes.is_empty();
         let has_or_filters = !or_globs.is_empty()
             || !or_ids.is_empty()
             || !or_tags.is_empty()
@@ -531,18 +499,14 @@ impl<'a> SearchQuery<'a> {
             }
 
             if !and_content_contains.is_empty()
-                && !and_content_contains.iter().all(|s| {
-                    string_contains(
-                        note.body.as_deref().unwrap(),
-                        s,
-                        case_sensitivity.unwrap_or(CaseSensitivity::Smart),
-                    )
-                })
+                && !and_content_contains
+                    .iter()
+                    .all(|s| string_contains(note.body(), s, case_sensitivity.unwrap_or(CaseSensitivity::Smart)))
             {
                 return None;
             }
 
-            if !and_regexes.is_empty() && !and_regexes.iter().all(|re| re.is_match(note.body.as_deref().unwrap())) {
+            if !and_regexes.is_empty() && !and_regexes.iter().all(|re| re.is_match(note.body())) {
                 return None;
             }
 
@@ -605,17 +569,14 @@ impl<'a> SearchQuery<'a> {
                 return Some(Ok(note));
             }
 
-            if or_content_contains.iter().any(|s| {
-                string_contains(
-                    note.body.as_deref().unwrap(),
-                    s,
-                    case_sensitivity.unwrap_or(CaseSensitivity::Smart),
-                )
-            }) {
+            if or_content_contains
+                .iter()
+                .any(|s| string_contains(note.body(), s, case_sensitivity.unwrap_or(CaseSensitivity::Smart)))
+            {
                 return Some(Ok(note));
             }
 
-            if or_regexes.iter().any(|re| re.is_match(note.body.as_deref().unwrap())) {
+            if or_regexes.iter().any(|re| re.is_match(note.body())) {
                 return Some(Ok(note));
             }
 
@@ -631,26 +592,17 @@ impl<'a> SearchQuery<'a> {
 
         let mut results: Vec<Result<Note, NoteError>> = if let Some(cached_notes) = cached_notes {
             cached_notes
-                .into_iter()
-                .filter_map(|cached| {
-                    if override_paths.contains(cached.note.path.as_path()) {
-                        return None;
-                    }
-                    let rel = cached.note.path.strip_prefix(&root).unwrap_or(&cached.note.path);
+                .values()
+                .filter_map(|note| {
+                    let rel = note.path.strip_prefix(&root).unwrap_or(&note.path);
                     if !and_globs.is_empty() && !and_glob_set.is_match(rel) {
                         return None;
                     }
-                    let note = if needs_content {
-                        Note::parse(&cached.note.path, cached.text)
-                    } else {
-                        cached.note.clone()
-                    };
-                    filter_note(note, rel)
+                    filter_note(note.as_ref().clone(), rel)
                 })
                 .collect()
         } else {
             let paths: Vec<PathBuf> = find_note_paths(&root)
-                .filter(|path| !override_paths.contains(path.as_path()))
                 .filter(|path| {
                     if and_globs.is_empty() {
                         return true;
@@ -664,12 +616,7 @@ impl<'a> SearchQuery<'a> {
                 .into_par_iter()
                 .filter_map(|path| -> Option<Result<Note, NoteError>> {
                     let rel = path.strip_prefix(&root).unwrap_or(&path);
-                    let load = if needs_content {
-                        Note::from_path_with_body(&path)
-                    } else {
-                        Note::from_path(&path)
-                    };
-                    let note = match load {
+                    let note = match Note::from_path(&path) {
                         Ok(n) => n,
                         Err(e) => return Some(Err(e)),
                     };
@@ -677,29 +624,6 @@ impl<'a> SearchQuery<'a> {
                 })
                 .collect()
         };
-
-        // Process in-memory override notes sequentially (typically a small set).
-        if let Some(notes) = loaded_notes {
-            for note in notes.values() {
-                // Apply and_glob pre-filter.
-                if !and_globs.is_empty() {
-                    let rel = note.path.strip_prefix(&root).unwrap_or(&note.path);
-                    if !and_glob_set.is_match(rel) {
-                        continue;
-                    }
-                }
-                // Guard against missing content when content filters are active.
-                if needs_content && note.body.is_none() {
-                    results.push(Err(NoteError::BodyNotLoaded));
-                    continue;
-                }
-                // Compute rel as owned PathBuf so we can move the cloned note into filter_note.
-                let rel_buf = note.path.strip_prefix(&root).unwrap_or(&note.path).to_path_buf();
-                if let Some(result) = filter_note(note.clone(), &rel_buf) {
-                    results.push(result);
-                }
-            }
-        }
 
         if let Some(sort_order) = sort_order {
             sort_notes_by(&mut results, |r| r.as_ref().ok(), &sort_order);
@@ -731,7 +655,7 @@ pub fn find_note_paths(root: impl AsRef<Path>) -> impl Iterator<Item = PathBuf> 
         .map(|entry| entry.into_path())
 }
 
-/// Loads all notes found recursively under `root` in parallel, without retaining body content.
+/// Loads all notes found recursively under `root` in parallel, each retaining its full contents.
 pub fn find_notes(root: impl AsRef<Path>) -> Vec<Result<Note, NoteError>> {
     find_note_paths(root)
         .collect::<Vec<_>>()
@@ -740,19 +664,11 @@ pub fn find_notes(root: impl AsRef<Path>) -> Vec<Result<Note, NoteError>> {
         .collect()
 }
 
-/// Find all tags used across the vault. When `loaded_notes` is provided, notes whose paths appear
-/// in the map are excluded from the disk walk and the in-memory versions are used instead.
-pub fn find_all_tags(
-    root: impl AsRef<Path>,
-    loaded_notes: Option<&HashMap<PathBuf, Note>>,
-) -> Result<Vec<String>, NoteError> {
+/// Find all tags used across the vault.
+pub fn find_all_tags(root: impl AsRef<Path>) -> Result<Vec<String>, NoteError> {
     let root = root.as_ref();
-    let override_paths: HashSet<&Path> = loaded_notes
-        .map(|m| m.keys().map(|p| p.as_path()).collect())
-        .unwrap_or_default();
 
-    let mut tags: BTreeSet<String> = find_note_paths(root)
-        .filter(|p| !override_paths.contains(p.as_path()))
+    let tags: BTreeSet<String> = find_note_paths(root)
         .collect::<Vec<_>>()
         .into_par_iter()
         .map(Note::from_path)
@@ -767,34 +683,13 @@ pub fn find_all_tags(
         .flatten()
         .collect::<BTreeSet<String>>();
 
-    // Include tags from in-memory notes.
-    if let Some(notes) = loaded_notes {
-        for note in notes.values() {
-            for lt in &note.tags {
-                tags.insert(lt.tag.to_lowercase());
-            }
-        }
-    }
-
     Ok(tags.into_iter().collect())
 }
 
 /// Find occurrences of specific tags. Returns a list of located tags grouped by the note in which
-/// they were found. When `loaded_notes` is provided, notes whose paths appear in the map are
-/// excluded from the disk walk and the in-memory versions are used instead.
-pub fn find_tags(
-    root: impl AsRef<Path>,
-    tags: &[String],
-    loaded_notes: Option<&HashMap<PathBuf, Note>>,
-) -> Result<Vec<(Note, Vec<crate::LocatedTag>)>, SearchError> {
-    let root_ref = root.as_ref();
-    let query = if let Some(loaded) = loaded_notes {
-        SearchQuery::new(root_ref).with_loaded_notes(loaded)
-    } else {
-        SearchQuery::new(root_ref)
-    };
-
-    find_tags_with_query(query, tags)
+/// they were found.
+pub fn find_tags(root: impl AsRef<Path>, tags: &[String]) -> Result<Vec<(Note, Vec<crate::LocatedTag>)>, SearchError> {
+    find_tags_with_query(SearchQuery::new(root.as_ref()), tags)
 }
 
 pub(crate) fn find_tags_with_query(
@@ -849,76 +744,15 @@ fn matching_tags_for_notes(
         .collect()
 }
 
-/// Like [`find_notes`], but retains body content in each [`Note::content`].
-pub fn find_notes_with_content(root: impl AsRef<Path>) -> Vec<Result<Note, NoteError>> {
-    find_note_paths(root)
-        .collect::<Vec<_>>()
-        .into_par_iter()
-        .map(Note::from_path_with_body)
-        .collect()
-}
-
 /// Like [`find_notes`], but only loads notes whose path satisfies `filter`.
 /// Filtering happens before any file I/O, so non-matching files are never read.
-/// When `loaded_notes` is provided, notes whose paths appear in the map are excluded from the
-/// disk walk and the in-memory versions are used instead (if they also pass `filter`).
-pub fn find_notes_filtered(
-    root: impl AsRef<Path>,
-    filter: impl Fn(&Path) -> bool,
-    loaded_notes: Option<&HashMap<PathBuf, Note>>,
-) -> Vec<Result<Note, NoteError>> {
-    let root = root.as_ref();
-    let override_paths: HashSet<&Path> = loaded_notes
-        .map(|m| m.keys().map(|p| p.as_path()).collect())
-        .unwrap_or_default();
-
-    let mut results: Vec<Result<Note, NoteError>> = find_note_paths(root)
-        .filter(|path| !override_paths.contains(path.as_path()))
+pub fn find_notes_filtered(root: impl AsRef<Path>, filter: impl Fn(&Path) -> bool) -> Vec<Result<Note, NoteError>> {
+    find_note_paths(root.as_ref())
         .filter(|path| filter(path))
         .collect::<Vec<_>>()
         .into_par_iter()
         .map(Note::from_path)
-        .collect();
-
-    if let Some(notes) = loaded_notes {
-        for note in notes.values() {
-            if filter(&note.path) {
-                results.push(Ok(note.clone()));
-            }
-        }
-    }
-
-    results
-}
-
-/// Like [`find_notes_filtered`], but retains body content in each [`Note::content`].
-pub fn find_notes_filtered_with_content(
-    root: impl AsRef<Path>,
-    filter: impl Fn(&Path) -> bool,
-    loaded_notes: Option<&HashMap<PathBuf, Note>>,
-) -> Vec<Result<Note, NoteError>> {
-    let root = root.as_ref();
-    let override_paths: HashSet<&Path> = loaded_notes
-        .map(|m| m.keys().map(|p| p.as_path()).collect())
-        .unwrap_or_default();
-
-    let mut results: Vec<Result<Note, NoteError>> = find_note_paths(root)
-        .filter(|path| !override_paths.contains(path.as_path()))
-        .filter(|path| filter(path))
-        .collect::<Vec<_>>()
-        .into_par_iter()
-        .map(Note::from_path_with_body)
-        .collect();
-
-    if let Some(notes) = loaded_notes {
-        for note in notes.values() {
-            if filter(&note.path) {
-                results.push(Ok(note.clone()));
-            }
-        }
-    }
-
-    results
+        .collect()
 }
 
 pub(crate) fn link_targets_note(source: &Note, link: &Link, target: &Note, vault_path: &Path) -> bool {
@@ -1410,90 +1244,74 @@ mod tests {
         assert_eq!(ids, vec!["tagged"]);
     }
 
-    // --- with_loaded_notes tests ---
+    // --- with_cached_notes (snapshot) tests ---
+
+    fn snapshot(notes: Vec<Note>) -> HashMap<PathBuf, Arc<Note>> {
+        notes
+            .into_iter()
+            .map(|note| (note.path.clone(), Arc::new(note)))
+            .collect()
+    }
 
     #[test]
-    fn with_loaded_notes_replaces_disk_version() {
+    fn with_cached_notes_uses_snapshot_content() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("note.md");
-        write_note(&path, "disk content");
-
-        // Override with in-memory version that has different content.
-        let mut in_memory = Note::from_path_with_body(&path).unwrap();
-        in_memory.body = Some("in-memory content".to_string());
-        let overrides: HashMap<PathBuf, Note> = [(path.clone(), in_memory)].into_iter().collect();
+        let snapshot = snapshot(vec![Note::parse(&path, "in-memory content")]);
 
         let notes = unwrap_notes(
             SearchQuery::new(dir.path())
                 .and_content_contains("in-memory")
-                .with_loaded_notes(&overrides)
+                .with_cached_notes(&snapshot)
                 .execute()
                 .unwrap(),
         );
         assert_eq!(notes.len(), 1);
 
-        // The disk version (with "disk content") should not appear.
-        let disk_match = unwrap_notes(
+        // The snapshot is authoritative; the filesystem is never consulted.
+        let no_match = unwrap_notes(
             SearchQuery::new(dir.path())
                 .and_content_contains("disk")
+                .with_cached_notes(&snapshot)
                 .execute()
                 .unwrap(),
         );
-        assert_eq!(disk_match.len(), 1); // baseline: disk has "disk content"
-
-        let overrides2: HashMap<PathBuf, Note> = {
-            let mut m2 = Note::from_path_with_body(&path).unwrap();
-            m2.body = Some("in-memory content".to_string());
-            [(path, m2)].into_iter().collect()
-        };
-        let no_disk_match = unwrap_notes(
-            SearchQuery::new(dir.path())
-                .and_content_contains("disk")
-                .with_loaded_notes(&overrides2)
-                .execute()
-                .unwrap(),
-        );
-        assert!(no_disk_match.is_empty());
+        assert!(no_match.is_empty());
     }
 
     #[test]
-    fn with_loaded_notes_no_double_counting() {
+    fn with_cached_notes_returns_each_note_once() {
         let dir = tempfile::tempdir().unwrap();
-        write_note(&dir.path().join("a.md"), "Note A.");
-        write_note(&dir.path().join("b.md"), "Note B.");
-        write_note(&dir.path().join("c.md"), "Note C.");
-
-        let path_a = dir.path().join("a.md");
-        let override_a = Note::from_path(&path_a).unwrap();
-        let overrides: HashMap<PathBuf, Note> = [(path_a, override_a)].into_iter().collect();
+        let snapshot = snapshot(vec![
+            Note::parse(dir.path().join("a.md"), "Note A."),
+            Note::parse(dir.path().join("b.md"), "Note B."),
+            Note::parse(dir.path().join("c.md"), "Note C."),
+        ]);
 
         let notes = unwrap_notes(
             SearchQuery::new(dir.path())
-                .with_loaded_notes(&overrides)
+                .with_cached_notes(&snapshot)
                 .execute()
                 .unwrap(),
         );
-        // Should still be exactly 3, not 4.
         assert_eq!(notes.len(), 3);
     }
 
     #[test]
-    fn with_loaded_notes_new_note_not_on_disk() {
+    fn with_cached_notes_includes_notes_not_on_disk() {
         let dir = tempfile::tempdir().unwrap();
-        write_note(&dir.path().join("existing.md"), "Existing note.");
-
-        // Create an in-memory note whose path does not exist on disk.
-        let new_path = dir.path().join("new-unsaved.md");
-        let new_note = Note::builder(&new_path)
-            .unwrap()
-            .body("Brand new content.")
-            .build()
-            .unwrap();
-        let overrides: HashMap<PathBuf, Note> = [(new_path, new_note)].into_iter().collect();
+        let snapshot = snapshot(vec![
+            Note::parse(dir.path().join("existing.md"), "Existing note."),
+            Note::builder(dir.path().join("new-unsaved.md"))
+                .unwrap()
+                .body("Brand new content.")
+                .build()
+                .unwrap(),
+        ]);
 
         let ids = sorted_ids(unwrap_notes(
             SearchQuery::new(dir.path())
-                .with_loaded_notes(&overrides)
+                .with_cached_notes(&snapshot)
                 .execute()
                 .unwrap(),
         ));
@@ -1501,34 +1319,26 @@ mod tests {
     }
 
     #[test]
-    fn with_loaded_notes_respects_tag_filter() {
+    fn with_cached_notes_respects_tag_filter() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("note.md");
-        write_note(&path, "---\ntags: [old-tag]\n---\nContent.");
+        let snapshot = snapshot(vec![Note::parse(
+            dir.path().join("note.md"),
+            "---\ntags: [new-tag]\n---\nContent.",
+        )]);
 
-        // Override with a note that has a different tag.
-        let mut override_note = Note::from_path(&path).unwrap();
-        override_note.tags = vec![crate::LocatedTag {
-            tag: "new-tag".to_string(),
-            location: crate::Location::Frontmatter,
-        }];
-        let overrides: HashMap<PathBuf, Note> = [(path, override_note)].into_iter().collect();
-
-        // Should find the override note via the new tag.
         let ids = sorted_ids(unwrap_notes(
             SearchQuery::new(dir.path())
                 .and_has_tag("new-tag")
-                .with_loaded_notes(&overrides)
+                .with_cached_notes(&snapshot)
                 .execute()
                 .unwrap(),
         ));
         assert_eq!(ids, vec!["note"]);
 
-        // Should NOT find via the old tag (disk version is excluded).
         let ids_old = sorted_ids(unwrap_notes(
             SearchQuery::new(dir.path())
                 .and_has_tag("old-tag")
-                .with_loaded_notes(&overrides)
+                .with_cached_notes(&snapshot)
                 .execute()
                 .unwrap(),
         ));
@@ -1536,24 +1346,17 @@ mod tests {
     }
 
     #[test]
-    fn with_loaded_notes_glob_filter_applied_to_override() {
+    fn with_cached_notes_glob_filter_applied() {
         let dir = tempfile::tempdir().unwrap();
-        let subdir = dir.path().join("notes");
-        write_note(&subdir.join("included.md"), "In notes/.");
-
-        // In-memory note at root level — should be excluded by the and_glob("notes/**") filter.
-        let root_path = dir.path().join("outside.md");
-        let outside_note = Note::builder(&root_path)
-            .unwrap()
-            .body("Outside notes dir.")
-            .build()
-            .unwrap();
-        let overrides: HashMap<PathBuf, Note> = [(root_path, outside_note)].into_iter().collect();
+        let snapshot = snapshot(vec![
+            Note::parse(dir.path().join("notes/included.md"), "In notes/."),
+            Note::parse(dir.path().join("outside.md"), "Outside notes dir."),
+        ]);
 
         let ids = sorted_ids(unwrap_notes(
             SearchQuery::new(dir.path())
                 .and_glob("notes/**")
-                .with_loaded_notes(&overrides)
+                .with_cached_notes(&snapshot)
                 .execute()
                 .unwrap(),
         ));
@@ -1561,52 +1364,18 @@ mod tests {
     }
 
     #[test]
-    fn with_loaded_notes_content_not_loaded_returns_error() {
+    fn with_cached_notes_multiple_tagged_notes() {
         let dir = tempfile::tempdir().unwrap();
+        let snapshot = snapshot(vec![
+            Note::parse(dir.path().join("a.md"), "---\ntags: [new]\n---\nContent A."),
+            Note::parse(dir.path().join("b.md"), "---\ntags: [new]\n---\nContent B."),
+            Note::parse(dir.path().join("c.md"), "---\ntags: [old]\n---\nContent C."),
+        ]);
 
-        // In-memory note with no content loaded.
-        let path = dir.path().join("no-content.md");
-        let note = Note::builder(&path).unwrap().build().unwrap();
-        let overrides: HashMap<PathBuf, Note> = [(path, note)].into_iter().collect();
-
-        let results = SearchQuery::new(dir.path())
-            .and_content_contains("anything")
-            .with_loaded_notes(&overrides)
-            .execute()
-            .unwrap();
-
-        assert_eq!(results.len(), 1);
-        assert!(matches!(results[0], Err(NoteError::BodyNotLoaded)));
-    }
-
-    #[test]
-    fn with_loaded_notes_multiple_overrides() {
-        let dir = tempfile::tempdir().unwrap();
-        write_note(&dir.path().join("a.md"), "---\ntags: [old]\n---\nContent A.");
-        write_note(&dir.path().join("b.md"), "---\ntags: [old]\n---\nContent B.");
-        write_note(&dir.path().join("c.md"), "---\ntags: [old]\n---\nContent C.");
-
-        let path_a = dir.path().join("a.md");
-        let path_b = dir.path().join("b.md");
-
-        let mut override_a = Note::from_path(&path_a).unwrap();
-        override_a.tags = vec![crate::LocatedTag {
-            tag: "new".to_string(),
-            location: crate::Location::Frontmatter,
-        }];
-        let mut override_b = Note::from_path(&path_b).unwrap();
-        override_b.tags = vec![crate::LocatedTag {
-            tag: "new".to_string(),
-            location: crate::Location::Frontmatter,
-        }];
-
-        let overrides: HashMap<PathBuf, Note> = [(path_a, override_a), (path_b, override_b)].into_iter().collect();
-
-        // "new" tag should match both overrides but not "c" (which has "old" on disk).
         let ids = sorted_ids(unwrap_notes(
             SearchQuery::new(dir.path())
                 .and_has_tag("new")
-                .with_loaded_notes(&overrides)
+                .with_cached_notes(&snapshot)
                 .execute()
                 .unwrap(),
         ));

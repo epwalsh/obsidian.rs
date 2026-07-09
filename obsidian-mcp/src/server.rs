@@ -223,14 +223,13 @@ impl VaultServer {
             let vault = vault.lock().unwrap();
             let include_frontmatter = p.include_frontmatter.unwrap_or(true);
             let include_content = p.include_content.unwrap_or(true);
-            let mut note = vault.resolve_note(&p.note).map_err(vault_err)?;
+            let note = vault.resolve_note(&p.note).map_err(vault_err)?;
 
             let mut out = json!({});
             if include_frontmatter {
                 out["frontmatter"] = serde_json::Value::Object(note.frontmatter_json().map_err(note_err)?);
             }
             if include_content {
-                note.load_body().map_err(note_err)?; // Ensure content is loaded before reading.
                 out["content"] = json!(note.read(false).map_err(note_err)?);
             }
             Ok(out)
@@ -309,14 +308,14 @@ impl VaultServer {
             let mut note = Note::parse(&note_path, &p.content);
 
             for tag in p.tags.unwrap_or_default() {
-                note.add_tag(tag);
+                note.add_tag(tag).map_err(note_err)?;
             }
             for alias in p.aliases.unwrap_or_default() {
-                note.add_alias(alias);
+                note.add_alias(alias).map_err(note_err)?;
             }
             if let Some(title) = p.title {
                 note.title = Some(title.clone());
-                note.add_alias(title);
+                note.add_alias(title).map_err(note_err)?;
             } else if note.title.is_none() {
                 if !note.aliases.is_empty() {
                     note.title = Some(note.aliases[0].clone());
@@ -427,15 +426,15 @@ impl VaultServer {
 
             let mut dirty = false;
             for tag in p.add_tags.unwrap_or_default() {
-                note.add_tag(tag);
+                note.add_tag(tag).map_err(note_err)?;
                 dirty = true;
             }
             for tag in p.remove_tags.unwrap_or_default() {
-                note.remove_tag(&tag);
+                note.remove_tag(&tag).map_err(note_err)?;
                 dirty = true;
             }
             for alias in p.add_aliases.unwrap_or_default() {
-                note.add_alias(alias);
+                note.add_alias(alias).map_err(note_err)?;
                 dirty = true;
             }
             for (key, json_val) in p.set_fields.unwrap_or_default() {
