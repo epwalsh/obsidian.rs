@@ -9,13 +9,13 @@ checks :
 	cargo check
 	cargo clippy -- -D warnings
 	cargo test
-	cargo install --bin obsidian --path obsidian-cli/
+	cargo install --bin obsidian-rs --path obsidian-cli/
 	cargo install --bin obsidian-mcp --path obsidian-mcp/
 	cargo install --bin obsidian-lsp --path obsidian-lsp/
 
 .PHONY : install
 install :
-	cargo install --bin obsidian --path obsidian-cli/
+	cargo install --bin obsidian-rs --path obsidian-cli/
 	cargo install --bin obsidian-mcp --path obsidian-mcp/
 	cargo install --bin obsidian-lsp --path obsidian-lsp/
 

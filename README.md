@@ -28,58 +28,60 @@ Install with Cargo:
 cargo install obsidian-rs-cli
 ```
 
-The `obsidian` binary resolves your vault automatically — it walks up from the current directory looking for a folder containing `.obsidian/`. You can also set `OBSIDIAN_VAULT` or pass `--vault <PATH>` explicitly.
+The installed binary is `obsidian-rs` (not `obsidian`), so it does not collide with the official Obsidian desktop app or [Obsidian CLI](https://obsidian.md/cli), which also register an `obsidian` command on PATH.
+
+The CLI resolves your vault automatically — it walks up from the current directory looking for a folder containing `.obsidian/`. You can also set `OBSIDIAN_VAULT` or pass `--vault <PATH>` explicitly.
 
 ### Commands
 
 ```
-obsidian search     Search for notes
-obsidian note       Work with individual notes
-  resolve           Resolve a note by path, ID, or alias
-  list              List all notes
-  read              Read contents or frontmatter
-  write             Write a new note
-  backlinks         Find notes that link to a given note
-  extract           Extract a section or span into a new note
-  merge             Merge multiple notes into one
-  patch             Replace one exact string in a note's body
-  rename            Rename a note and update all backlinks
-  update            Update frontmatter metadata fields
-obsidian tags       Work with tags
-  list              List all tags used across the vault
-  search            Find all occurrences of given tags
-obsidian check      Vault health check (broken links, duplicate IDs/aliases, stranded notes)
+obsidian-rs search     Search for notes
+obsidian-rs note       Work with individual notes
+  resolve              Resolve a note by path, ID, or alias
+  list                 List all notes
+  read                 Read contents or frontmatter
+  write                Write a new note
+  backlinks            Find notes that link to a given note
+  extract              Extract a section or span into a new note
+  merge                Merge multiple notes into one
+  patch                Replace one exact string in a note's body
+  rename               Rename a note and update all backlinks
+  update               Update frontmatter metadata fields
+obsidian-rs tags       Work with tags
+  list                 List all tags used across the vault
+  search               Find all occurrences of given tags
+obsidian-rs check      Vault health check (broken links, duplicate IDs/aliases, stranded notes)
 ```
 
 ### Examples
 
 ```sh
 # Find all notes tagged #project that mention "rust"
-obsidian search --tag project --content-contains rust
+obsidian-rs search --tag project --content-contains rust
 
 # Find notes matching a regex pattern in their content
-obsidian search --content-matches 'TODO:.*urgent'
+obsidian-rs search --content-matches 'TODO:.*urgent'
 
 # List notes sorted by last modified
-obsidian note list --sort modified-desc
+obsidian-rs note list --sort modified-desc
 
 # Read a note's frontmatter as JSON
-obsidian note read "My Note" --format json
+obsidian-rs note read "My Note" --format json
 
 # Rename a note and automatically update every backlink
-obsidian note rename "Old Title" "New Title"
+obsidian-rs note rename "Old Title" "New Title"
 
 # Extract a named section into a new note, leaving a wiki link behind
-obsidian note extract "Source Note" notes/section.md --section Section
+obsidian-rs note extract "Source Note" notes/section.md --section Section
 
 # Find all notes that link to a given note
-obsidian note backlinks "My Note"
+obsidian-rs note backlinks "My Note"
 
 # List all tags, sorted alphabetically
-obsidian tags list --sort path-asc
+obsidian-rs tags list --sort path-asc
 
 # Check the vault for broken links, duplicate IDs, and stranded notes
-obsidian check
+obsidian-rs check
 ```
 
 Stranded-note health checks ignore `README.md`-style notes by default; use the existing ignore options to exclude additional vault-relative paths.

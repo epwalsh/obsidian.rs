@@ -6,7 +6,7 @@ use predicates::prelude::*;
 use tempfile::TempDir;
 
 fn obsidian() -> Command {
-    Command::cargo_bin("obsidian").unwrap()
+    Command::cargo_bin("obsidian-rs").unwrap()
 }
 
 fn make_vault() -> TempDir {

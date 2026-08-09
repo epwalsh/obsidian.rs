@@ -10,7 +10,7 @@ homepage = "https://github.com/epwalsh/obsidian.rs"
 readme = "../README.md"
 
 [[bin]]
-name = "obsidian"
+name = "obsidian-rs"
 path = "src/main.rs"
 
 [dependencies]

@@ -13,10 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added LSP `textDocument/formatting` support for trimming trailing whitespace and normalizing parseable YAML frontmatter blocks.
 - Added LSP startup work-done progress while indexing the vault, with language-feature requests returning empty results until indexing is ready.
 - Added `append_to_note` MCP tool for appending content to a note body without rewriting frontmatter, backed by `Vault::append_to_note()`.
-- Added note extraction support across the core crate, CLI (`obsidian note extract`), MCP server (`extract_to_note`), and LSP (`obsidian.extractToNote` plus selection preview code actions). Named-section extraction keeps the source heading, promotes extracted heading levels for the new note, and rewrites relative markdown links against the new note path.
+- Added note extraction support across the core crate, CLI (`obsidian-rs note extract`), MCP server (`extract_to_note`), and LSP (`obsidian.extractToNote` plus selection preview code actions). Named-section extraction keeps the source heading, promotes extracted heading levels for the new note, and rewrites relative markdown links against the new note path.
 
 ### Changed
 
+- Renamed the CLI binary from `obsidian` to `obsidian-rs` to avoid conflicting with the official Obsidian desktop app and CLI, which also install an `obsidian` command on PATH. Update scripts and muscle memory accordingly (`cargo install obsidian-rs-cli` now installs `obsidian-rs`).
 - Vault health checks in the CLI, MCP server, and LSP now report stranded notes (notes with no incoming or outgoing note links) and ignore `README.md`-style notes by default.
 - Filename-derived note IDs are now normalized to lowercase ASCII kebab-case with Unicode transliteration, so notes like `Café Note.md` default to `cafe-note` when no explicit frontmatter `id` is set.
 - LSP heading-based extract code actions now derive their default target path from the full matched heading ancestry, so extracting `Bar` under `Foo` defaults to `foo-bar.md` and the existing path-based ID rules then produce `foo-bar`.
