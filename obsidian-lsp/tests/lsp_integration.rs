@@ -2109,7 +2109,7 @@ fn stdio_session_offers_create_note_code_action_for_broken_links() {
 
     let create_action = actions
         .iter()
-        .find(|a| a["title"].as_str().map_or(false, |t| t.contains("missing-note")))
+        .find(|a| a["title"].as_str().is_some_and(|t| t.contains("missing-note")))
         .expect("should have a create action for 'missing-note'");
 
     assert_eq!(create_action["kind"], "quickfix");
@@ -2123,7 +2123,7 @@ fn stdio_session_offers_create_note_code_action_for_broken_links() {
         .find(|op| {
             op["textDocument"]["uri"]
                 .as_str()
-                .map_or(false, |u| u.ends_with("missing-note.md"))
+                .is_some_and(|u| u.ends_with("missing-note.md"))
         })
         .expect("should have a TextDocumentEdit for the new file");
     let preview_text = preview_edit["edits"][0]["newText"]
@@ -2233,7 +2233,7 @@ fn stdio_session_offers_create_note_code_action_for_broken_links() {
         .find(|op| {
             op["textDocument"]["uri"]
                 .as_str()
-                .map_or(false, |u| u.ends_with("missing-markdown.md"))
+                .is_some_and(|u| u.ends_with("missing-markdown.md"))
         })
         .expect("should have a TextDocumentEdit for the markdown new file");
     let md_preview_text = md_preview_edit["edits"][0]["newText"]
@@ -2372,7 +2372,7 @@ fn stdio_session_normalizes_filename_derived_create_note_ids() {
         .find(|op| {
             op["textDocument"]["uri"]
                 .as_str()
-                .map_or(false, |uri| uri.ends_with("Caf%C3%A9%20Note.md"))
+                .is_some_and(|uri| uri.ends_with("Caf%C3%A9%20Note.md"))
         })
         .expect("should include a preview edit for the new file")["edits"][0]["newText"]
         .as_str()

@@ -17,7 +17,7 @@ path = "src/main.rs"
 obsidian-rs-core = { path = "../obsidian-core", version = "0.5.0" }
 clap = { version = "4", features = ["derive"] }
 globset = "0.4"
-rmcp = { version = "1", features = ["server", "transport-io", "macros"] }
+rmcp = { version = "3", features = ["server", "transport-io", "macros"] }
 tokio = { version = "1", features = ["full"] }
 schemars = "1.0"
 serde = { version = "1", features = ["derive"] }
