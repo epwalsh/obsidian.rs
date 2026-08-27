@@ -64,7 +64,7 @@ obsidian search --content-matches 'TODO:.*urgent'
 obsidian note list --sort modified-desc
 
 # Read a note's frontmatter as JSON
-obsidian note read "My Note" --format json
+obsidian note read "My Note" --frontmatter --format json
 
 # Rename a note and automatically update every backlink
 obsidian note rename "Old Title" "New Title"
