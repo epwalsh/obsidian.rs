@@ -5,7 +5,7 @@ use obsidian_core::{
     ExtractResult, ExtractSelection, Link, LocatedLink, Location, Note, TextSpan, Vault, VaultHealthReport,
 };
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
-use rmcp::model::{CallToolResult, Content, ServerCapabilities, ServerInfo};
+use rmcp::model::{CallToolResult, ContentBlock, ServerCapabilities, ServerInfo};
 use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use serde_json::json;
 
@@ -237,7 +237,7 @@ impl VaultServer {
         .await
         .map_err(|e| other_err(e.to_string()))??;
 
-        Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(result.to_string())]))
     }
 
     #[tool(
@@ -267,7 +267,7 @@ impl VaultServer {
         .await
         .map_err(|e| other_err(e.to_string()))??;
 
-        Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(result.to_string())]))
     }
 
     #[tool(
@@ -286,7 +286,7 @@ impl VaultServer {
         .await
         .map_err(|e| other_err(e.to_string()))??;
 
-        Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(result.to_string())]))
     }
 
     #[tool(
@@ -337,7 +337,7 @@ impl VaultServer {
         .await
         .map_err(|e| other_err(e.to_string()))??;
 
-        Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(result.to_string())]))
     }
 
     #[tool(
@@ -358,7 +358,7 @@ impl VaultServer {
         .await
         .map_err(|e| other_err(e.to_string()))??;
 
-        Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(result.to_string())]))
     }
 
     #[tool(
@@ -388,7 +388,7 @@ impl VaultServer {
         .await
         .map_err(|e| other_err(e.to_string()))??;
 
-        Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(result.to_string())]))
     }
 
     #[tool(
@@ -408,7 +408,7 @@ impl VaultServer {
         .await
         .map_err(|e| other_err(e.to_string()))??;
 
-        Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(result.to_string())]))
     }
 
     #[tool(
@@ -452,7 +452,7 @@ impl VaultServer {
         .await
         .map_err(|e| other_err(e.to_string()))??;
 
-        Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(result.to_string())]))
     }
 
     #[tool(
@@ -507,7 +507,7 @@ impl VaultServer {
         .await
         .map_err(|e| other_err(e.to_string()))??;
 
-        Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(result.to_string())]))
     }
 
     #[tool(
@@ -537,7 +537,7 @@ impl VaultServer {
         .await
         .map_err(|e| other_err(e.to_string()))??;
 
-        Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(result.to_string())]))
     }
 
     #[tool(
@@ -554,7 +554,7 @@ impl VaultServer {
         .await
         .map_err(|e| other_err(e.to_string()))??;
 
-        Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(result.to_string())]))
     }
 
     #[tool(
@@ -584,7 +584,7 @@ impl VaultServer {
         .await
         .map_err(|e| other_err(e.to_string()))??;
 
-        Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(result.to_string())]))
     }
 
     #[tool(
@@ -629,7 +629,7 @@ impl VaultServer {
         .await
         .map_err(|e| other_err(e.to_string()))??;
 
-        Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(result.to_string())]))
     }
 }
 
