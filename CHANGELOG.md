@@ -13,10 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added LSP `textDocument/formatting` support for trimming trailing whitespace and normalizing parseable YAML frontmatter blocks.
 - Added LSP startup work-done progress while indexing the vault, with language-feature requests returning empty results until indexing is ready.
 - Added `append_to_note` MCP tool for appending content to a note body without rewriting frontmatter, backed by `Vault::append_to_note()`.
-- Added note extraction support across the core crate, CLI (`obsidian note extract`), MCP server (`extract_to_note`), and LSP (`obsidian.extractToNote` plus selection preview code actions). Named-section extraction keeps the source heading, promotes extracted heading levels for the new note, and rewrites relative markdown links against the new note path.
+- Added note extraction support across the core crate, CLI (`obsidian-rs note extract`), MCP server (`extract_to_note`), and LSP (`obsidian.extractToNote` plus selection preview code actions). Named-section extraction keeps the source heading, promotes extracted heading levels for the new note, and rewrites relative markdown links against the new note path.
 
 ### Changed
 
+- Renamed the CLI binary from `obsidian` to `obsidian-rs` to avoid conflicting with the official Obsidian desktop app and CLI, which also install an `obsidian` command on PATH. Update scripts and muscle memory accordingly (`cargo install obsidian-rs-cli` now installs `obsidian-rs`).
 - Refactored the `obsidian-rs-core` note/vault representation for a single, unambiguous source of truth:
   - `Note` now stores its full contents (including frontmatter) in a private `text` field, exposed via `Note::text()`, with `Note::body()` returning the frontmatter-stripped body. The public `Note::body` field, `Note::from_path_with_body()`, `Note::load_body()`, `Note::reload_with_body()`, and `NoteError::BodyNotLoaded` are removed; `Note::from_path()` now always loads contents. `Note::add_tag()`, `remove_tag()`, and `add_alias()` now return `Result` and keep `text` in sync.
   - `Vault` now holds a single `cached_notes: Option<HashMap<PathBuf, Arc<Note>>>` snapshot instead of separate override and cached-disk collections. `Some` is an authoritative in-memory snapshot (no filesystem access); `None` is disk-walk mode. `Vault::notes_with_content()` is removed (`notes()` always carries content).

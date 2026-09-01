@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
-#[command(name = "obsidian", about = "Query and navigate Obsidian vaults")]
+#[command(name = "obsidian-rs", about = "Query and navigate Obsidian vaults")]
 pub struct Cli {
     /// Path to the vault directory. Defaults to the nearest parent directory containing
     /// '.obsidian/', or the current directory if none is found.
@@ -184,7 +184,7 @@ pub enum NoteCommand {
     Resolve(ResolveArgs),
     /// List all notes
     List(ListArgs),
-    /// Search for notes (alias for 'obsidian search')
+    /// Search for notes (alias for 'obsidian-rs search')
     Search(Box<SearchArgs>),
     /// Read contents/frontmatter of a note
     Read(ReadArgs),
