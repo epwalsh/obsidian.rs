@@ -76,8 +76,8 @@ fn open_document_adds_note_to_lsp_overlay() {
     assert!(update.diagnostics.is_empty());
     assert_eq!(state.open_documents.get(&note_path).unwrap().text, "buffer body");
     assert_eq!(
-        state.snapshot().note_for_path(&note_path).unwrap().body.as_deref(),
-        Some("buffer body")
+        state.snapshot().note_for_path(&note_path).unwrap().body(),
+        "buffer body"
     );
 }
 
@@ -103,8 +103,8 @@ fn change_document_updates_in_memory_note_body() {
     assert_eq!(state.open_documents.get(&note_path).unwrap().version, 2);
     assert_eq!(state.open_documents.get(&note_path).unwrap().text, "changed body");
     assert_eq!(
-        state.snapshot().note_for_path(&note_path).unwrap().body.as_deref(),
-        Some("changed body")
+        state.snapshot().note_for_path(&note_path).unwrap().body(),
+        "changed body"
     );
     assert_eq!(update_for_uri(&batch, &note_uri).version, Some(2));
 }
@@ -309,10 +309,7 @@ fn close_document_unloads_the_in_memory_override() {
 
     assert!(update.diagnostics.is_empty());
     assert!(!state.open_documents.contains_key(&note_path));
-    assert_eq!(
-        state.snapshot().note_for_path(&note_path).unwrap().body.as_deref(),
-        None
-    );
+    assert_eq!(state.snapshot().note_for_path(&note_path).unwrap().body(), "disk body");
     assert_eq!(state.snapshot().text_for_path(&note_path).unwrap(), "disk body");
 }
 

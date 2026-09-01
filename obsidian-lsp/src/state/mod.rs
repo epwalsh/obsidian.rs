@@ -535,30 +535,6 @@ impl StateSnapshot {
         notes
     }
 
-    fn notes_with_content(&self) -> Vec<Note> {
-        let mut notes = self
-            .vault
-            .notes_with_content()
-            .into_iter()
-            .filter_map(Result::ok)
-            .collect::<Vec<_>>();
-        let overlay_paths = self
-            .open_documents
-            .values()
-            .filter(|document| document.shadows_disk)
-            .map(|document| document.path.clone())
-            .collect::<HashSet<_>>();
-        notes.retain(|note| !overlay_paths.contains(&note.path));
-        notes.extend(
-            self.open_documents
-                .values()
-                .filter(|document| document.shadows_disk)
-                .map(|document| Note::parse(&document.path, &document.text)),
-        );
-        notes.sort_by(|left, right| left.path.cmp(&right.path));
-        notes
-    }
-
     fn note_for_path(&self, path: &Path) -> Result<Note, StateError> {
         if let Some(document) = self.open_documents.get(path) {
             Ok(Note::parse(path, &document.text))

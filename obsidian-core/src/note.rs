@@ -17,12 +17,14 @@ pub struct Note {
     pub title: Option<String>,
     pub aliases: Vec<String>,
     /// All tags: frontmatter tags have `location: Location::Frontmatter`; inline tags have
-    /// `location: Location::Inline(...)`. Always populated, even when content is not loaded.
+    /// `location: Location::Inline(...)`. Always populated.
     pub tags: Vec<LocatedTag>,
-    /// Body text stripped of frontmatter. `None` when the note was loaded without body
-    /// (the default). Use [`Note::from_path_with_body`] or [`Note::load_body`] to
-    /// populate this field. Required for [`Note::write`].
-    pub body: Option<String>,
+    /// The entire, exact contents of the note *including* frontmatter. This is the single source
+    /// of truth for a note's contents; all other content-derived fields (`id`, `title`, `aliases`,
+    /// `tags`, `links`, `frontmatter`, `frontmatter_line_count`) are parsed from it. It is private
+    /// so callers cannot mutate it out of sync with the derived fields; use [`Note::text`] to read
+    /// it and [`Note::body`] for the frontmatter-stripped body.
+    text: String,
     /// Links extracted from the body at load time (always populated).
     pub links: Vec<crate::LocatedLink>,
     pub frontmatter: Option<IndexMap<String, Pod>>,
@@ -161,12 +163,13 @@ impl NoteBuilder {
             title,
             aliases,
             tags,
-            body: None,
+            text: String::new(),
             links: Vec::new(),
             frontmatter: None,
             frontmatter_line_count: 0,
         };
-        note.update_content(body.as_deref(), None)?;
+        // Always build `text` (defaulting to an empty body) so the note is internally consistent.
+        note.update_content(Some(body.as_deref().unwrap_or_default()), None)?;
         Ok(note)
     }
 }
@@ -176,48 +179,40 @@ impl Note {
         NoteBuilder::new(path)
     }
 
-    /// Parses a note from a raw file string, always retaining the body content.
+    /// Parses a note from a raw file string.
     ///
-    /// Useful for constructing notes from in-memory strings (e.g. in tests).
-    /// For file-backed notes prefer [`Note::from_path`] (no content) or
-    /// [`Note::from_path_with_body`] (with content).
+    /// Useful for constructing notes from in-memory strings (e.g. in tests). For file-backed
+    /// notes prefer [`Note::from_path`].
     pub fn parse(path: impl AsRef<Path>, content: &str) -> Self {
-        Self::parse_impl(path, content, true)
+        Self::parse_impl(path, content)
     }
 
-    /// Loads a note from disk without retaining the body content.
+    /// Loads a note from disk, retaining the full contents in [`Note::text`].
     ///
-    /// Links and inline tags are still extracted and stored. This is the
-    /// memory-efficient default for bulk operations. Use
-    /// [`from_path_with_body`](Self::from_path_with_body) when the body
-    /// text is needed (e.g. for content search or writing).
+    /// Links and inline tags are extracted and stored. Note the entire file is read and retained
+    /// in memory.
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, NoteError> {
         let path = common::normalize_path(path.as_ref(), None);
         let raw = std::fs::read_to_string(&path)?;
-        Ok(Self::parse_impl(&path, &raw, false))
+        Ok(Self::parse_impl(&path, &raw))
     }
 
-    /// Loads a note from disk, retaining the full body content in [`Note::body`].
-    pub fn from_path_with_body(path: impl AsRef<Path>) -> Result<Self, NoteError> {
-        let path = common::normalize_path(path.as_ref(), None);
-        let raw = std::fs::read_to_string(&path)?;
-        Ok(Self::parse_impl(&path, &raw, true))
-    }
-
-    fn parse_impl(path: impl AsRef<Path>, content: &str, keep_body: bool) -> Self {
+    fn parse_impl(path: impl AsRef<Path>, content: &str) -> Self {
         let matter = Matter::<YAML>::new();
-        let (body, frontmatter) = match matter.parse(content) {
-            Ok(parsed) => {
-                let fm = parsed.data.and_then(|pod: Pod| pod.as_hashmap().ok()).map(|hm| {
-                    let mut entries: Vec<_> = hm.into_iter().collect();
-                    entries.sort_by(|a, b| a.0.cmp(&b.0));
-                    entries.into_iter().collect::<IndexMap<_, _>>()
-                });
-                (parsed.content, fm)
-            }
-            Err(_) => (content.to_string(), None),
-        };
-        let frontmatter_line_count = content.lines().count().saturating_sub(body.lines().count());
+        let frontmatter = matter.parse(content).ok().and_then(|parsed| {
+            parsed.data.and_then(|pod: Pod| pod.as_hashmap().ok()).map(|hm| {
+                let mut entries: Vec<_> = hm.into_iter().collect();
+                entries.sort_by(|a, b| a.0.cmp(&b.0));
+                entries.into_iter().collect::<IndexMap<_, _>>()
+            })
+        });
+        // Locate the body directly in the raw text so that a note's `text` and derived `body()`
+        // stay exactly consistent. Deriving the split from gray_matter's parsed content is unsafe
+        // because it trims trailing whitespace, which would inflate the line count and slice into
+        // the body.
+        let body_start = frontmatter_prefix_len(content);
+        let body = content[body_start..].to_string();
+        let frontmatter_line_count = content[..body_start].bytes().filter(|&b| b == b'\n').count();
         let id = frontmatter
             .as_ref()
             .and_then(|fm| fm.get("id"))
@@ -289,11 +284,29 @@ impl Note {
             title,
             aliases,
             tags,
-            body: if keep_body { Some(body) } else { None },
+            text: content.to_string(),
             links,
             frontmatter,
             frontmatter_line_count,
         }
+    }
+
+    /// The entire, exact contents of the note including frontmatter.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// The note's body — its contents with the frontmatter block stripped.
+    ///
+    /// Returned as a zero-copy slice of [`text`](Self::text).
+    pub fn body(&self) -> &str {
+        let body_start: usize = self
+            .text
+            .split_inclusive('\n')
+            .take(self.frontmatter_line_count)
+            .map(str::len)
+            .sum();
+        &self.text[body_start..]
     }
 
     pub fn update_content(
@@ -305,77 +318,41 @@ impl Note {
             return Ok(());
         }
 
-        if let Some(body) = body {
-            if let Some(frontmatter) = frontmatter {
-                self.frontmatter = Some(frontmatter);
-            }
-            let file_content = self.to_file_content(body)?;
-            let parsed = Self::parse_impl(&self.path, &file_content, true);
-            self.body = Some(body.to_string());
-            self.tags = parsed.tags;
-            self.links = parsed.links;
-        } else if let Some(frontmatter) = frontmatter {
-            // Update tags from frontmatter.
-            let mut tags: Vec<LocatedTag> = frontmatter
-                .get("tags")
-                .and_then(|p| p.as_vec().ok())
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|p| p.as_string().ok())
-                .map(|tag| LocatedTag {
-                    tag,
-                    location: Location::Frontmatter,
-                })
-                .collect();
-
-            for tag in &self.tags {
-                match tag.location {
-                    Location::Frontmatter => {}
-                    Location::Inline(_) => tags.push(tag.clone()),
-                }
-            }
-
+        if let Some(frontmatter) = frontmatter {
             self.frontmatter = Some(frontmatter);
-            self.tags = tags;
         }
+        let body = match body {
+            Some(body) => body.to_string(),
+            None => self.body().to_string(),
+        };
+        self.rebuild_text(&body)
+    }
 
+    /// Reserializes `text` from the note's current derived state (frontmatter fields plus `body`)
+    /// and reparses so every derived field stays in sync with `text`.
+    fn rebuild_text(&mut self, body: &str) -> Result<(), NoteError> {
+        let file_content = self.to_file_content(body)?;
+        *self = Self::parse_impl(&self.path, &file_content);
         Ok(())
     }
 
-    /// Reloads the note from its path without retaining body content.
+    /// Reloads the note from its path.
     pub fn reload(self) -> Result<Self, NoteError> {
         Self::from_path(&self.path)
     }
 
-    /// Reloads the note from its path while retaining body content.
-    pub fn reload_with_body(self) -> Result<Self, NoteError> {
-        Self::from_path_with_body(&self.path)
-    }
-
-    /// Populates [`Note::body`] by reading the note's body from disk.
-    /// Does nothing if the body is already loaded.
-    pub fn load_body(&mut self) -> Result<(), NoteError> {
-        if self.body.is_none() {
-            let raw = std::fs::read_to_string(&self.path)?;
-            let matter = Matter::<YAML>::new();
-            let body = match matter.parse::<Pod>(&raw) {
-                Ok(parsed) => parsed.content,
-                Err(_) => raw,
-            };
-            self.body = Some(body);
+    /// Add an alias, keeping [`text`](Self::text) in sync.
+    pub fn add_alias(&mut self, alias: String) -> Result<(), NoteError> {
+        if !self.aliases.contains(&alias) {
+            self.aliases.push(alias);
+            let body = self.body().to_string();
+            self.rebuild_text(&body)?;
         }
         Ok(())
     }
 
-    /// Add an alias.
-    pub fn add_alias(&mut self, alias: String) {
-        if !self.aliases.contains(&alias) {
-            self.aliases.push(alias);
-        }
-    }
-
-    /// Add a frontmatter tag.
-    pub fn add_tag(&mut self, tag: impl Into<String>) {
+    /// Add a frontmatter tag, keeping [`text`](Self::text) in sync.
+    pub fn add_tag(&mut self, tag: impl Into<String>) -> Result<(), NoteError> {
         let tag = crate::tag::clean_tag(&tag.into());
         let already_present = self
             .tags
@@ -386,14 +363,23 @@ impl Note {
                 tag,
                 location: Location::Frontmatter,
             });
+            let body = self.body().to_string();
+            self.rebuild_text(&body)?;
         }
+        Ok(())
     }
 
-    /// Remove a frontmatter tag.
-    pub fn remove_tag(&mut self, tag: &str) {
+    /// Remove a frontmatter tag, keeping [`text`](Self::text) in sync.
+    pub fn remove_tag(&mut self, tag: &str) -> Result<(), NoteError> {
         let tag = crate::tag::clean_tag(tag);
+        let before = self.tags.len();
         self.tags
             .retain(|t| !(t.tag.eq_ignore_ascii_case(&tag) && matches!(t.location, Location::Frontmatter)));
+        if self.tags.len() != before {
+            let body = self.body().to_string();
+            self.rebuild_text(&body)?;
+        }
+        Ok(())
     }
 
     /// Set an arbitrary frontmatter field to a value (which can be any YAML type).
@@ -427,13 +413,11 @@ impl Note {
                 .insert(key.to_string(), yaml_to_pod_value(value));
         }
 
-        Ok(())
+        let body = self.body().to_string();
+        self.rebuild_text(&body)
     }
 
     /// Atomically writes the note to `self.path`, including serialized frontmatter.
-    ///
-    /// Requires [`Note::body`] to be populated. Returns
-    /// [`NoteError::BodyNotLoaded`] if the body is `None`.
     ///
     /// Frontmatter keys are serialized in a deterministic order: `id` first, then
     /// `title` (if present), then `aliases`, then `tags`, then all remaining keys
@@ -447,33 +431,19 @@ impl Note {
         Ok(())
     }
 
-    /// Atomically writes updated frontmatter to `self.path`, reading the current body
-    /// from disk. Use this when only frontmatter has changed but not the body.
+    /// Atomically writes the note to `self.path`, reconstructing the file from the in-memory
+    /// [`text`](Self::text). Retained as a distinct entry point for frontmatter-only updates;
+    /// with `text` as the source of truth it is equivalent to [`write`](Self::write).
     pub fn write_frontmatter(&self) -> Result<(), NoteError> {
-        let raw = std::fs::read_to_string(&self.path)?;
-        let matter = Matter::<YAML>::new();
-        let body = match matter.parse::<Pod>(&raw) {
-            Ok(parsed) => parsed.content,
-            Err(_) => raw.clone(),
-        };
-        let file_content = self.to_file_content(&body)?;
-        let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
-        let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
-        tmp.write_all(file_content.as_bytes())?;
-        tmp.persist(&self.path).map_err(|e| e.error)?;
-        Ok(())
+        self.write()
     }
 
     /// Read the contents of the note as a string, optionally including frontmatter.
-    /// Requires [`Note::body`] to be populated. Returns
-    /// [`NoteError::BodyNotLoaded`] if the body is `None`.
     pub fn read(&self, include_frontmatter: bool) -> Result<String, NoteError> {
-        let body = self.body.as_deref().ok_or(NoteError::BodyNotLoaded)?;
         if include_frontmatter {
-            let file_content = self.to_file_content(body)?;
-            Ok(file_content)
+            Ok(self.to_file_content(self.body())?)
         } else {
-            Ok(body.to_string())
+            Ok(self.body().to_string())
         }
     }
 
@@ -648,6 +618,44 @@ fn pod_to_json_value(pod: &Pod) -> Result<serde_json::Value, NoteError> {
     }
 }
 
+/// Returns the byte length of the leading frontmatter region of `content` — the opening `---`
+/// delimiter line through the closing `---` delimiter line and any blank separator lines that
+/// follow it. Returns `0` when `content` has no frontmatter block. The returned offset marks where
+/// the note body begins.
+fn frontmatter_prefix_len(content: &str) -> usize {
+    let mut lines = content.split_inclusive('\n');
+    let Some(first) = lines.next() else {
+        return 0;
+    };
+    if first.trim_end() != "---" {
+        return 0;
+    }
+
+    let mut offset = first.len();
+    let mut close_offset = None;
+    for line in lines {
+        offset += line.len();
+        if line.trim_end() == "---" {
+            close_offset = Some(offset);
+            break;
+        }
+    }
+    let Some(mut body_start) = close_offset else {
+        // No closing delimiter: not a frontmatter block.
+        return 0;
+    };
+
+    // Consume blank separator lines between the frontmatter and the body.
+    for line in content[body_start..].split_inclusive('\n') {
+        if line.contains('\n') && line.trim().is_empty() {
+            body_start += line.len();
+        } else {
+            break;
+        }
+    }
+    body_start
+}
+
 fn find_h1(content: &str) -> Option<String> {
     content
         .lines()
@@ -685,7 +693,7 @@ mod tests {
         let note = Note::parse("/vault/my-note.md", input);
 
         assert_eq!(note.path, PathBuf::from("/vault/my-note.md"));
-        assert_eq!(note.body.as_deref().unwrap().trim(), "Hello, world!");
+        assert_eq!(note.body().trim(), "Hello, world!");
 
         let fm = note.frontmatter.expect("should have frontmatter");
         assert!(fm.contains_key("title"));
@@ -698,7 +706,7 @@ mod tests {
         let note = Note::parse("/vault/plain.md", input);
 
         assert!(note.frontmatter.is_none());
-        assert_eq!(note.body.as_deref().unwrap(), input);
+        assert_eq!(note.body(), input);
     }
 
     #[test]
@@ -706,10 +714,10 @@ mod tests {
         let mut tmp = tempfile::NamedTempFile::new().unwrap();
         write!(tmp, "---\nauthor: Pete\n---\n\nBody text.").unwrap();
 
-        let note = Note::from_path_with_body(tmp.path()).expect("should read file");
+        let note = Note::from_path(tmp.path()).expect("should read file");
+        assert!(note.body().contains("Body text."));
         let fm = note.frontmatter.expect("should have frontmatter");
         assert!(fm.contains_key("author"));
-        assert!(note.body.unwrap().contains("Body text."));
     }
 
     #[test]
@@ -823,7 +831,7 @@ mod tests {
         )
         .unwrap();
 
-        let note = Note::from_path_with_body(tmp.path()).unwrap();
+        let note = Note::from_path(tmp.path()).unwrap();
         note.write().unwrap();
 
         let on_disk = std::fs::read_to_string(tmp.path()).unwrap();
@@ -843,7 +851,7 @@ mod tests {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(tmp.path(), "---\ntags: [t]\nid: my-id\nzebra: last\n---\n\nContent.").unwrap();
 
-        let note = Note::from_path_with_body(tmp.path()).unwrap();
+        let note = Note::from_path(tmp.path()).unwrap();
         note.write().unwrap();
 
         let on_disk = std::fs::read_to_string(tmp.path()).unwrap();
@@ -863,7 +871,7 @@ mod tests {
         let original = "Just some plain content.";
         std::fs::write(tmp.path(), original).unwrap();
 
-        let note = Note::from_path_with_body(tmp.path()).unwrap();
+        let note = Note::from_path(tmp.path()).unwrap();
         note.write().unwrap();
 
         let on_disk = std::fs::read_to_string(tmp.path()).unwrap();
@@ -907,13 +915,13 @@ mod tests {
         let original = "---\ntitle: My Note\n---\n\nBody text.";
         std::fs::write(tmp.path(), original).unwrap();
 
-        let note = Note::from_path_with_body(tmp.path()).unwrap();
+        let note = Note::from_path(tmp.path()).unwrap();
         note.write().unwrap();
 
         // Re-parse to verify the on-disk content is valid and retains key fields.
-        let reparsed = Note::from_path_with_body(tmp.path()).unwrap();
+        let reparsed = Note::from_path(tmp.path()).unwrap();
         assert_eq!(reparsed.title.as_deref(), Some("My Note"));
-        assert_eq!(reparsed.body.as_deref().unwrap().trim(), "Body text.");
+        assert_eq!(reparsed.body().trim(), "Body text.");
     }
 
     #[test]
@@ -939,7 +947,7 @@ mod tests {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(tmp.path(), "---\ntitle: Old Title\n---\n\nContent.").unwrap();
 
-        let mut note = Note::from_path_with_body(tmp.path()).unwrap();
+        let mut note = Note::from_path(tmp.path()).unwrap();
         note.frontmatter
             .as_mut()
             .unwrap()

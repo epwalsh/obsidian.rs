@@ -34,11 +34,7 @@ pub fn cmd_list(vault: Vault, args: ListArgs) -> eyre::Result<()> {
 
 pub fn cmd_read(vault: Vault, args: ReadArgs) -> eyre::Result<()> {
     let (note_path, _) = vault.resolve_note_path(&args.note, true)?;
-    let note = if args.no_content {
-        Note::from_path(&note_path)?
-    } else {
-        Note::from_path_with_body(&note_path)?
-    };
+    let note = Note::from_path(&note_path)?;
 
     match args.format {
         OutputFormat::Plain => output::print_note_read_plain(&note, args.frontmatter, args.no_content)?,
@@ -66,14 +62,14 @@ pub fn cmd_write(vault: Vault, args: WriteArgs) -> eyre::Result<()> {
     // Parse note from content, update title, tags, and aliases, then write to disk.
     let mut note = Note::parse(note_path, &content);
     for tag in args.tag {
-        note.add_tag(tag);
+        note.add_tag(tag)?;
     }
     for alias in args.alias {
-        note.add_alias(alias);
+        note.add_alias(alias)?;
     }
     if let Some(title) = args.title {
         note.title = Some(title.clone());
-        note.add_alias(title.clone());
+        note.add_alias(title.clone())?;
     } else if note.title.is_none() {
         if !note.aliases.is_empty() {
             // If no title but have aliases, use first alias as title
@@ -119,7 +115,7 @@ pub fn cmd_merge(mut vault: Vault, args: MergeArgs) -> eyre::Result<()> {
     let mut sources: Vec<Note> = Vec::new();
     for src_arg in source_args {
         let (note_path, _) = vault.resolve_note_path(src_arg, true)?;
-        sources.push(Note::from_path_with_body(&note_path)?);
+        sources.push(Note::from_path(&note_path)?);
     }
 
     if args.dry_run {
@@ -236,7 +232,7 @@ pub fn cmd_backlinks(vault: Vault, args: BacklinksArgs) -> eyre::Result<()> {
 
 pub fn cmd_rename(mut vault: Vault, args: RenameArgs) -> eyre::Result<()> {
     let (note_path, root) = vault.resolve_note_path(&args.note, true)?;
-    let note = Note::from_path_with_body(&note_path)?;
+    let note = Note::from_path(&note_path)?;
 
     let mut new_path = if args.new_path.is_absolute() {
         args.new_path.clone()
@@ -331,7 +327,7 @@ fn update_single_note(
     // Add tags
     if !add_tags.is_empty() {
         for tag in add_tags {
-            note.add_tag(tag.clone());
+            note.add_tag(tag.clone())?;
         }
         dirty = true;
     }
@@ -339,7 +335,7 @@ fn update_single_note(
     // Remove tags
     if !rm_tags.is_empty() {
         for tag in rm_tags {
-            note.remove_tag(tag);
+            note.remove_tag(tag)?;
         }
         dirty = true;
     }
@@ -347,7 +343,7 @@ fn update_single_note(
     // Add aliases
     if !add_aliases.is_empty() {
         for alias in add_aliases {
-            note.add_alias(alias.clone());
+            note.add_alias(alias.clone())?;
         }
         dirty = true;
     }

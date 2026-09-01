@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Renamed the CLI binary from `obsidian` to `obsidian-rs` to avoid conflicting with the official Obsidian desktop app and CLI, which also install an `obsidian` command on PATH. Update scripts and muscle memory accordingly (`cargo install obsidian-rs-cli` now installs `obsidian-rs`).
+- Refactored the `obsidian-rs-core` note/vault representation for a single, unambiguous source of truth:
+  - `Note` now stores its full contents (including frontmatter) in a private `text` field, exposed via `Note::text()`, with `Note::body()` returning the frontmatter-stripped body. The public `Note::body` field, `Note::from_path_with_body()`, `Note::load_body()`, `Note::reload_with_body()`, and `NoteError::BodyNotLoaded` are removed; `Note::from_path()` now always loads contents. `Note::add_tag()`, `remove_tag()`, and `add_alias()` now return `Result` and keep `text` in sync.
+  - `Vault` now holds a single `cached_notes: Option<HashMap<PathBuf, Arc<Note>>>` snapshot instead of separate override and cached-disk collections. `Some` is an authoritative in-memory snapshot (no filesystem access); `None` is disk-walk mode. `Vault::notes_with_content()` is removed (`notes()` always carries content).
+  - `obsidian_core::search` drops the `loaded_notes` parameters and the `_with_content` function variants; `SearchQuery` runs against the cached snapshot when provided.
 - Vault health checks in the CLI, MCP server, and LSP now report stranded notes (notes with no incoming or outgoing note links) and ignore `README.md`-style notes by default.
 - Filename-derived note IDs are now normalized to lowercase ASCII kebab-case with Unicode transliteration, so notes like `Café Note.md` default to `cafe-note` when no explicit frontmatter `id` is set.
 - LSP heading-based extract code actions now derive their default target path from the full matched heading ancestry, so extracting `Bar` under `Foo` defaults to `foo-bar.md` and the existing path-based ID rules then produce `foo-bar`.

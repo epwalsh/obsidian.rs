@@ -10,7 +10,7 @@ const WORKSPACE_SYMBOL_LIMIT: usize = 500;
 
 impl WorkspaceSymbolsRequest {
     pub fn compute(self) -> Result<Vec<SymbolInformation>, StateError> {
-        let notes = self.snapshot.notes_with_content();
+        let notes = self.snapshot.notes();
         let query = self.query.to_lowercase();
         let mut symbols = Vec::new();
 
