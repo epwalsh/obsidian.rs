@@ -986,7 +986,7 @@ dependencies = [
 
 [[package]]
 name = "obsidian-rs-cli"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -1005,7 +1005,7 @@ dependencies = [
 
 [[package]]
 name = "obsidian-rs-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "deunicode",
  "globset",
@@ -1022,7 +1022,7 @@ dependencies = [
 
 [[package]]
 name = "obsidian-rs-lsp"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "clap",
  "color-eyre",
@@ -1041,7 +1041,7 @@ dependencies = [
 
 [[package]]
 name = "obsidian-rs-mcp"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "clap",
  "color-eyre",

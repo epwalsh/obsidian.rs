@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## v0.6.0 - 2026-09-01
+
 ### Added
 
 - LSP diagnostics now warn on trailing whitespace, including unsaved open buffers inside the vault.
