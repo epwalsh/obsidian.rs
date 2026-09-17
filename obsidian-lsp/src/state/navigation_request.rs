@@ -39,7 +39,7 @@ impl NavigationRequest {
         }
 
         let contents = if matching_notes.len() == 1 {
-            render_note_hover(matching_notes[0], context.snapshot.vault_path.as_path())
+            render_note_hover(matching_notes[0], context.snapshot.vault_path.as_path(), None)
         } else {
             render_ambiguous_hover(&matching_notes, context.snapshot.vault_path.as_path())
         };
@@ -189,10 +189,13 @@ impl NavigationContext {
     }
 }
 
-pub(in crate::state) fn render_note_hover(note: &Note, vault_path: &Path) -> String {
+pub(in crate::state) fn render_note_hover(note: &Note, vault_path: &Path, section: Option<String>) -> String {
     let mut lines = Vec::new();
     let heading = note.title.as_deref().unwrap_or(note.id.as_str());
     lines.push(format!("**{}**", heading));
+    if let Some(section) = section {
+        lines.push(format!("└─ **Section:** {}", section));
+    }
     lines.push(String::new());
     lines.push(format!("- Path: `{}`", relative_display(vault_path, &note.path)));
     lines.push(format!("- ID: `{}`", note.id));

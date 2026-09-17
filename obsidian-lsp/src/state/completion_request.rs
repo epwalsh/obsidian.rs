@@ -1,3 +1,5 @@
+use tower_lsp::lsp_types::Documentation;
+
 use super::*;
 
 #[derive(Debug)]
@@ -82,7 +84,13 @@ impl CompletionRequest {
                     .iter()
                     .filter(|note| note_matches_query(note, note_query))
                     .flat_map(|note| match snapshot.text_for_path(&note.path) {
-                        Ok(note_text) => heading_completions_for_note(note, &note_text, hq, prefix_range),
+                        Ok(note_text) => heading_completions_for_note(
+                            note,
+                            snapshot.vault_path.as_path(),
+                            &note_text,
+                            hq,
+                            prefix_range,
+                        ),
                         Err(_) => Vec::new(),
                     })
                     .collect()
@@ -92,7 +100,9 @@ impl CompletionRequest {
                 .iter()
                 .filter(|note| note_matches_query(note, note_query))
                 .flat_map(|note| match &context {
-                    LinkContext::Wiki { .. } => wiki_completions_for_note(note, prefix_range),
+                    LinkContext::Wiki { .. } => {
+                        wiki_completions_for_note(note, snapshot.vault_path.as_path(), prefix_range)
+                    }
                     LinkContext::Markdown { .. } => {
                         markdown_completions_for_note(note, snapshot.vault_path.as_path(), prefix_range)
                     }
@@ -193,7 +203,11 @@ pub(in crate::state) fn note_matches_query(note: &Note, query: &str) -> bool {
         .any(|alias| alias.to_lowercase().contains(&query_lower))
 }
 
-pub(in crate::state) fn wiki_completions_for_note(note: &Note, prefix_range: Range) -> Vec<CompletionItem> {
+pub(in crate::state) fn wiki_completions_for_note(
+    note: &Note,
+    vault_path: &Path,
+    prefix_range: Range,
+) -> Vec<CompletionItem> {
     let mut items = Vec::new();
     let mut seen = HashSet::new();
 
@@ -205,7 +219,12 @@ pub(in crate::state) fn wiki_completions_for_note(note: &Note, prefix_range: Ran
                 sort_text: Some(format!("{sort_prefix} {label}")),
                 text_edit: Some(CompletionTextEdit::Edit(TextEdit {
                     range: prefix_range,
-                    new_text: label,
+                    new_text: label.clone(),
+                })),
+                detail: Some(label),
+                documentation: Some(Documentation::MarkupContent(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: crate::state::navigation_request::render_note_hover(note, vault_path, None),
                 })),
                 ..Default::default()
             });
@@ -249,7 +268,12 @@ pub(in crate::state) fn markdown_completions_for_note(
                 sort_text: Some(label.clone()),
                 text_edit: Some(CompletionTextEdit::Edit(TextEdit {
                     range: prefix_range,
-                    new_text: label,
+                    new_text: label.clone(),
+                })),
+                detail: Some(label),
+                documentation: Some(Documentation::MarkupContent(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: crate::state::navigation_request::render_note_hover(note, vault_path, None),
                 })),
                 ..Default::default()
             });
@@ -290,8 +314,9 @@ pub(in crate::state) fn anchor_completions(
                 sort_text: Some(label.clone()),
                 text_edit: Some(CompletionTextEdit::Edit(TextEdit {
                     range: prefix_range,
-                    new_text: label,
+                    new_text: label.clone(),
                 })),
+                detail: Some(label),
                 ..Default::default()
             }
         })
@@ -310,8 +335,9 @@ pub(in crate::state) fn tag_completions(tags: &[String], query: &str, prefix_ran
                 sort_text: Some(new_text.clone()),
                 text_edit: Some(CompletionTextEdit::Edit(TextEdit {
                     range: prefix_range,
-                    new_text,
+                    new_text: new_text.clone(),
                 })),
+                detail: Some(new_text),
                 ..Default::default()
             }
         })
@@ -352,6 +378,7 @@ pub(in crate::state) fn parse_headings(text: &str) -> Vec<String> {
 
 pub(in crate::state) fn heading_completions_for_note(
     note: &Note,
+    vault_path: &Path,
     text: &str,
     heading_query: &str,
     prefix_range: Range,
@@ -368,18 +395,32 @@ pub(in crate::state) fn heading_completions_for_note(
         }
 
         let mut push = |target: &str| {
-            let label = format!("[[{}#{}]]", target, heading);
-            if seen.insert(label.clone()) {
-                items.push(CompletionItem {
-                    label: label.clone(),
-                    kind: Some(CompletionItemKind::REFERENCE),
-                    sort_text: Some(label.clone()),
-                    text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                        range: prefix_range,
-                        new_text: label,
-                    })),
-                    ..Default::default()
-                });
+            let labels_and_sort_text = vec![
+                format!("[[{}#{}]]", target, heading),
+                format!("[[{}#{}|{} — {}]]", target, heading, target, heading),
+            ];
+            for label in labels_and_sort_text {
+                if seen.insert(label.clone()) {
+                    items.push(CompletionItem {
+                        label: label.clone(),
+                        kind: Some(CompletionItemKind::REFERENCE),
+                        sort_text: Some(format!("0 {}", label.clone())),
+                        text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                            range: prefix_range,
+                            new_text: label.clone(),
+                        })),
+                        detail: Some(label),
+                        documentation: Some(Documentation::MarkupContent(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value: crate::state::navigation_request::render_note_hover(
+                                note,
+                                vault_path,
+                                Some(heading.to_string()),
+                            ),
+                        })),
+                        ..Default::default()
+                    });
+                }
             }
         };
 
