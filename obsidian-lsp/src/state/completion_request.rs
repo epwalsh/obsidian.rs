@@ -397,7 +397,7 @@ pub(in crate::state) fn heading_completions_for_note(
         let mut push = |target: &str| {
             let labels_and_sort_text = vec![
                 format!("[[{}#{}]]", target, heading),
-                format!("[[{}#{}|{} — {}]]", target, heading, target, heading),
+                format!("[[{}#{}|{} › {}]]", target, heading, target, heading),
             ];
             for label in labels_and_sort_text {
                 if seen.insert(label.clone()) {
