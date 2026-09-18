@@ -2058,6 +2058,172 @@ fn stdio_session_handles_completion_for_wiki_and_markdown_links() {
 }
 
 #[test]
+fn stdio_session_disambiguates_completions_for_duplicate_headings() {
+    let vault_dir = tempfile::tempdir().expect("should create temp dir");
+    fs::create_dir(vault_dir.path().join(".obsidian")).expect("should create .obsidian directory");
+
+    let target_path = vault_dir.path().join("target.md");
+    fs::write(
+        &target_path,
+        concat!(
+            "---\n",
+            "id: target-id\n",
+            "title: Target Note\n",
+            "---\n",
+            "\n",
+            "# Foo\n",
+            "\n",
+            "## Only\n",
+            "\n",
+            "## Bar\n",
+            "\n",
+            "### Baz\n",
+            "\n",
+            "## Biz\n",
+            "\n",
+            "### Baz\n",
+        ),
+    )
+    .expect("should write target note");
+
+    let vault_path = vault_dir.path().canonicalize().expect("vault path should canonicalize");
+    let vault_uri = Url::from_file_path(&vault_path).expect("vault path should convert to file URI");
+
+    let mut harness = LspHarness::spawn(vault_dir.path());
+    initialize_session(&mut harness, &vault_uri, &vault_path);
+
+    let source_path = vault_dir.path().join("source.md");
+    fs::write(&source_path, "[[target-id#").expect("should write source note");
+    let source_path = source_path.canonicalize().expect("source path should canonicalize");
+    let source_uri = Url::from_file_path(&source_path).expect("source path should convert to file URI");
+
+    harness.send(notification(
+        "textDocument/didOpen",
+        Some(json!({
+            "textDocument": {
+                "uri": source_uri,
+                "languageId": "markdown",
+                "version": 1,
+                "text": "[[target-id#",
+            },
+        })),
+    ));
+    expect_diagnostics(&mut harness, &source_uri, Some(1));
+
+    // Wiki heading completion at [[target-id#
+    harness.send(request(
+        1,
+        "textDocument/completion",
+        Some(json!({
+            "textDocument": { "uri": source_uri },
+            "position": { "line": 0, "character": 12 },
+        })),
+    ));
+    let response = harness.expect_message("nested heading completion response", |message| message["id"] == 1);
+    let labels = completion_labels(&response);
+    assert!(
+        labels.contains(&"[[target-id#Bar#Baz]]"),
+        "missing disambiguated [[target-id#Bar#Baz]], got {:?}",
+        labels,
+    );
+    assert!(
+        labels.contains(&"[[target-id#Biz#Baz]]"),
+        "missing disambiguated [[target-id#Biz#Baz]], got {:?}",
+        labels,
+    );
+    assert!(
+        !labels.contains(&"[[target-id#Baz]]"),
+        "ambiguous flat [[target-id#Baz]] should not be offered, got {:?}",
+        labels,
+    );
+    assert!(
+        labels.contains(&"[[target-id#Only]]"),
+        "unambiguous [[target-id#Only]] should still be offered as flat form, got {:?}",
+        labels,
+    );
+    assert!(
+        labels.contains(&"[[target-id#Foo]]"),
+        "unambiguous top-level [[target-id#Foo]] should still be offered as flat form, got {:?}",
+        labels,
+    );
+
+    // Partial nested query: [[target-id#Bar#B should match only Bar#Baz, not Biz#Baz
+    harness.send(notification(
+        "textDocument/didChange",
+        Some(json!({
+            "textDocument": { "uri": source_uri, "version": 2 },
+            "contentChanges": [{ "text": "[[target-id#Bar#B" }],
+        })),
+    ));
+    expect_diagnostics(&mut harness, &source_uri, Some(2));
+
+    harness.send(request(
+        2,
+        "textDocument/completion",
+        Some(json!({
+            "textDocument": { "uri": source_uri },
+            "position": { "line": 0, "character": 17 },
+        })),
+    ));
+    let response = harness.expect_message("partial nested query response", |message| message["id"] == 2);
+    let labels = completion_labels(&response);
+    assert!(
+        labels.contains(&"[[target-id#Bar#Baz]]"),
+        "missing [[target-id#Bar#Baz]] for Bar#B query, got {:?}",
+        labels,
+    );
+    assert!(
+        !labels.iter().any(|l| l == &"[[target-id#Biz#Baz]]"),
+        "Biz#Baz should be filtered out by Bar#B query, got {:?}",
+        labels,
+    );
+
+    // Anchor-only completion at [[# on a document with duplicate headings.
+    let anchor_text = "# Foo\n\n## Bar\n\n### Baz\n\n## Biz\n\n### Baz\n\n[[#";
+    harness.send(notification(
+        "textDocument/didChange",
+        Some(json!({
+            "textDocument": { "uri": source_uri, "version": 3 },
+            "contentChanges": [{ "text": anchor_text }],
+        })),
+    ));
+    expect_diagnostics(&mut harness, &source_uri, Some(3));
+
+    harness.send(request(
+        3,
+        "textDocument/completion",
+        Some(json!({
+            "textDocument": { "uri": source_uri },
+            "position": { "line": 10, "character": 3 },
+        })),
+    ));
+    let response = harness.expect_message("anchor completion response", |message| message["id"] == 3);
+    let labels = completion_labels(&response);
+    assert!(
+        labels.contains(&"[[#Bar#Baz]]"),
+        "missing disambiguated [[#Bar#Baz]], got {:?}",
+        labels,
+    );
+    assert!(
+        labels.contains(&"[[#Biz#Baz]]"),
+        "missing disambiguated [[#Biz#Baz]], got {:?}",
+        labels,
+    );
+    assert!(
+        !labels.contains(&"[[#Baz]]"),
+        "ambiguous flat [[#Baz]] should not be offered, got {:?}",
+        labels,
+    );
+    assert!(
+        labels.contains(&"[[#Foo]]"),
+        "unambiguous [[#Foo]] should still be offered, got {:?}",
+        labels,
+    );
+
+    shutdown_session(&mut harness);
+}
+
+#[test]
 fn stdio_session_offers_create_note_code_action_for_broken_links() {
     let vault_dir = tempfile::tempdir().expect("should create temp dir");
     fs::create_dir(vault_dir.path().join(".obsidian")).expect("should create .obsidian directory");

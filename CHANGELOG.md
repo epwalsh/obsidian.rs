@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Improved heading LSP completions.
+- LSP wiki and anchor completions for headings now suggest the shortest unambiguous ancestry path (e.g. `[[Foo#Bar#Baz]]` when a note has multiple `Baz` headings), and only keep the flat `[[Foo#Baz]]` form when it uniquely identifies the target heading.
 
 ## v0.6.0 - 2026-09-01
 
