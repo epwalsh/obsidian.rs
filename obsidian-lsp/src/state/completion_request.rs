@@ -300,14 +300,16 @@ pub(in crate::state) fn anchor_completions(
     heading_query: &str,
     prefix_range: Range,
 ) -> Vec<CompletionItem> {
-    let headings = parse_headings(text);
+    let paths = parse_heading_paths(text);
+    let suffixes = shortest_unambiguous_suffixes(&paths);
     let query_lower = heading_query.to_lowercase();
 
-    headings
+    suffixes
         .iter()
-        .filter(|h| heading_query.is_empty() || h.to_lowercase().contains(&query_lower))
-        .map(|heading| {
-            let label = format!("[[#{}]]", heading);
+        .map(|suffix| suffix.join("#"))
+        .filter(|joined| heading_query.is_empty() || joined.to_lowercase().contains(&query_lower))
+        .map(|joined| {
+            let label = format!("[[#{}]]", joined);
             CompletionItem {
                 label: label.clone(),
                 kind: Some(CompletionItemKind::REFERENCE),
@@ -369,10 +371,23 @@ pub(in crate::state) fn closing_bracket_len(text_after_cursor: &str, context: &L
     }
 }
 
-pub(in crate::state) fn parse_headings(text: &str) -> Vec<String> {
-    parse_heading_symbols(text)
-        .into_iter()
-        .map(|heading| heading.name)
+pub(in crate::state) fn shortest_unambiguous_suffixes(paths: &[Vec<String>]) -> Vec<Vec<String>> {
+    paths
+        .iter()
+        .enumerate()
+        .map(|(i, path)| {
+            for k in 1..=path.len() {
+                let suffix = &path[path.len() - k..];
+                let unique = paths
+                    .iter()
+                    .enumerate()
+                    .all(|(j, other)| j == i || other.len() < k || &other[other.len() - k..] != suffix);
+                if unique {
+                    return suffix.to_vec();
+                }
+            }
+            path.clone()
+        })
         .collect()
 }
 
@@ -383,21 +398,23 @@ pub(in crate::state) fn heading_completions_for_note(
     heading_query: &str,
     prefix_range: Range,
 ) -> Vec<CompletionItem> {
-    let headings = parse_headings(text);
+    let paths = parse_heading_paths(text);
+    let suffixes = shortest_unambiguous_suffixes(&paths);
     let query_lower = heading_query.to_lowercase();
 
     let mut items = Vec::new();
     let mut seen = HashSet::new();
 
-    for heading in &headings {
-        if !heading_query.is_empty() && !heading.to_lowercase().contains(&query_lower) {
+    for suffix in &suffixes {
+        let joined = suffix.join("#");
+        if !heading_query.is_empty() && !joined.to_lowercase().contains(&query_lower) {
             continue;
         }
 
         let mut push = |target: &str| {
             let labels_and_sort_text = vec![
-                format!("[[{}#{}]]", target, heading),
-                format!("[[{}#{}|{} › {}]]", target, heading, target, heading),
+                format!("[[{}#{}]]", target, joined),
+                format!("[[{}#{}|{} › {}]]", target, joined, target, joined),
             ];
             for label in labels_and_sort_text {
                 if seen.insert(label.clone()) {
@@ -415,7 +432,7 @@ pub(in crate::state) fn heading_completions_for_note(
                             value: crate::state::navigation_request::render_note_hover(
                                 note,
                                 vault_path,
-                                Some(heading.to_string()),
+                                Some(joined.clone()),
                             ),
                         })),
                         ..Default::default()

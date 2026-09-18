@@ -243,6 +243,34 @@ fn normalize_heading_anchor(text: &str) -> String {
     anchor
 }
 
+pub(in crate::state) fn parse_heading_paths(text: &str) -> Vec<Vec<String>> {
+    let mut in_frontmatter = false;
+    let mut current_path: Vec<String> = Vec::new();
+    let mut paths = Vec::new();
+
+    for (i, line) in text.lines().enumerate() {
+        if i == 0 && line == "---" {
+            in_frontmatter = true;
+            continue;
+        }
+        if in_frontmatter {
+            if line == "---" || line == "..." {
+                in_frontmatter = false;
+            }
+            continue;
+        }
+        let Some((level, _col_start, heading_text)) = heading_line_parts(line) else {
+            continue;
+        };
+
+        current_path.truncate(level.saturating_sub(1));
+        current_path.push(heading_text.to_string());
+        paths.push(current_path.clone());
+    }
+
+    paths
+}
+
 pub(in crate::state) fn parse_heading_symbols(text: &str) -> Vec<HeadingSymbol> {
     let mut in_frontmatter = false;
     let mut headings = Vec::new();

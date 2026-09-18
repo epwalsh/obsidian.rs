@@ -28,3 +28,6 @@ target
 # Claude
 .claude/worktrees
 docs/superpowers
+
+# Test vault
+test-vault
